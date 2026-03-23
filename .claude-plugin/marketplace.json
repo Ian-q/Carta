@@ -1,0 +1,23 @@
+{
+  "name": "carta-cc",
+  "owner": {
+    "name": "Ian"
+  },
+  "metadata": {
+    "description": "Carta — documentation auditor, embedder, and semantic search for Claude Code projects",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "carta-cc",
+      "source": "./",
+      "description": "Maps, connects, and remembers your documentation. Structural scanning, LLM semantic audit, Qdrant embedding, and /doc-search recall.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Ian"
+      },
+      "category": "documentation",
+      "keywords": ["documentation", "audit", "semantic-search", "qdrant", "ollama", "embedding"]
+    }
+  ]
+}

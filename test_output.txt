@@ -1,0 +1,45 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.11.7, pytest-9.0.2, pluggy-1.6.0 -- /Users/ian/.platformio/penv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/ian/dev/doc-audit-cc/.worktrees/carta-plan1
+configfile: pyproject.toml
+plugins: repeat-0.9.4, anyio-4.11.0, colcon-core-0.20.1, rerunfailures-16.1, cov-7.0.0
+collecting ... collected 35 items
+
+carta/scanner/tests/test_scanner.py::test_parse_frontmatter_with_valid_frontmatter PASSED [  2%]
+carta/scanner/tests/test_scanner.py::test_parse_frontmatter_no_frontmatter PASSED [  5%]
+carta/scanner/tests/test_scanner.py::test_parse_frontmatter_empty_related PASSED [  8%]
+carta/scanner/tests/test_scanner.py::test_parse_frontmatter_missing_last_reviewed PASSED [ 11%]
+carta/scanner/tests/test_scanner.py::test_parse_frontmatter_date_normalized_to_string PASSED [ 14%]
+carta/scanner/tests/test_scanner.py::test_is_excluded_direct_match PASSED [ 17%]
+carta/scanner/tests/test_scanner.py::test_is_excluded_glob_pattern PASSED [ 20%]
+carta/scanner/tests/test_scanner.py::test_is_excluded_prefix_dir PASSED  [ 22%]
+carta/scanner/tests/test_scanner.py::test_homeless_doc_detected PASSED   [ 25%]
+carta/scanner/tests/test_scanner.py::test_nested_docs_folder_detected PASSED [ 28%]
+carta/scanner/tests/test_scanner.py::test_broken_related_detected PASSED [ 31%]
+carta/scanner/tests/test_scanner.py::test_broken_related_all_valid PASSED [ 34%]
+carta/scanner/tests/test_scanner.py::test_missing_frontmatter_flagged PASSED [ 37%]
+carta/scanner/tests/test_scanner.py::test_missing_frontmatter_not_flagged_when_present PASSED [ 40%]
+carta/scanner/tests/test_scanner.py::test_stale_last_reviewed_flagged PASSED [ 42%]
+carta/scanner/tests/test_scanner.py::test_stale_last_reviewed_ok PASSED  [ 45%]
+carta/scanner/tests/test_scanner.py::test_stale_last_reviewed_no_field PASSED [ 48%]
+carta/scanner/tests/test_scanner.py::test_get_file_last_commit_date_success PASSED [ 51%]
+carta/scanner/tests/test_scanner.py::test_get_file_last_commit_date_untracked PASSED [ 54%]
+carta/scanner/tests/test_scanner.py::test_related_drift_detected PASSED  [ 57%]
+carta/scanner/tests/test_scanner.py::test_related_drift_not_detected_when_current PASSED [ 60%]
+carta/scanner/tests/test_scanner.py::test_build_inverted_index PASSED    [ 62%]
+carta/scanner/tests/test_scanner.py::test_orphaned_doc_detected PASSED   [ 65%]
+carta/scanner/tests/test_scanner.py::test_orphaned_doc_not_flagged_if_referenced PASSED [ 68%]
+carta/scanner/tests/test_scanner.py::test_orphaned_doc_not_flagged_if_has_siblings PASSED [ 71%]
+carta/scanner/tests/test_scanner.py::test_get_current_git_hash PASSED    [ 74%]
+carta/scanner/tests/test_scanner.py::test_get_changed_since_hash_filters_excluded PASSED [ 77%]
+carta/scanner/tests/test_scanner.py::test_run_scan_produces_valid_json PASSED [ 80%]
+carta/scanner/tests/test_scanner.py::test_check_embed_induction_needed_no_sidecar PASSED [ 82%]
+carta/scanner/tests/test_scanner.py::test_check_embed_induction_needed_with_pending_sidecar PASSED [ 85%]
+carta/scanner/tests/test_scanner.py::test_check_embed_induction_needed_embedded_ok PASSED [ 88%]
+carta/scanner/tests/test_scanner.py::test_check_embed_lfs_not_pulled PASSED [ 91%]
+carta/scanner/tests/test_scanner.py::test_check_embed_transcript_unprocessed PASSED [ 94%]
+carta/scanner/tests/test_scanner.py::test_check_embed_transcript_unprocessed_skips_fulfilled_without_summary PASSED [ 97%]
+carta/scanner/tests/test_scanner.py::test_check_embed_transcript_unprocessed_has_summary PASSED [100%]
+
+============================== 35 passed in 0.06s ==============================

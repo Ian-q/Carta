@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carta"
+version = "0.1.0"
+description = "Semantic memory sidecar for Claude Code projects"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+    "qdrant-client>=1.7",
+    "requests>=2.31",
+    "pypdf>=4.0",
+]
+
+[project.scripts]
+carta = "carta.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["carta*"]
