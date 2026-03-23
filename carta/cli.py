@@ -48,7 +48,7 @@ def cmd_search(args):
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
 
 def cmd_init(args):
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     run_bootstrap(Path.cwd())
 
 def main():

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "carta-cc"
-version = "0.1.0"
+version = "0.1.1"
 description = "Semantic memory sidecar for Claude Code projects"
 requires-python = ">=3.10"
 dependencies = [
