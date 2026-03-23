@@ -36,6 +36,11 @@ build/
 # Carta runtime state
 .carta/scan-results.json
 
+# Design source files
+*.afdesign
+*.afpub
+*.afphoto
+
 # Scratch / logs
 tmp/
 *.log
