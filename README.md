@@ -68,10 +68,10 @@ That's it. Carta copies the runtime into `.carta/` in your project, installs the
 
 ```bash
 # One-shot (no install required)
-uvx carta init
+uvx carta-cc init
 
 # Or install globally
-pip install carta
+pip install carta-cc
 carta init
 ```
 

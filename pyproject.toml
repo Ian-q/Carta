@@ -3,7 +3,7 @@ requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "carta"
+name = "carta-cc"
 version = "0.1.0"
 description = "Semantic memory sidecar for Claude Code projects"
 requires-python = ">=3.10"
