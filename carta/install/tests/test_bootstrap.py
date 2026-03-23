@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 import yaml
 
 def test_bootstrap_creates_carta_dir(tmp_path):
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     with patch("install.bootstrap._check_qdrant", return_value=True), \
          patch("install.bootstrap._check_ollama", return_value=True), \
          patch("install.bootstrap._register_hooks"), \
@@ -14,7 +14,7 @@ def test_bootstrap_creates_carta_dir(tmp_path):
     assert (tmp_path / ".carta" / "config.yaml").exists()
 
 def test_bootstrap_config_has_all_fields(tmp_path):
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     with patch("install.bootstrap._check_qdrant", return_value=True), \
          patch("install.bootstrap._check_ollama", return_value=True), \
          patch("install.bootstrap._register_hooks"), \
@@ -31,7 +31,7 @@ def test_bootstrap_config_has_all_fields(tmp_path):
 
 def test_bootstrap_updates_gitignore(tmp_path):
     (tmp_path / ".gitignore").write_text("node_modules/\n")
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     with patch("install.bootstrap._check_qdrant", return_value=True), \
          patch("install.bootstrap._check_ollama", return_value=True), \
          patch("install.bootstrap._register_hooks"), \
@@ -42,7 +42,7 @@ def test_bootstrap_updates_gitignore(tmp_path):
 
 def test_bootstrap_appends_claude_md(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# My Project\n")
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     with patch("install.bootstrap._check_qdrant", return_value=True), \
          patch("install.bootstrap._check_ollama", return_value=True), \
          patch("install.bootstrap._register_hooks"), \
@@ -52,7 +52,7 @@ def test_bootstrap_appends_claude_md(tmp_path):
     assert "Carta is active" in content
 
 def test_bootstrap_creates_namespaced_collections(tmp_path):
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     mock_create = MagicMock()
     with patch("install.bootstrap._check_qdrant", return_value=True), \
          patch("install.bootstrap._check_ollama", return_value=True), \
@@ -63,7 +63,7 @@ def test_bootstrap_creates_namespaced_collections(tmp_path):
     assert isinstance(project_name, str) and len(project_name) > 0
 
 def test_create_qdrant_collections_uses_namespaced_names():
-    from install.bootstrap import _create_qdrant_collections
+    from carta.install.bootstrap import _create_qdrant_collections
     with patch("install.bootstrap.requests") as mock_req:
         mock_req.put.return_value.status_code = 200
         _create_qdrant_collections("my-project", "http://localhost:6333")
@@ -73,7 +73,7 @@ def test_create_qdrant_collections_uses_namespaced_names():
     assert any("my-project:quirk" in url for url in called_urls)
 
 def test_bootstrap_exits_if_qdrant_unavailable(tmp_path):
-    from install.bootstrap import run_bootstrap
+    from carta.install.bootstrap import run_bootstrap
     with patch("install.bootstrap._check_qdrant", return_value=False):
         with pytest.raises(SystemExit) as exc_info:
             run_bootstrap(tmp_path)
