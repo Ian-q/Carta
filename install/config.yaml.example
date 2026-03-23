@@ -1,0 +1,99 @@
+# Carta Configuration Template
+# Copy this to carta.yaml and fill in your project-specific values.
+# All fields are documented below; defaults are shown as YAML values.
+
+# REQUIRED: Unique project identifier used for Qdrant collection namespacing
+# Example: my_project, product_docs, engineering_kb
+project_name: my_project
+
+# REQUIRED: URL of the Qdrant vector store (e.g., http://localhost:6333 or cloud instance)
+# Make sure Qdrant is running and accessible at this URL before starting Carta
+qdrant_url: http://localhost:6333
+
+# Module toggles: enable/disable specific Carta features
+modules:
+  doc_audit: true          # Enable documentation consistency auditing
+  doc_embed: true          # Enable document embedding and vectorization
+  doc_search: true         # Enable semantic search over documents
+  session_memory: true     # Enable session-level memory persistence
+  proactive_recall: true   # Enable similarity-based doc suggestions during sessions
+
+# Root directory to scan for markdown documents (relative or absolute path)
+# Carta will recursively index all .md files under this directory
+docs_root: docs/
+
+# Glob patterns for directories/files to exclude from scanning
+# Useful for skipping build artifacts, vendor code, temporary files, etc.
+excluded_paths:
+  - node_modules/
+  - .venv/
+  - "*.tmp"
+
+# Days before a document is marked as stale (no recent modifications)
+# Used by doc_audit to flag outdated or untouched documentation
+stale_threshold_days: 30
+
+# Number of stale docs that triggers interactive human review
+# When audit finds this many stale docs, Carta prompts for input before continuing
+needs_input_at_audit_count: 3
+
+# Document consistency checks: types of contradictions to detect
+# Examples are shown below; customize to your domain (e.g., pricing, endpoints, versions)
+contradiction_types:
+  - version numbers          # Check for inconsistent software/API versions
+  - API endpoints            # Check for mismatched URLs or service endpoints
+  - configuration values     # Check for conflicting settings or parameters
+  - environment variable names  # Check for variable name inconsistencies
+
+# Root document for consistency baseline
+# All other docs are checked against this anchor for contradictions
+# Usually CLAUDE.md or a root README containing canonical values
+anchor_doc: CLAUDE.md
+
+# Search settings
+search:
+  top_n: 5  # Number of results returned by semantic search queries
+
+# Document embedding and vectorization settings
+embed:
+  # Path to reference documents used for embedding context
+  # Helps Carta understand domain-specific terminology and structure
+  reference_docs_path: docs/reference/
+
+  # Path to audio transcripts or multimedia docs (for future multimodal support)
+  audio_path: docs/audio/
+
+  # URL of Ollama instance for local LLM embedding and inference
+  # Required for doc_embed and proactive_recall features
+  ollama_url: http://localhost:11434
+
+  # Ollama model for embedding vectors (typically a small, fast model)
+  # Examples: nomic-embed-text:latest, mxbai-embed-large:latest
+  ollama_model: nomic-embed-text:latest
+
+  # Text chunking configuration for embedding long documents
+  chunking:
+    max_tokens: 800        # Maximum tokens per chunk before splitting
+    overlap_fraction: 0.15 # Fraction of overlap between consecutive chunks (0.0-1.0)
+
+# Proactive recall settings: suggest related docs during active sessions
+proactive_recall:
+  similarity_threshold: 0.78  # Minimum cosine similarity (0.0-1.0) for suggestions
+  max_results: 3              # Maximum number of related docs to suggest per query
+  ollama_judge: false         # Use LLM to re-rank results (requires Ollama; slower)
+  ollama_model: phi3.5-mini   # LLM model for ranking (if ollama_judge=true)
+
+# Cross-project recall: suggest docs from other projects (Plan 1 stub)
+cross_project_recall:
+  enabled: false  # Enable cross-project semantic search
+  scope:
+    - quirk       # Project types to include in cross-project search (see Carta docs)
+  require_ollama_judge: true  # Require LLM re-ranking for cross-project results
+  # Filter which projects to include in cross-project recall
+  project_filter:
+    mode: all                # Mode: "all" (include all), "whitelist" (projects list)
+    projects: []             # Project names to include (if mode=whitelist)
+
+# Deep scan settings: intensive multi-pass analysis (V3 feature — not implemented in Plan 1)
+deep_scan:
+  enabled: false  # Stub for future implementation

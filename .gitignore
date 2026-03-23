@@ -1,0 +1,41 @@
+# Git worktrees
+.worktrees/
+
+# OS and editor files
+.DS_Store
+**/.DS_Store
+._*
+Thumbs.db
+*.swp
+*.swo
+*~
+*.bak
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.cursor/debug.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Carta runtime state
+.carta/scan-results.json
+
+# Scratch / logs
+tmp/
+*.log
