@@ -15,6 +15,4 @@ if [ "$ENABLED" != "true" ]; then
 fi
 
 # Plan 2: session save logic goes here.
-# For now, print a reminder that /carta-save is available.
-echo "Session ended. Use /carta-save to save this session to Carta memory."
 exit 0

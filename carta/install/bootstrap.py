@@ -34,7 +34,7 @@ def run_bootstrap(project_root: Path) -> None:
     _write_config(carta_dir, project_name, qdrant_url, modules)
 
     _register_hooks(project_root)
-    _create_qdrant_collections(project_name, qdrant_url)
+    collections_ok = _create_qdrant_collections(project_name, qdrant_url)
     _update_gitignore(project_root)
 
     runtime_dest = carta_dir / "carta"
@@ -47,8 +47,14 @@ def run_bootstrap(project_root: Path) -> None:
 
     _append_claude_md(project_root, project_name)
 
-    print(f"\nCarta ready. Collections: {project_name}:doc, {project_name}:session, {project_name}:quirk")
-    print("Run /doc-embed to seed the knowledge store.")
+    colls = f"{project_name}_doc, {project_name}_session, {project_name}_quirk"
+    if collections_ok:
+        print(f"\nCarta ready. Collections: {colls}")
+        print("Run /doc-embed to seed the knowledge store.")
+    else:
+        print(f"\nCarta initialised but Qdrant collections could not be created.")
+        print(f"  Expected collections: {colls}")
+        print("  Fix the Qdrant errors above, then re-run: carta init")
 
 
 def _detect_project_name(root: Path) -> str:
@@ -129,9 +135,11 @@ def _register_hooks(project_root: Path) -> None:
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
-def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> None:
+def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> bool:
+    """Create Qdrant collections. Returns True if all succeeded."""
+    failures = 0
     for type_ in ["doc", "session", "quirk"]:
-        collection = f"{project_name}:{type_}"
+        collection = f"{project_name}_{type_}"
         try:
             r = requests.put(
                 f"{qdrant_url}/collections/{collection}",
@@ -139,9 +147,12 @@ def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: 
                 timeout=5,
             )
             if r.status_code not in (200, 409):
-                print(f"  Warning: Qdrant returned {r.status_code} for collection {collection}: {r.text}")
+                print(f"  Error: Qdrant returned {r.status_code} for collection {collection}: {r.text}")
+                failures += 1
         except Exception as e:
-            print(f"  Warning: could not create collection {collection}: {e}")
+            print(f"  Error: could not create collection {collection}: {e}")
+            failures += 1
+    return failures == 0
 
 
 def _update_gitignore(project_root: Path) -> None:
@@ -159,7 +170,7 @@ def _update_gitignore(project_root: Path) -> None:
 
 def _append_claude_md(project_root: Path, project_name: str) -> None:
     claude_md = project_root / "CLAUDE.md"
-    note = f"\n<!-- Carta is active. Collections: {project_name}:doc, {project_name}:session, {project_name}:quirk -->\n"
+    note = f"\n<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_quirk -->\n"
     if claude_md.exists():
         if "Carta is active" in claude_md.read_text():
             return

@@ -50,7 +50,7 @@ MINIMAL_CFG = {
 # ---------------------------------------------------------------------------
 
 def test_collection_name_uses_project_name():
-    assert collection_name(MINIMAL_CFG, "doc") == "test-proj:doc"
+    assert collection_name(MINIMAL_CFG, "doc") == "test-proj_doc"
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ def test_generate_sidecar_stub_fields(tmp_path):
     stub = generate_sidecar_stub(f, tmp_path, MINIMAL_CFG)
     assert stub["slug"] == "chip"
     assert stub["status"] == "pending"
-    assert stub["collection"] == "test-proj:doc"
+    assert stub["collection"] == "test-proj_doc"
     assert stub["indexed_at"] is None
     assert stub["chunk_count"] is None
     assert "spec_summary" in stub
@@ -191,7 +191,7 @@ def test_generate_sidecar_stub_collection_from_cfg(tmp_path):
     f = tmp_path / "file.pdf"
     f.touch()
     stub = generate_sidecar_stub(f, tmp_path, cfg2)
-    assert stub["collection"] == "my-project:doc"
+    assert stub["collection"] == "my-project_doc"
 
 
 # ---------------------------------------------------------------------------
@@ -247,15 +247,15 @@ def test_get_embedding_raises_on_non_200(mock_requests):
 def test_ensure_collection_creates_when_missing():
     client = MagicMock()
     client.collection_exists.return_value = False
-    ensure_collection(client, "proj:doc")
+    ensure_collection(client, "proj_doc")
     client.create_collection.assert_called_once()
-    assert client.create_collection.call_args.kwargs["collection_name"] == "proj:doc"
+    assert client.create_collection.call_args.kwargs["collection_name"] == "proj_doc"
 
 
 def test_ensure_collection_skips_when_exists():
     client = MagicMock()
     client.collection_exists.return_value = True
-    ensure_collection(client, "proj:doc")
+    ensure_collection(client, "proj_doc")
     client.create_collection.assert_not_called()
 
 
@@ -348,7 +348,7 @@ def test_upsert_chunks_calls_qdrant(mock_embed, mock_qdrant_cls):
     assert count == 3
     mock_client.upsert.assert_called_once()
     call_kwargs = mock_client.upsert.call_args
-    assert call_kwargs.kwargs["collection_name"] == "test-proj:doc"
+    assert call_kwargs.kwargs["collection_name"] == "test-proj_doc"
 
 
 @patch("carta.embed.embed.QdrantClient")
@@ -363,7 +363,7 @@ def test_upsert_chunks_uses_cfg_collection(mock_embed, mock_qdrant_cls):
     upsert_chunks(_make_chunks(1), cfg2)
 
     call_kwargs = mock_client.upsert.call_args
-    assert call_kwargs.kwargs["collection_name"] == "proj-b:doc"
+    assert call_kwargs.kwargs["collection_name"] == "proj-b_doc"
 
 
 @patch("carta.embed.embed.QdrantClient")
@@ -528,7 +528,7 @@ def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed):
     run_search("query", cfg2)
 
     call_kwargs = mock_client.search.call_args.kwargs
-    assert call_kwargs["collection_name"] == "proj-x:doc"
+    assert call_kwargs["collection_name"] == "proj-x_doc"
 
 
 @patch("carta.embed.pipeline.get_embedding")

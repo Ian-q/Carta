@@ -32,7 +32,7 @@ For each file flagged `embed_induction_needed`:
      status: pending
      indexed_at: null
      chunk_count: null
-     collection: "<project_name>:doc"
+     collection: "<project_name>_doc"
      spec_summary: null
      notes: ""
      ```

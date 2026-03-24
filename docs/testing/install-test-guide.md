@@ -45,11 +45,22 @@ ollama pull nomic-embed-text
 
 ---
 
-## Step 1: Install carta-cc 0.1.2
+## Step 1: Install carta-cc
 
 ```bash
-python3 -m pip install carta-cc==0.1.2
+# Recommended on macOS (avoids PEP 668 "externally managed environment" errors)
+pipx install carta-cc
+
+# Or with uv
+uv tool install carta-cc
+
+# Or with pip (may need --user or a venv on Homebrew Python / PEP 668 systems)
+python3 -m pip install carta-cc
 ```
+
+> **macOS note:** Homebrew Python 3.12+ enforces PEP 668, which blocks
+> `pip install` into the system environment. Use `pipx`, `uv tool`, or
+> create a venv first. If you see `externally-managed-environment`, that's why.
 
 Verify the right version installed and the entry point works:
 
@@ -59,7 +70,7 @@ carta --help
 ```
 
 Expected:
-- `carta 0.1.2` (or similar)
+- Version number (e.g. `carta 0.1.3`)
 - Help text listing `init`, `scan`, `embed`, `search` subcommands
 
 **Note any errors.**
@@ -78,7 +89,7 @@ Expected output (roughly):
 Initialising Carta for project: projb
   Qdrant ready.
   Ollama ready.   (or: Warning: Ollama not reachable...)
-Carta ready. Collections: projb:doc, projb:session, projb:quirk
+Carta ready. Collections: projb_doc, projb_session, projb_quirk
 Run /doc-embed to seed the knowledge store.
 ```
 
@@ -245,7 +256,7 @@ for c in data['result']['collections']:
 "
 ```
 
-Expected: `projb:doc` (and `projb:session`, `projb:quirk` from init).
+Expected: `projb_doc` (and `projb_session`, `projb_quirk` from init).
 
 **Note: did embedding complete without errors? How long did it take per document?**
 

@@ -71,7 +71,7 @@ def load_config(path: Path) -> dict:
 
 
 def collection_name(cfg: dict, type_: str) -> str:
-    return f"{cfg['project_name']}:{type_}"
+    return f"{cfg['project_name']}_{type_}"
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
