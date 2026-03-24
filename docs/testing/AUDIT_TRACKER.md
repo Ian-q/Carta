@@ -427,7 +427,7 @@ Comprehensive issue tracker from the March 2026 preemptive audit. Supersedes the
 - **Component**: tests
 - **Symptom**: Several functions are always mocked and never directly tested: `extract_pdf_text`, `get_embedding` error path, `ensure_collection` create branch, sidecar CRUD functions, `check_prototype_doc`.
 - **Proposed fix**: Add unit tests that exercise these functions directly.
-- **Status**: open
+- **Status**: **fixed** (11 new tests: sidecar CRUD round-trip, get_embedding error path, ensure_collection create/skip, check_prototype_doc, extract_pdf_text with real pymupdf-generated PDFs)
 
 ---
 

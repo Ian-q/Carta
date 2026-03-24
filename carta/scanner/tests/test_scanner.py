@@ -164,8 +164,29 @@ def test_nested_docs_folder_detected(tmp_path):
 from carta.scanner.scanner import (
     check_broken_related,
     check_missing_frontmatter,
+    check_prototype_doc,
     check_stale_last_reviewed,
 )
+
+
+def test_check_prototype_doc_returns_issue(tmp_path):
+    doc = tmp_path / "docs" / "design.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Design\n")
+    fm = {"status": "prototype", "related": []}
+    issue = check_prototype_doc(doc, fm, tmp_path)
+    assert issue is not None
+    assert issue["type"] == "prototype_doc"
+    assert issue["severity"] == "info"
+    assert "design.md" in issue["doc"]
+
+
+def test_check_prototype_doc_returns_none_for_non_prototype(tmp_path):
+    doc = tmp_path / "docs" / "design.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("# Design\n")
+    assert check_prototype_doc(doc, {"status": "active"}, tmp_path) is None
+    assert check_prototype_doc(doc, {"related": []}, tmp_path) is None
 
 
 def test_broken_related_detected(tmp_path):
