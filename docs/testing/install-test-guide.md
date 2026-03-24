@@ -116,6 +116,7 @@ grep "carta" .gitignore
 - [ ] `.carta/config.yaml` exists with `project_name: petsense`
 - [ ] `.carta/carta/` contains Python runtime files (`cli.py`, `config.py`, etc.)
 - [ ] `.carta/hooks/` contains `carta-prompt-hook.sh` and `carta-stop-hook.sh`, both executable (`-rwxr-xr-x`)
+- [ ] `.claude/skills/` contains `carta-init`, `doc-audit`, `doc-embed`, and `doc-search` with `SKILL.md` files
 - [ ] `.claude/settings.json` `hooks` entries contain `git rev-parse --show-toplevel` (portable, not hardcoded path)
 - [ ] `.gitignore` includes `.carta/scan-results.json`, `.carta/carta/`, `.carta/hooks/`
 
@@ -201,7 +202,7 @@ Expected:
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
 
-If the skill isn't found, check that Carta's skills are registered. The skills live in `.carta/carta/` but need to be surfaced — check whether a plugin or CLAUDE.md reference is needed for your Claude Code setup.
+If a skill isn't found, verify the files exist under `.claude/skills/<skill-name>/SKILL.md` and restart the Claude Code session in that repo.
 
 ---
 

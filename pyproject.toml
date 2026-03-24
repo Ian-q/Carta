@@ -25,7 +25,7 @@ where = ["."]
 include = ["carta*"]
 
 [tool.setuptools.package-data]
-"carta" = ["hooks/*.sh"]
+"carta" = ["hooks/*.sh", "skills/*/SKILL.md"]
 
 [tool.setuptools.dynamic]
 version = {attr = "carta.__version__"}

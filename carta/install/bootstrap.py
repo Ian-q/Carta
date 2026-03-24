@@ -34,6 +34,7 @@ def run_bootstrap(project_root: Path) -> None:
     _write_config(carta_dir, project_name, qdrant_url, modules)
 
     _register_hooks(project_root)
+    _install_skills(project_root)
     collections_ok = _create_qdrant_collections(project_name, qdrant_url)
     _update_gitignore(project_root)
 
@@ -133,6 +134,25 @@ def _register_hooks(project_root: Path) -> None:
             f"""bash -c '"$(git rev-parse --show-toplevel)/.carta/hooks/{script_name}"'"""
         )
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def _install_skills(project_root: Path) -> None:
+    """Install Carta skills into project-local Claude skills directory."""
+    skills_src = Path(__file__).parent.parent / "skills"
+    if not skills_src.exists():
+        print("  Warning: packaged Carta skills not found; skipping skill install.")
+        return
+
+    skills_dest = project_root / ".claude" / "skills"
+    installed = 0
+    for skill_file in skills_src.glob("*/SKILL.md"):
+        dest_dir = skills_dest / skill_file.parent.name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(skill_file, dest_dir / "SKILL.md")
+        installed += 1
+
+    if installed > 0:
+        print(f"  Installed {installed} Carta skill(s) into .claude/skills/")
 
 
 def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> bool:

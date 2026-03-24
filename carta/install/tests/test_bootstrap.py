@@ -168,3 +168,16 @@ def test_register_hooks_sets_executable_and_settings_paths(tmp_path):
     assert "carta-stop-hook.sh" in stop_cmd
     assert str(tmp_path) not in prompt_cmd, "hook path must not contain absolute project path"
     assert str(tmp_path) not in stop_cmd, "hook path must not contain absolute project path"
+
+
+def test_install_skills_copies_skill_markdown(tmp_path):
+    from carta.install.bootstrap import _install_skills
+
+    _install_skills(tmp_path)
+
+    skills_dir = tmp_path / ".claude" / "skills"
+    expected = ["carta-init", "doc-audit", "doc-embed", "doc-search"]
+    for skill_name in expected:
+        skill_file = skills_dir / skill_name / "SKILL.md"
+        assert skill_file.exists()
+        assert skill_file.read_text().startswith("# /")
