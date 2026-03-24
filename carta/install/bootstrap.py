@@ -150,8 +150,17 @@ def _install_skills() -> None:
         print("  Warning: packaged Carta skills not found; skipping skill install.")
         return
 
+    # Remove stale version directories so only the current version is present.
+    # This prevents Claude Code's skill resolver from loading skills from an older
+    # cached version when multiple version dirs coexist.
+    version_parent = Path.home() / ".claude/plugins/cache/carta-cc/carta-cc"
+    if version_parent.exists():
+        for entry in version_parent.iterdir():
+            if entry.is_dir() and entry.name != version:
+                shutil.rmtree(entry)
+
     # Copy skills into the global plugin cache for this version
-    cache_dest = Path.home() / f".claude/plugins/cache/carta-cc/carta-cc/{version}/skills"
+    cache_dest = version_parent / version / "skills"
     installed = 0
     for skill_file in skills_src.glob("*/SKILL.md"):
         dest_dir = cache_dest / skill_file.parent.name
