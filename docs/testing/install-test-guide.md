@@ -3,7 +3,7 @@
 **Purpose:** Validate the end-to-end Carta install flow in a real repository using the PyPI package. Note anything that breaks, feels confusing, or requires steps not covered here. Report findings back to the `carta-cc` session when done.
 
 **Target repo:** `/Users/ian/School/Elementrailer/petsense/`
-**Package:** `carta-cc 0.1.4` on PyPI
+**Package:** `carta-cc 0.1.5` on PyPI
 **Expected time:** ~10 minutes
 
 ---
@@ -47,6 +47,8 @@ ollama pull nomic-embed-text
 
 ## Step 1: Install carta-cc
 
+> **PlatformIO conflict warning:** PlatformIO ships its own `carta` binary at `~/.platformio/penv/bin/carta`. If this is on your PATH before carta-cc, it will shadow the real `carta` command. Check with `which carta` — it should point to a pipx/uv/venv path, not `.platformio`.
+
 ```bash
 # Recommended on macOS (avoids PEP 668 "externally managed environment" errors)
 pipx install carta-cc
@@ -54,8 +56,12 @@ pipx install carta-cc
 # Or with uv
 uv tool install carta-cc
 
-# Or with pip (may need --user or a venv on Homebrew Python / PEP 668 systems)
-python3 -m pip install carta-cc
+# Or with pip in a venv (works everywhere)
+python3 -m venv ~/.carta-venv
+~/.carta-venv/bin/pip install carta-cc
+# Add to PATH so `carta` resolves correctly:
+export PATH="$HOME/.carta-venv/bin:$PATH"
+# Add that export to your ~/.zshrc or ~/.bashrc to persist it
 ```
 
 > **macOS note:** Homebrew Python 3.12+ enforces PEP 668, which blocks
@@ -70,7 +76,7 @@ carta --help
 ```
 
 Expected:
-- Version number (e.g. `carta 0.1.4`)
+- Version number (e.g. `carta 0.1.5`)
 - Help text listing `init`, `scan`, `embed`, `search` subcommands
 
 **Note any errors.**
@@ -89,7 +95,7 @@ Expected output (roughly):
 Initialising Carta for project: petsense
   Qdrant ready.
   Ollama ready.   (or: Warning: Ollama not reachable...)
-  Registered 4 Carta skill(s) in global plugin cache (v0.1.4)
+  Registered 4 Carta skill(s) in global plugin cache (v0.1.5)
 Carta ready. Collections: petsense_doc, petsense_session, petsense_quirk
 Run /doc-embed to seed the knowledge store.
 ```
@@ -120,9 +126,9 @@ grep "carta" .gitignore
 - [ ] Skills registered in global plugin cache — verify:
   ```bash
   python3 -c "import json; d=json.load(open('/Users/ian/.claude/plugins/installed_plugins.json')); print(json.dumps(d['plugins'].get('carta-cc@carta-cc'), indent=2))"
-  ls ~/.claude/plugins/cache/carta-cc/carta-cc/0.1.4/skills/
+  ls ~/.claude/plugins/cache/carta-cc/carta-cc/0.1.5/skills/
   ```
-  Expected: entry pointing to `0.1.4`, and `carta-init doc-audit doc-embed doc-search` in skills dir.
+  Expected: entry pointing to `0.1.5`, and `carta-init doc-audit doc-embed doc-search` in skills dir.
 - [ ] `.claude/settings.json` `hooks` entries use array schema with `git rev-parse --show-toplevel`
 - [ ] `.gitignore` includes `.carta/scan-results.json`, `.carta/carta/`, `.carta/hooks/`
 
@@ -210,7 +216,7 @@ Expected:
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
 
-If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `0.1.4`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/0.1.4/skills/` contains the skill directories. Then restart the Claude Code session.
+If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `0.1.5`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/0.1.4/skills/` contains the skill directories. Then restart the Claude Code session.
 
 ---
 

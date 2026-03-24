@@ -164,9 +164,9 @@ def run_search(query: str, cfg: dict) -> list[dict]:
     coll_name = collection_name(cfg, "doc")
 
     try:
-        results = client.search(
+        response = client.query_points(
             collection_name=coll_name,
-            query_vector=query_vec,
+            query=query_vec,
             limit=top_n,
             with_payload=True,
         )
@@ -175,7 +175,7 @@ def run_search(query: str, cfg: dict) -> list[dict]:
         return []
 
     hits = []
-    for r in results:
+    for r in response.points:
         payload = r.payload or {}
         hits.append({
             "score": r.score,
