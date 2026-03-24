@@ -34,7 +34,7 @@ def run_bootstrap(project_root: Path) -> None:
     _write_config(carta_dir, project_name, qdrant_url, modules)
 
     _register_hooks(project_root)
-    _install_skills(project_root)
+    _install_skills()
     collections_ok = _create_qdrant_collections(project_name, qdrant_url)
     _update_gitignore(project_root)
 
@@ -93,12 +93,14 @@ def _check_ollama(url: str) -> bool:
 
 def _write_config(carta_dir: Path, project_name: str, qdrant_url: str, modules: dict) -> None:
     from carta.config import DEFAULTS, _deep_merge
-    config = _deep_merge(DEFAULTS, {
+    base = _deep_merge(DEFAULTS, {"modules": modules})
+    # Hoist identity fields to the top for readability
+    ordered = {
         "project_name": project_name,
         "qdrant_url": qdrant_url,
-        "modules": modules,
-    })
-    (carta_dir / "config.yaml").write_text(yaml.dump(config, default_flow_style=False, sort_keys=False))
+        **{k: v for k, v in base.items() if k not in ("project_name", "qdrant_url")},
+    }
+    (carta_dir / "config.yaml").write_text(yaml.dump(ordered, default_flow_style=False, sort_keys=False))
 
 
 def _register_hooks(project_root: Path) -> None:
@@ -130,29 +132,48 @@ def _register_hooks(project_root: Path) -> None:
         existing = hooks.get(hook_name)
         if existing and "carta" not in str(existing).lower():
             print(f"  Warning: overwriting existing {hook_name} hook: {existing}")
-        hooks[hook_name] = (
-            f"""bash -c '"$(git rev-parse --show-toplevel)/.carta/hooks/{script_name}"'"""
-        )
+        cmd = f"""bash -c '"$(git rev-parse --show-toplevel)/.carta/hooks/{script_name}"'"""
+        hooks[hook_name] = [{"matcher": "", "hooks": [{"type": "command", "command": cmd}]}]
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
-def _install_skills(project_root: Path) -> None:
-    """Install Carta skills into project-local Claude skills directory."""
+def _install_skills() -> None:
+    """Install Carta skills into the global plugin cache so Claude Code can resolve them."""
+    import json, datetime
+    from carta import __version__ as version
+
     skills_src = Path(__file__).parent.parent / "skills"
     if not skills_src.exists():
         print("  Warning: packaged Carta skills not found; skipping skill install.")
         return
 
-    skills_dest = project_root / ".claude" / "skills"
+    # Copy skills into the global plugin cache for this version
+    cache_dest = Path.home() / f".claude/plugins/cache/carta-cc/carta-cc/{version}/skills"
     installed = 0
     for skill_file in skills_src.glob("*/SKILL.md"):
-        dest_dir = skills_dest / skill_file.parent.name
+        dest_dir = cache_dest / skill_file.parent.name
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(skill_file, dest_dir / "SKILL.md")
         installed += 1
 
+    # Point installed_plugins.json at this version
+    install_path = str(Path.home() / f".claude/plugins/cache/carta-cc/carta-cc/{version}")
+    plugins_json = Path.home() / ".claude/plugins/installed_plugins.json"
+    plugins_json.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+    data = json.loads(plugins_json.read_text()) if plugins_json.exists() else {"version": 2, "plugins": {}}
+    existing = data.get("plugins", {}).get("carta-cc@carta-cc", [{}])[0]
+    data.setdefault("plugins", {})["carta-cc@carta-cc"] = [{
+        "scope": "user",
+        "installPath": install_path,
+        "version": version,
+        "installedAt": existing.get("installedAt", now),
+        "lastUpdated": now,
+    }]
+    plugins_json.write_text(json.dumps(data, indent=2) + "\n")
+
     if installed > 0:
-        print(f"  Installed {installed} Carta skill(s) into .claude/skills/")
+        print(f"  Registered {installed} Carta skill(s) in global plugin cache (v{version})")
 
 
 def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> bool:

@@ -160,8 +160,12 @@ def test_register_hooks_sets_executable_and_settings_paths(tmp_path):
 
     settings_path = tmp_path / ".claude" / "settings.json"
     settings = json.loads(settings_path.read_text())
-    prompt_cmd = settings["hooks"]["UserPromptSubmit"]
-    stop_cmd = settings["hooks"]["Stop"]
+    # Hooks are now array-of-objects per the Claude Code schema
+    prompt_hook = settings["hooks"]["UserPromptSubmit"]
+    stop_hook = settings["hooks"]["Stop"]
+    assert isinstance(prompt_hook, list), "hook must be an array"
+    prompt_cmd = prompt_hook[0]["hooks"][0]["command"]
+    stop_cmd = stop_hook[0]["hooks"][0]["command"]
     assert "git rev-parse --show-toplevel" in prompt_cmd
     assert "carta-prompt-hook.sh" in prompt_cmd
     assert "git rev-parse --show-toplevel" in stop_cmd
@@ -172,10 +176,13 @@ def test_register_hooks_sets_executable_and_settings_paths(tmp_path):
 
 def test_install_skills_copies_skill_markdown(tmp_path):
     from carta.install.bootstrap import _install_skills
+    from carta import __version__ as version
+    from unittest.mock import patch
 
-    _install_skills(tmp_path)
+    with patch("carta.install.bootstrap.Path.home", return_value=tmp_path):
+        _install_skills()
 
-    skills_dir = tmp_path / ".claude" / "skills"
+    skills_dir = tmp_path / f".claude/plugins/cache/carta-cc/carta-cc/{version}/skills"
     expected = ["carta-init", "doc-audit", "doc-embed", "doc-search"]
     for skill_name in expected:
         skill_file = skills_dir / skill_name / "SKILL.md"
