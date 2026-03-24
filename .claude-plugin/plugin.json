@@ -1,7 +1,7 @@
 {
   "name": "carta-cc",
   "description": "Maps, connects, and remembers your documentation. Audit, embed, and semantically search project docs from Claude Code.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "author": {
     "name": "Ian",
     "url": "https://github.com/carta-cc/carta-cc"

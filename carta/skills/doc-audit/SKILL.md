@@ -1,3 +1,8 @@
+---
+name: doc-audit
+description: Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update AUDIT_REPORT.md and TRIAGE.md.
+---
+
 # /doc-audit Skill
 
 Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update `AUDIT_REPORT.md` and `docs/BACKLOG/TRIAGE.md`.

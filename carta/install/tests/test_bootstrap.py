@@ -187,4 +187,5 @@ def test_install_skills_copies_skill_markdown(tmp_path):
     for skill_name in expected:
         skill_file = skills_dir / skill_name / "SKILL.md"
         assert skill_file.exists()
-        assert skill_file.read_text().startswith("# /")
+        content = skill_file.read_text()
+        assert "name:" in content and "description:" in content, "SKILL.md missing frontmatter"

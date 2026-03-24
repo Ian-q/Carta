@@ -156,6 +156,10 @@ def _install_skills() -> None:
         shutil.copy2(skill_file, dest_dir / "SKILL.md")
         installed += 1
 
+    # Write package.json — Claude Code requires this to recognise the plugin
+    package_json = cache_dest.parent / "package.json"
+    package_json.write_text(json.dumps({"name": "carta-cc", "version": version, "type": "module"}) + "\n")
+
     # Point installed_plugins.json at this version
     install_path = str(Path.home() / f".claude/plugins/cache/carta-cc/carta-cc/{version}")
     plugins_json = Path.home() / ".claude/plugins/installed_plugins.json"

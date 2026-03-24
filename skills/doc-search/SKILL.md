@@ -1,3 +1,8 @@
+---
+name: doc-search
+description: Search the Carta knowledge graph with a natural language query and present results with source citations.
+---
+
 # /doc-search Skill
 
 Search the Carta knowledge graph with a natural language query and present results with source citations.
