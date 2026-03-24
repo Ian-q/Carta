@@ -3,7 +3,7 @@
 **Purpose:** Validate the end-to-end Carta install flow in a real repository using the PyPI package. Note anything that breaks, feels confusing, or requires steps not covered here. Report findings back to the `carta-cc` session when done.
 
 **Target repo:** `/Users/ian/School/Elementrailer/petsense/`
-**Package:** `carta-cc 0.1.5` on PyPI
+**Package:** `carta-cc` (latest) on PyPI
 **Expected time:** ~10 minutes
 
 ---
@@ -48,6 +48,12 @@ ollama pull nomic-embed-text
 ## Step 1: Install carta-cc
 
 > **PlatformIO conflict warning:** PlatformIO ships its own `carta` binary at `~/.platformio/penv/bin/carta`. If this is on your PATH before carta-cc, it will shadow the real `carta` command. Check with `which carta` — it should point to a pipx/uv/venv path, not `.platformio`.
+>
+> `carta init` will detect and print this conflict automatically, along with the fix. If you see the warning, run:
+> ```bash
+> export PATH="$HOME/.local/bin:$PATH"
+> ```
+> Add that line to your `~/.zshrc` or `~/.bashrc` and restart your terminal, then re-run `carta init`.
 
 ```bash
 # Recommended on macOS (avoids PEP 668 "externally managed environment" errors)
@@ -68,6 +74,22 @@ export PATH="$HOME/.carta-venv/bin:$PATH"
 > `pip install` into the system environment. Use `pipx`, `uv tool`, or
 > create a venv first. If you see `externally-managed-environment`, that's why.
 
+**After `pipx install`, ensure pipx's bin directory is on your PATH:**
+
+```bash
+pipx ensurepath
+```
+
+If it reports adding a path, **restart your terminal** (or run `source ~/.zshrc`) before continuing. This is the most common cause of "carta not found" after a successful pipx install.
+
+**Verify the correct `carta` is on PATH before proceeding:**
+
+```bash
+which carta
+```
+
+Expected: a path containing `pipx`, `.local/bin`, or your venv — e.g. `/Users/you/.local/bin/carta`. If it shows `.platformio` or is missing, fix PATH first. `carta init` will also print a warning if it detects the wrong binary.
+
 Verify the right version installed and the entry point works:
 
 ```bash
@@ -76,7 +98,7 @@ carta --help
 ```
 
 Expected:
-- Version number (e.g. `carta 0.1.5`)
+- Version number (e.g. `carta <version>`)
 - Help text listing `init`, `scan`, `embed`, `search` subcommands
 
 **Note any errors.**
@@ -95,7 +117,7 @@ Expected output (roughly):
 Initialising Carta for project: petsense
   Qdrant ready.
   Ollama ready.   (or: Warning: Ollama not reachable...)
-  Registered 4 Carta skill(s) in global plugin cache (v0.1.5)
+  Registered 4 Carta skill(s) in global plugin cache (v<version>)
 Carta ready. Collections: petsense_doc, petsense_session, petsense_quirk
 Run /doc-embed to seed the knowledge store.
 ```
@@ -126,9 +148,9 @@ grep "carta" .gitignore
 - [ ] Skills registered in global plugin cache — verify:
   ```bash
   python3 -c "import json; d=json.load(open('/Users/ian/.claude/plugins/installed_plugins.json')); print(json.dumps(d['plugins'].get('carta-cc@carta-cc'), indent=2))"
-  ls ~/.claude/plugins/cache/carta-cc/carta-cc/0.1.5/skills/
+  ls ~/.claude/plugins/cache/carta-cc/carta-cc/<version>/skills/
   ```
-  Expected: entry pointing to `0.1.5`, and `carta-init doc-audit doc-embed doc-search` in skills dir.
+  Expected: entry pointing to `<version>`, and `carta-init doc-audit doc-embed doc-search` in skills dir.
 - [ ] `.claude/settings.json` `hooks` entries use array schema with `git rev-parse --show-toplevel`
 - [ ] `.gitignore` includes `.carta/scan-results.json`, `.carta/carta/`, `.carta/hooks/`
 
@@ -216,7 +238,7 @@ Expected:
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
 
-If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `0.1.5`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/0.1.4/skills/` contains the skill directories. Then restart the Claude Code session.
+If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `<version>`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/<version>/skills/` contains the skill directories. Then restart the Claude Code session.
 
 ---
 
@@ -228,7 +250,7 @@ The hooks fire inside Claude Code sessions (not as git hooks). To verify they're
 2. Submit any prompt — `UserPromptSubmit` hook should fire
 3. End the session — `Stop` hook should fire
 
-Both hooks in `0.1.2` are stubs (they check config and exit — no side effects yet), so no visible output is expected. The test is just that they don't *error*.
+Both hooks are stubs (they check config and exit — no side effects yet), so no visible output is expected. The test is just that they don't *error*.
 
 Check that the hook commands in `.claude/settings.json` use the correct format:
 ```bash

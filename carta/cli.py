@@ -1,4 +1,5 @@
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -73,7 +74,32 @@ def cmd_search(args):
     for r in results:
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
 
+def _check_path_conflict() -> None:
+    """Warn when a different 'carta' binary is earlier on PATH than the one we're running."""
+    carta_on_path = shutil.which("carta")
+    if carta_on_path is None:
+        return
+    # Resolve symlinks so we compare real paths
+    running = Path(sys.executable).resolve()
+    on_path = Path(carta_on_path).resolve()
+    # If the carta binary on PATH lives inside the same prefix as our Python interpreter,
+    # there is no conflict.
+    try:
+        on_path.relative_to(running.parent.parent)
+        return  # same prefix — no conflict
+    except ValueError:
+        pass
+    # A different binary is shadowing ours.
+    print(f"Warning: 'carta' found on PATH at {carta_on_path} does not match the running interpreter.")
+    if ".platformio" in carta_on_path:
+        print("  This appears to be PlatformIO's carta binary, which shadows carta-cc.")
+    print("  To fix: add the following line to your ~/.zshrc or ~/.bashrc, then restart your terminal:")
+    print('    export PATH="$HOME/.local/bin:$PATH"')
+    print("  Then verify with: which carta")
+
+
 def cmd_init(args):
+    _check_path_conflict()
     from carta.install.bootstrap import run_bootstrap
     run_bootstrap(Path.cwd())
 
