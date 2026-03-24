@@ -1,5 +1,5 @@
 # Carta Configuration Template
-# Copy this to carta.yaml and fill in your project-specific values.
+# This template is used by `carta init` to generate .carta/config.yaml.
 # All fields are documented below; defaults are shown as YAML values.
 
 # REQUIRED: Unique project identifier used for Qdrant collection namespacing

@@ -24,14 +24,17 @@ Identify any files flagged `embed_induction_needed` in the scan results — thes
 For each file flagged `embed_induction_needed`:
 
 1. Check if a `.embed-meta.yaml` sidecar already exists alongside the file.
-   - If yes: read it and confirm it has at minimum `title`, `doc_type`, and `status` fields.
+   - If yes: read it and confirm it has at minimum `slug`, `doc_type`, and `status` fields.
    - If no: create a minimal sidecar with:
      ```yaml
-     title: "<filename without extension>"
-     doc_type: "<inferred from extension or path>"
+     slug: "<kebab-case-filename>"
+     doc_type: "<inferred from parent directory>"
      status: pending
-     spec_summary: {}
-     used_in: []
+     indexed_at: null
+     chunk_count: null
+     collection: "<project_name>:doc"
+     spec_summary: null
+     notes: ""
      ```
 2. Report how many files were inducted and how many already had sidecars.
 

@@ -8,11 +8,7 @@ if [ ! -f "$CONFIG" ]; then
   exit 0
 fi
 
-ENABLED=$(python3 -c "
-import yaml, sys
-cfg = yaml.safe_load(open('$CONFIG'))
-print('true' if cfg.get('modules', {}).get('session_memory', False) else 'false')
-" 2>/dev/null || echo "false")
+ENABLED=$(grep -A1 'session_memory' "$CONFIG" 2>/dev/null | grep -q 'true' && echo "true" || echo "false")
 
 if [ "$ENABLED" != "true" ]; then
   exit 0
