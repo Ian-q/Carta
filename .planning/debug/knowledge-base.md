@@ -12,6 +12,14 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Files changed:** carta/hooks/carta-prompt-hook.sh, carta/hooks/carta-stop-hook.sh
 ---
 
+## docs-pip-args-syntax-and-version-refs — install-test-guide hard-codes version strings that go stale each release
+- **Date:** 2026-03-24
+- **Error patterns:** pip-args, version, 0.1.5, 0.1.4, 0.1.2, install-test-guide, hard-coded, stale, placeholder
+- **Root cause:** install-test-guide.md hard-coded version strings (0.1.5, 0.1.4, 0.1.2) in expected output blocks and cache paths. These go stale with every release. The --pip-args syntax issue was confirmed in latest-log.txt but was not present in current committed docs.
+- **Fix:** Replace all hard-coded version strings in install-test-guide.md with `<version>` placeholders.
+- **Files changed:** docs/testing/install-test-guide.md
+---
+
 ## pipx-path-conflict-actionable-warning — pipx PATH conflict gives no actionable fix; users hit ModuleNotFoundError
 - **Date:** 2026-03-24
 - **Error patterns:** ModuleNotFoundError, PATH conflict, pipx, carta, PlatformIO, .platformio, export PATH, shutil.which, sys.prefix
