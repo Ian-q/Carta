@@ -8,7 +8,8 @@ if [ ! -f "$CONFIG" ]; then
   exit 0  # Carta not initialised — exit silently
 fi
 
-ENABLED=$(grep -A1 'proactive_recall' "$CONFIG" 2>/dev/null | grep -q 'true' && echo "true" || echo "false")
+ENABLED=$(python3 -c "import yaml, sys; cfg=yaml.safe_load(open('$CONFIG')); print(cfg.get('modules', {}).get('proactive_recall', False))" 2>/dev/null || echo "False")
+ENABLED=$([ "$ENABLED" = "True" ] && echo "true" || echo "false")
 
 if [ "$ENABLED" != "true" ]; then
   exit 0
