@@ -8,7 +8,10 @@ DEFAULTS = {
     "stale_threshold_days": 30,
     "needs_input_at_audit_count": 3,
     "anchor_doc": "CLAUDE.md",
-    "excluded_paths": ["node_modules/", ".venv/", "*.tmp"],
+    "excluded_paths": [
+        "node_modules/", ".venv/", "*.tmp",
+        ".planning/", ".worktrees/", ".carta/", ".pio/",
+    ],
     "contradiction_types": [
         "version numbers",
         "API endpoints",

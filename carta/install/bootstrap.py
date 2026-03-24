@@ -20,6 +20,7 @@ def run_bootstrap(project_root: Path) -> None:
         print(f"  Qdrant not reachable at {qdrant_url}.")
         print("  Start it with: docker run -p 6333:6333 qdrant/qdrant")
         sys.exit(1)
+    print(f"  Qdrant ready at {qdrant_url}")
 
     modules = {
         "doc_audit": True, "doc_embed": True, "doc_search": True,
@@ -27,7 +28,9 @@ def run_bootstrap(project_root: Path) -> None:
     }
 
     ollama_url = os.environ.get("CARTA_OLLAMA_URL", "http://localhost:11434")
-    _check_ollama(ollama_url)
+    if _check_ollama(ollama_url):
+        print(f"  Ollama ready at {ollama_url}")
+    # _check_ollama already prints a warning on failure — no else needed
 
     carta_dir = project_root / ".carta"
     carta_dir.mkdir(exist_ok=True)
