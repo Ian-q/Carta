@@ -507,7 +507,9 @@ def test_run_search_returns_hits(mock_qdrant_cls, mock_embed):
     hit = MagicMock()
     hit.score = 0.92
     hit.payload = {"file_path": "docs/spec.pdf", "text": "relevant excerpt"}
-    mock_client.search.return_value = [hit]
+    mock_response = MagicMock()
+    mock_response.points = [hit]
+    mock_client.query_points.return_value = mock_response
 
     results = run_search("what is the voltage rating", MINIMAL_CFG)
     assert len(results) == 1
@@ -522,12 +524,14 @@ def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed):
     mock_embed.return_value = [0.0] * 768
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
-    mock_client.search.return_value = []
+    mock_response = MagicMock()
+    mock_response.points = []
+    mock_client.query_points.return_value = mock_response
 
     cfg2 = {**MINIMAL_CFG, "project_name": "proj-x"}
     run_search("query", cfg2)
 
-    call_kwargs = mock_client.search.call_args.kwargs
+    call_kwargs = mock_client.query_points.call_args.kwargs
     assert call_kwargs["collection_name"] == "proj-x_doc"
 
 
@@ -537,7 +541,7 @@ def test_run_search_empty_collection(mock_qdrant_cls, mock_embed):
     mock_embed.return_value = [0.0] * 768
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
-    mock_client.search.side_effect = Exception("collection not found")
+    mock_client.query_points.side_effect = Exception("collection not found")
 
     results = run_search("query", MINIMAL_CFG)
     assert results == []
