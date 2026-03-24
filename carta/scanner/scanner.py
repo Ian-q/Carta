@@ -73,11 +73,20 @@ def _iter_md_files(repo_root: Path):
 # ---------------------------------------------------------------------------
 
 def check_homeless_docs(repo_root: Path, cfg: dict) -> list:
-    """Flag .md files outside docs/ that aren't README.md or excluded."""
+    """Flag .md files outside docs/ that aren't README.md, anchor_doc, or excluded."""
     issues = []
     docs_root = repo_root / cfg.get("docs_root", "docs/").rstrip("/")
+    # Build set of anchor doc basenames that are exempt from homeless_doc
+    anchor_names: set[str] = set()
+    anchor_doc = cfg.get("anchor_doc")
+    if anchor_doc:
+        anchor_names.add(anchor_doc)
+    for name in cfg.get("anchor_docs", []):
+        anchor_names.add(name)
     for p in _iter_md_files(repo_root):
         if p.name == "README.md":
+            continue
+        if p.name in anchor_names:
             continue
         if is_excluded(p, cfg, repo_root):
             continue

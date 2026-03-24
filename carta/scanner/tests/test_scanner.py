@@ -146,6 +146,24 @@ def test_homeless_doc_detected(tmp_path):
     assert "tools/scripts/README.md" not in doc_paths
 
 
+def test_anchor_doc_exempt_from_homeless(tmp_path):
+    """anchor_doc and anchor_docs entries must not be flagged as homeless_doc."""
+    _make_tree(tmp_path, [
+        "docs/api/ENDPOINTS.md",
+        "CLAUDE.md",       # anchor_doc — should NOT be flagged
+        "AGENTS.md",       # anchor_docs entry — should NOT be flagged
+        "stray-notes.md",  # genuinely homeless — should be flagged
+    ])
+    cfg = _minimal_cfg(tmp_path)
+    cfg["anchor_doc"] = "CLAUDE.md"
+    cfg["anchor_docs"] = ["AGENTS.md"]
+    issues = check_homeless_docs(tmp_path, cfg)
+    doc_paths = [i["doc"] for i in issues]
+    assert "CLAUDE.md" not in doc_paths
+    assert "AGENTS.md" not in doc_paths
+    assert "stray-notes.md" in doc_paths
+
+
 def test_nested_docs_folder_detected(tmp_path):
     _make_tree(tmp_path, [
         "docs/ARCHITECTURE.md",
