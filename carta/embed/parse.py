@@ -47,8 +47,11 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~1.3 tokens per word for English text."""
-    return max(1, int(len(text.split()) * 1.3))
+    """Rough token estimate. Uses max of word-count and char-count heuristics
+    to avoid underestimating punctuation-heavy content (e.g. TOC dot leaders)."""
+    word_estimate = len(text.split()) * 1.3
+    char_estimate = len(text) / 4
+    return max(1, int(max(word_estimate, char_estimate)))
 
 
 def chunk_text(

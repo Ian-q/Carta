@@ -74,14 +74,18 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
 
     points = []
     for chunk in chunks:
-        vec = get_embedding(chunk["text"], ollama_url=ollama_url, model=model)
-        payload = {k: v for k, v in chunk.items() if k != "text"}
-        payload["text"] = chunk["text"]
-        points.append(PointStruct(
-            id=_point_id(chunk["slug"], chunk["chunk_index"]),
-            vector=vec,
-            payload=payload,
-        ))
+        try:
+            vec = get_embedding(chunk["text"], ollama_url=ollama_url, model=model)
+            payload = {k: v for k, v in chunk.items() if k != "text"}
+            payload["text"] = chunk["text"]
+            points.append(PointStruct(
+                id=_point_id(chunk["slug"], chunk["chunk_index"]),
+                vector=vec,
+                payload=payload,
+            ))
+        except Exception as e:
+            chunk_id = f"{chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}]"
+            print(f"Warning: skipping chunk {chunk_id} — {e}")
 
     if points:
         client.upsert(collection_name=coll_name, points=points)
