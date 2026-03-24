@@ -68,7 +68,7 @@ If you have [Superpowers](https://github.com/obra/superpowers) installed:
 /carta-init
 ```
 
-That's it. Carta copies the runtime into `.carta/` in your project, registers Claude Code hooks in `.claude/settings.json` (`UserPromptSubmit` and `Stop`), and generates a config from the template.
+That's it. Carta copies the runtime into `.carta/` in your project, registers Claude Code hooks in `.claude/settings.json` (`UserPromptSubmit` and `Stop`), installs Carta skills into `.claude/skills/`, and generates a config from the template.
 
 ### Option 2: pip / uvx
 

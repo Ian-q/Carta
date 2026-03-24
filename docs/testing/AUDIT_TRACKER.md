@@ -485,8 +485,8 @@ Issues discovered during end-to-end install test on a real project.
 - **Component**: packaging / skills
 - **Symptom**: `/doc-audit`, `/doc-embed`, `/doc-search` skills are not included in the pip package or copied during `carta init`. The runtime code exists but there's no way to invoke the skills from Claude Code.
 - **Evidence**: `find .carta -name "*.md"` returns nothing; `Skill(doc-audit)` → "Unknown skill"
-- **Proposed fix**: Ensure `carta init` copies skill `.md` files into `.carta/skills/` and registers them so Claude Code discovers them (via CLAUDE.md reference or plugin manifest).
-- **Status**: open (requires design decision — deferred to separate session)
+- **Proposed fix**: Ensure skill files are bundled in the package and `carta init` installs them into `.claude/skills/` so Claude Code discovers `/doc-audit`, `/doc-embed`, and `/doc-search`.
+- **Status**: **fixed** (skills are now packaged under `carta/skills/*/SKILL.md` and installed to `.claude/skills/` during `carta init`)
 
 ---
 
