@@ -488,6 +488,17 @@ def get_changed_since_hash(repo_root: Path, previous_hash: str, cfg: dict) -> li
     return changed
 
 
+def get_initial_commit_hash(repo_root: Path) -> Optional[str]:
+    """Return the hash of the very first commit in the repo, or None."""
+    result = subprocess.run(
+        ["git", "rev-list", "--max-parents=0", "HEAD"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout.strip().splitlines()[0].strip()
+
+
 def _load_previous_scan(scan_output_path: Path) -> Optional[dict]:
     if scan_output_path.exists():
         try:
@@ -552,7 +563,22 @@ def run_scan(
     if previous_hash:
         changed = get_changed_since_hash(repo_root, previous_hash, cfg)
     else:
-        changed = [str(p.relative_to(repo_root)) for p in tracked_docs]
+        # First run: list all .md / .embed-meta.yaml files tracked by git so that
+        # changed_since_last_audit covers the entire repo (not just docs_root).
+        result = subprocess.run(
+            ["git", "ls-files"],
+            cwd=repo_root, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            all_tracked = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+            changed = [
+                f for f in all_tracked
+                if (f.endswith(".md") or f.endswith(".embed-meta.yaml"))
+                and not is_excluded(repo_root / f, cfg, repo_root)
+            ]
+        else:
+            # Not a git repo — fall back to tracked_docs inside docs_root
+            changed = [str(p.relative_to(repo_root)) for p in tracked_docs]
 
     # Run all checks
     issues: list[dict] = []

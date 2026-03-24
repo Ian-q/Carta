@@ -67,6 +67,9 @@ def cmd_search(args):
     from carta.embed.pipeline import run_search
     query = " ".join(args.query)
     results = run_search(query, cfg)
+    if not results:
+        print("No results found.")
+        return
     for r in results:
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
 
