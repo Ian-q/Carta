@@ -1,3 +1,8 @@
+---
+name: carta-init
+description: Bootstrap a Carta knowledge-graph environment in the current repository.
+---
+
 # /carta-init Skill
 
 Bootstrap a Carta knowledge-graph environment in the current repository.

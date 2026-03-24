@@ -1,3 +1,8 @@
+---
+name: doc-embed
+description: Embed documents into the Carta knowledge graph and enrich newly embedded files with spec summaries.
+---
+
 # /doc-embed Skill
 
 Embed documents into the Carta knowledge graph, enrich newly embedded files with spec summaries, and update sidecar `.embed-meta.yaml` files.
