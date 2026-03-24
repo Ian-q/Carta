@@ -28,7 +28,7 @@ If `nomic-embed-text` isn't pulled:
 ollama pull nomic-embed-text
 ```
 
-If you want to skip embedding entirely (audit-only), that's fine — note it and continue. Set `embed.enabled: false` in the config after init.
+If you want to skip embedding entirely (audit-only), that's fine — note it and continue. Set `modules.doc_embed: false` (and optionally `modules.doc_search: false`) in the config after init.
 
 ---
 
@@ -61,14 +61,16 @@ Expected outcome:
 - `.carta/` directory created
 - `.carta/config.yaml` generated from template
 - `.carta/carta/` contains the Python runtime (scanner + embed modules)
-- Pre-commit hook installed at `.git/hooks/pre-commit`
+- Claude Code hooks registered in `.claude/settings.json` (`UserPromptSubmit` and `Stop`)
+- Hook scripts copied to `.carta/hooks/` with executable permissions
 - `.gitignore` updated to exclude `.carta/scan-results.json`
 
 Check each:
 ```bash
 ls .carta/
 cat .carta/config.yaml
-ls .git/hooks/pre-commit
+cat .claude/settings.json | python3 -m json.tool | grep -A2 hooks
+ls -l .carta/hooks/
 grep "scan-results" .gitignore
 ```
 
@@ -178,19 +180,18 @@ In Claude Code:
 
 ---
 
-## Step 8: Test the pre-commit hook
+## Step 8: Test the Claude Code hooks
 
-Make a small change to any markdown file in `docs/` and commit:
+The hooks are registered in `.claude/settings.json` for `UserPromptSubmit` and `Stop` events (not as git pre-commit hooks). To verify they work, open a Claude Code session in the test repo and submit a prompt or end a session — the hook scripts in `.carta/hooks/` should execute.
 
+Check the hooks are executable:
 ```bash
-echo "" >> docs/README.md
-git add docs/README.md
-git commit -m "test: trigger pre-commit hook"
+ls -l .carta/hooks/
 ```
 
-Expected: hook runs the scanner silently, commit proceeds normally (hook is non-blocking).
+Expected: `carta-prompt-hook.sh` and `carta-stop-hook.sh` listed with execute permissions (`-rwxr-xr-x`).
 
-**Note: did the hook run? Did it block the commit or warn appropriately?**
+**Note: did the hooks execute during your Claude Code session? Any errors in Claude Code output?**
 
 ---
 

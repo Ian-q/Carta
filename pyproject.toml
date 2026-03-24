@@ -1,18 +1,21 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "carta-cc"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Semantic memory sidecar for Claude Code projects"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",
     "qdrant-client>=1.7",
     "requests>=2.31",
-    "pypdf>=4.0",
+    "pymupdf>=1.23",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
 
 [project.scripts]
 carta = "carta.cli:main"
@@ -20,3 +23,9 @@ carta = "carta.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["carta*"]
+
+[tool.setuptools.package-data]
+"carta" = ["hooks/*.sh"]
+
+[tool.setuptools.dynamic]
+version = {attr = "carta.__version__"}

@@ -18,13 +18,13 @@ Check whether `.carta/config.yaml` already exists.
 Run the initialisation command:
 
 ```bash
-python .carta/carta/cli.py init
+carta init
 ```
 
-If the `carta` command is globally installed you may also run:
+If the `carta` command is not on your PATH, run from the repository root:
 
 ```bash
-carta init
+python -m carta.cli init
 ```
 
 Wait for the command to complete. Capture stdout and stderr.
@@ -37,7 +37,7 @@ After the command finishes, verify:
 
 1. `.carta/config.yaml` now exists.
 2. The Qdrant collections listed in the config were created (the CLI reports this in stdout).
-3. Git hooks were registered (look for "hooks registered" or similar in stdout).
+3. Claude Code hooks were registered in `.claude/settings.json` (`UserPromptSubmit` and `Stop`), and hook scripts were copied to `.carta/hooks/` with executable permissions.
 4. `CLAUDE.md` was updated with carta context (check that the file contains a `carta` section).
 
 Report each check as passed or failed. If any check failed, surface the error and stop.

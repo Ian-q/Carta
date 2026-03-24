@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://github.com/Ian-q/Carta"
-DEST="$HOME/.carta-install"
-
 echo "Installing Carta..."
-if command -v pip &>/dev/null; then
-  python3 -m pip install carta-cc
-  carta init
+if python3 -m pip --version &>/dev/null; then
+  python3 -m pip install carta-cc && carta init
 elif command -v uvx &>/dev/null; then
-  uvx carta-cc init
+  uvx --from carta-cc carta init
 else
-  echo "Error: pip or uvx required. Install Python first." >&2
+  echo "Error: pip or uvx required. Install Python 3 first." >&2
   exit 1
 fi

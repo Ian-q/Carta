@@ -52,7 +52,7 @@ class ConfigError(Exception):
 def load_config(path: Path) -> dict:
     if not path.exists():
         raise ConfigError(f"Config not found: {path}")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         try:
             raw = yaml.safe_load(f) or {}
         except yaml.YAMLError as e:
@@ -60,6 +60,12 @@ def load_config(path: Path) -> dict:
     for field in REQUIRED_FIELDS:
         if field not in raw:
             raise ConfigError(f"Missing required field: {field}")
+    for field in REQUIRED_FIELDS:
+        if not isinstance(raw[field], str) or not raw[field].strip():
+            raise ConfigError(f"Field '{field}' must be a non-empty string")
+    for key in ("embed", "modules", "search"):
+        if key in raw and not isinstance(raw[key], dict):
+            raise ConfigError(f"Field '{key}' must be a mapping, got {type(raw[key]).__name__}")
     merged = _deep_merge(DEFAULTS, raw)
     return merged
 
@@ -69,7 +75,9 @@ def collection_name(cfg: dict, type_: str) -> str:
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    result = dict(base)
+    import copy
+
+    result = copy.deepcopy(base)
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
             result[k] = _deep_merge(result[k], v)
