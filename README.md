@@ -76,7 +76,11 @@ That's it. Carta copies the runtime into `.carta/` in your project, registers Cl
 # One-shot (no install required)
 uvx --from carta-cc carta init
 
-# Or install globally (use python3 -m pip to avoid version mismatch)
+# Or install as a CLI tool (recommended on macOS)
+pipx install carta-cc
+carta init
+
+# Or install directly (may require --user or a venv on macOS/PEP 668 systems)
 python3 -m pip install carta-cc
 carta init
 ```

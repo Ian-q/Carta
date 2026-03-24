@@ -461,3 +461,51 @@ Comprehensive issue tracker from the March 2026 preemptive audit. Supersedes the
 - **Evidence**: `skills/doc-embed/SKILL.md:29-35` vs `carta/embed/induct.py`
 - **Proposed fix**: Update skill to reflect actual sidecar schema.
 - **Status**: **fixed** (addressed in M-15 fix)
+
+---
+
+## Field Test — v0.1.2 install on `petsense` repo (2026-03-24)
+
+Issues discovered during end-to-end install test on a real project.
+
+### FT-1: Qdrant rejects `:` in collection names
+
+- **Severity**: Critical (all collections fail to create)
+- **Component**: config / bootstrap
+- **Symptom**: Qdrant returns HTTP 422: `collection name cannot contain ":" char`. All three collections (`petsense:doc`, `petsense:session`, `petsense:quirk`) fail. `carta init` still prints "Carta ready" despite the failures.
+- **Evidence**: Field test log — `Qdrant returned 422 for collection petsense:doc`
+- **Proposed fix**: Change `collection_name()` separator from `:` to `_`. Also make `_create_qdrant_collections` fail loudly (or at least not print "Carta ready") when all collections fail.
+- **Status**: **fixed** (separator changed to `_`; `_create_qdrant_collections` returns bool; `run_bootstrap` prints failure message when collections fail)
+
+---
+
+### FT-2: Skills not bundled in package
+
+- **Severity**: High (core workflows broken)
+- **Component**: packaging / skills
+- **Symptom**: `/doc-audit`, `/doc-embed`, `/doc-search` skills are not included in the pip package or copied during `carta init`. The runtime code exists but there's no way to invoke the skills from Claude Code.
+- **Evidence**: `find .carta -name "*.md"` returns nothing; `Skill(doc-audit)` → "Unknown skill"
+- **Proposed fix**: Ensure `carta init` copies skill `.md` files into `.carta/skills/` and registers them so Claude Code discovers them (via CLAUDE.md reference or plugin manifest).
+- **Status**: open (requires design decision — deferred to separate session)
+
+---
+
+### FT-3: `pip install` fails on macOS with PEP 668
+
+- **Severity**: Medium (install friction on default macOS Python)
+- **Component**: docs
+- **Symptom**: `python3 -m pip install carta-cc` fails on Homebrew Python 3.14 with `externally-managed-environment` error. This is now the default macOS experience.
+- **Evidence**: Field test log — PEP 668 error from Homebrew Python
+- **Proposed fix**: Update README and install guide to recommend `pipx install carta-cc` as the primary macOS install path. Add `uv tool install` as alternative.
+- **Status**: **fixed** (README and install guide updated with pipx/uv recommendations and PEP 668 note)
+
+---
+
+### FT-4: Stop hook references nonexistent `/carta-save` skill
+
+- **Severity**: Low (confusing output)
+- **Component**: hooks
+- **Symptom**: Stop hook prints "Use /carta-save to save this session to Carta memory." but `/carta-save` does not exist as a skill.
+- **Evidence**: Field test log — hook output references unimplemented feature
+- **Proposed fix**: Remove the message until the skill is implemented, or replace with a generic reminder.
+- **Status**: **fixed** (removed premature `/carta-save` reference from stop hook)

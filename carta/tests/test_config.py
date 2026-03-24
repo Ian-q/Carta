@@ -52,6 +52,6 @@ def test_collection_name_helper(tmp_path):
     cfg_path.write_text(yaml.dump(MINIMAL_CONFIG))
     cfg = load_config(cfg_path)
     from carta.config import collection_name
-    assert collection_name(cfg, "doc") == "test-project:doc"
-    assert collection_name(cfg, "session") == "test-project:session"
-    assert collection_name(cfg, "quirk") == "test-project:quirk"
+    assert collection_name(cfg, "doc") == "test-project_doc"
+    assert collection_name(cfg, "session") == "test-project_session"
+    assert collection_name(cfg, "quirk") == "test-project_quirk"

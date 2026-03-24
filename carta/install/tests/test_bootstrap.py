@@ -71,9 +71,9 @@ def test_create_qdrant_collections_uses_namespaced_names():
         mock_req.put.return_value.status_code = 200
         _create_qdrant_collections("my-project", "http://localhost:6333")
     called_urls = [call.args[0] for call in mock_req.put.call_args_list]
-    assert any("my-project:doc" in url for url in called_urls)
-    assert any("my-project:session" in url for url in called_urls)
-    assert any("my-project:quirk" in url for url in called_urls)
+    assert any("my-project_doc" in url for url in called_urls)
+    assert any("my-project_session" in url for url in called_urls)
+    assert any("my-project_quirk" in url for url in called_urls)
 
 def test_bootstrap_exits_if_qdrant_unavailable(tmp_path):
     from carta.install.bootstrap import run_bootstrap
