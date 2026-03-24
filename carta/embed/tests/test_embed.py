@@ -14,9 +14,12 @@ from carta.embed.parse import (
 from carta.embed.induct import (
     generate_sidecar_stub,
     infer_doc_type,
+    read_sidecar,
     slug_from_filename,
+    write_sidecar,
 )
-from carta.embed.embed import _point_id, upsert_chunks
+from carta.embed.embed import _point_id, ensure_collection, get_embedding, upsert_chunks
+from carta.embed.parse import extract_pdf_text
 from carta.embed.pipeline import (
     discover_pending_files,
     is_lfs_pointer,
@@ -189,6 +192,113 @@ def test_generate_sidecar_stub_collection_from_cfg(tmp_path):
     f.touch()
     stub = generate_sidecar_stub(f, tmp_path, cfg2)
     assert stub["collection"] == "my-project:doc"
+
+
+# ---------------------------------------------------------------------------
+# induct.py — write_sidecar / read_sidecar round-trip
+# ---------------------------------------------------------------------------
+
+def test_write_sidecar_creates_yaml(tmp_path):
+    f = tmp_path / "chip.pdf"
+    f.touch()
+    stub = {"slug": "chip", "status": "pending", "doc_type": "datasheet"}
+    path = write_sidecar(f, stub)
+    assert path.exists()
+    assert path.name == "chip.embed-meta.yaml"
+
+
+def test_sidecar_round_trip(tmp_path):
+    f = tmp_path / "chip.pdf"
+    f.touch()
+    stub = {"slug": "chip", "status": "pending", "doc_type": "datasheet", "notes": ""}
+    sidecar_path = write_sidecar(f, stub)
+    loaded = read_sidecar(sidecar_path)
+    assert loaded == stub
+
+
+def test_read_sidecar_returns_none_on_missing_file(tmp_path):
+    assert read_sidecar(tmp_path / "nonexistent.embed-meta.yaml") is None
+
+
+def test_read_sidecar_returns_none_on_invalid_yaml(tmp_path):
+    bad = tmp_path / "bad.embed-meta.yaml"
+    bad.write_text(": : : not valid yaml [[[")
+    assert read_sidecar(bad) is None
+
+
+# ---------------------------------------------------------------------------
+# embed.py — get_embedding error path
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.embed.requests")
+def test_get_embedding_raises_on_non_200(mock_requests):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.text = "Internal Server Error"
+    mock_requests.post.return_value = mock_resp
+    with pytest.raises(RuntimeError, match=r"Ollama embedding failed \(500\)"):
+        get_embedding("test text")
+
+
+# ---------------------------------------------------------------------------
+# embed.py — ensure_collection create vs skip
+# ---------------------------------------------------------------------------
+
+def test_ensure_collection_creates_when_missing():
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    ensure_collection(client, "proj:doc")
+    client.create_collection.assert_called_once()
+    assert client.create_collection.call_args.kwargs["collection_name"] == "proj:doc"
+
+
+def test_ensure_collection_skips_when_exists():
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    ensure_collection(client, "proj:doc")
+    client.create_collection.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# parse.py — extract_pdf_text (real PDF via pymupdf)
+# ---------------------------------------------------------------------------
+
+def test_extract_pdf_text_basic(tmp_path):
+    import fitz
+
+    pdf_path = tmp_path / "test.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Normal body text here.", fontsize=12)
+    page.insert_text((72, 120), "Section Heading", fontsize=16)
+    doc.save(str(pdf_path))
+    doc.close()
+
+    pages = extract_pdf_text(pdf_path)
+    assert len(pages) == 1
+    assert pages[0]["page"] == 1
+    assert "Normal body text" in pages[0]["text"]
+    assert "Section Heading" in pages[0]["text"]
+    assert "Section Heading" in pages[0]["headings"]
+    assert "Normal body text here." not in pages[0]["headings"]
+
+
+def test_extract_pdf_text_multi_page(tmp_path):
+    import fitz
+
+    pdf_path = tmp_path / "multi.pdf"
+    doc = fitz.open()
+    for i in range(3):
+        page = doc.new_page(width=612, height=792)
+        page.insert_text((72, 72), f"Page {i + 1} content", fontsize=12)
+    doc.save(str(pdf_path))
+    doc.close()
+
+    pages = extract_pdf_text(pdf_path)
+    assert len(pages) == 3
+    for i, p in enumerate(pages):
+        assert p["page"] == i + 1
+        assert f"Page {i + 1} content" in p["text"]
 
 
 # ---------------------------------------------------------------------------
