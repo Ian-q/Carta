@@ -20,6 +20,14 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Files changed:** docs/testing/install-test-guide.md
 ---
 
+## pipx-silent-incomplete-venv — pipx exits 0 but carta entrypoint missing; guide lacks ensurepath step
+- **Date:** 2026-03-24
+- **Error patterns:** pipx, ensurepath, carta, entrypoint, missing, which carta, PlatformIO, PATH, venv, reinstall, exit code 0
+- **Root cause:** pipx exits 0 even with partial/dirty venv state, and the install guide did not include a `pipx ensurepath` step or `which carta` verification check. carta init had no pre-check to warn when `which carta` resolved to a non-pipx path (e.g., PlatformIO binary).
+- **Fix:** Added `pipx ensurepath` + `which carta` verification block to install-test-guide.md Step 1 with explicit instruction to restart shell and verify path is not .platformio. Added PATH conflict warning in carta/cli.py cmd_init via shutil.which check.
+- **Files changed:** docs/testing/install-test-guide.md, carta/cli.py
+---
+
 ## pipx-path-conflict-actionable-warning — pipx PATH conflict gives no actionable fix; users hit ModuleNotFoundError
 - **Date:** 2026-03-24
 - **Error patterns:** ModuleNotFoundError, PATH conflict, pipx, carta, PlatformIO, .platformio, export PATH, shutil.which, sys.prefix
