@@ -3,7 +3,7 @@
 **Purpose:** Validate the end-to-end Carta install flow in a real repository using the PyPI package. Note anything that breaks, feels confusing, or requires steps not covered here. Report findings back to the `carta-cc` session when done.
 
 **Target repo:** `/Users/ian/School/Elementrailer/petsense/`
-**Package:** `carta-cc 0.1.2` on PyPI
+**Package:** `carta-cc 0.1.4` on PyPI
 **Expected time:** ~10 minutes
 
 ---
@@ -70,7 +70,7 @@ carta --help
 ```
 
 Expected:
-- Version number (e.g. `carta 0.1.3`)
+- Version number (e.g. `carta 0.1.4`)
 - Help text listing `init`, `scan`, `embed`, `search` subcommands
 
 **Note any errors.**
@@ -89,6 +89,7 @@ Expected output (roughly):
 Initialising Carta for project: petsense
   Qdrant ready.
   Ollama ready.   (or: Warning: Ollama not reachable...)
+  Registered 4 Carta skill(s) in global plugin cache (v0.1.4)
 Carta ready. Collections: petsense_doc, petsense_session, petsense_quirk
 Run /doc-embed to seed the knowledge store.
 ```
@@ -113,12 +114,19 @@ grep "carta" .gitignore
 ```
 
 **Checklist:**
-- [ ] `.carta/config.yaml` exists with `project_name: petsense`
+- [ ] `.carta/config.yaml` exists with `project_name: petsense` at the top
 - [ ] `.carta/carta/` contains Python runtime files (`cli.py`, `config.py`, etc.)
 - [ ] `.carta/hooks/` contains `carta-prompt-hook.sh` and `carta-stop-hook.sh`, both executable (`-rwxr-xr-x`)
-- [ ] `.claude/skills/` contains `carta-init`, `doc-audit`, `doc-embed`, and `doc-search` with `SKILL.md` files
-- [ ] `.claude/settings.json` `hooks` entries contain `git rev-parse --show-toplevel` (portable, not hardcoded path)
+- [ ] Skills registered in global plugin cache — verify:
+  ```bash
+  python3 -c "import json; d=json.load(open('/Users/ian/.claude/plugins/installed_plugins.json')); print(json.dumps(d['plugins'].get('carta-cc@carta-cc'), indent=2))"
+  ls ~/.claude/plugins/cache/carta-cc/carta-cc/0.1.4/skills/
+  ```
+  Expected: entry pointing to `0.1.4`, and `carta-init doc-audit doc-embed doc-search` in skills dir.
+- [ ] `.claude/settings.json` `hooks` entries use array schema with `git rev-parse --show-toplevel`
 - [ ] `.gitignore` includes `.carta/scan-results.json`, `.carta/carta/`, `.carta/hooks/`
+
+> **Restart Claude Code** after `carta init` for skills to load into the session.
 
 **Note anything missing or incorrect.**
 
@@ -202,7 +210,7 @@ Expected:
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
 
-If a skill isn't found, verify the files exist under `.claude/skills/<skill-name>/SKILL.md` and restart the Claude Code session in that repo.
+If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `0.1.4`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/0.1.4/skills/` contains the skill directories. Then restart the Claude Code session.
 
 ---
 
@@ -216,18 +224,19 @@ The hooks fire inside Claude Code sessions (not as git hooks). To verify they're
 
 Both hooks in `0.1.2` are stubs (they check config and exit — no side effects yet), so no visible output is expected. The test is just that they don't *error*.
 
-Check that the hook commands in `.claude/settings.json` use the portable format:
+Check that the hook commands in `.claude/settings.json` use the correct format:
 ```bash
 python3 -c "
 import json
 s = json.load(open('.claude/settings.json'))
 hooks = s.get('hooks', {})
-for name, cmd in hooks.items():
+for name, entries in hooks.items():
+    cmd = entries[0]['hooks'][0]['command']
     print(f'{name}: {cmd}')
 "
 ```
 
-Expected: each value contains `git rev-parse --show-toplevel` — **not** a hardcoded `/Users/ian/...` path.
+Expected: each hook is an array of objects, and the command contains `git rev-parse --show-toplevel` — **not** a hardcoded `/Users/ian/...` path.
 
 **Note: any hook errors in Claude Code output?**
 
