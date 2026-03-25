@@ -58,7 +58,9 @@ def test_collection_name_uses_project_name():
 # ---------------------------------------------------------------------------
 
 def test_estimate_tokens_short():
-    assert _estimate_tokens("hello world") == 2  # int(2 * 1.3) = 2
+    # 2 words → word_estimate = int(2 * 1.3) = 2; 11 chars → char_estimate = int(11/3) = 3
+    # char estimate wins (more conservative for technical content)
+    assert _estimate_tokens("hello world") == 3
 
 
 def test_estimate_tokens_empty():
@@ -346,7 +348,7 @@ def test_upsert_chunks_calls_qdrant(mock_embed, mock_qdrant_cls):
     count = upsert_chunks(chunks, MINIMAL_CFG)
 
     assert count == 3
-    mock_client.upsert.assert_called_once()
+    assert mock_client.upsert.call_count == 3
     call_kwargs = mock_client.upsert.call_args
     assert call_kwargs.kwargs["collection_name"] == "test-proj_doc"
 
@@ -364,6 +366,31 @@ def test_upsert_chunks_uses_cfg_collection(mock_embed, mock_qdrant_cls):
 
     call_kwargs = mock_client.upsert.call_args
     assert call_kwargs.kwargs["collection_name"] == "proj-b_doc"
+
+
+@patch("carta.embed.embed.QdrantClient")
+@patch("carta.embed.embed.get_embedding")
+def test_upsert_chunks_bad_chunk_does_not_kill_good_chunks(mock_embed, mock_qdrant_cls):
+    """A chunk that fails embedding should not prevent other chunks from being upserted."""
+    call_count = 0
+
+    def embed_side_effect(text, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("context length exceeded")
+        return [0.1] * 768
+
+    mock_embed.side_effect = embed_side_effect
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    chunks = _make_chunks(3)
+    count = upsert_chunks(chunks, MINIMAL_CFG)
+
+    assert count == 2  # chunk 2 failed, chunks 1 and 3 succeeded
+    assert mock_client.upsert.call_count == 2
 
 
 @patch("carta.embed.embed.QdrantClient")

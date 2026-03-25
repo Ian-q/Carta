@@ -1,5 +1,6 @@
 ---
 created: 2026-03-24T22:30:00.000Z
+resolved: 2026-03-24T00:00:00.000Z
 title: Add per-chunk error handling in upsert_chunks
 area: general
 priority: high

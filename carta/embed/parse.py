@@ -48,9 +48,14 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate. Uses max of word-count and char-count heuristics
-    to avoid underestimating punctuation-heavy content (e.g. TOC dot leaders)."""
+    to avoid underestimating punctuation-heavy content (e.g. TOC dot leaders).
+
+    Uses len/3 (not /4) for the char estimate — technical content (hex tables,
+    register maps, dot leaders) tokenises at ~3 chars/token, not ~4.  This keeps
+    chunks safely under nomic-embed-text's 2048-token context limit.
+    """
     word_estimate = len(text.split()) * 1.3
-    char_estimate = len(text) / 4
+    char_estimate = len(text) / 3
     return max(1, int(max(word_estimate, char_estimate)))
 
 
