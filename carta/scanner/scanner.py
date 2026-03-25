@@ -547,6 +547,7 @@ def run_scan(
     cfg: dict,
     output_path: Optional[Path] = None,
     reference_date: Optional[date] = None,
+    verbose: bool = False,
 ) -> dict:
     """Run all structural checks and return the results dict.
 
