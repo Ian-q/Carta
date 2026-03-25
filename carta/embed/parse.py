@@ -127,7 +127,7 @@ def chunk_text(
                     safety_iters = 0
                     while para_words:
                         safety_iters += 1
-                        if safety_iters > max(10_000, original_words_len * 50):
+                        if safety_iters > max(10, original_words_len * 2):
                             raise RuntimeError(
                                 "chunk_text stalled while splitting an oversized paragraph "
                                 f"(page={page_num}, max_tokens={max_tokens}, overlap_words={overlap_words})."
@@ -146,7 +146,8 @@ def chunk_text(
                         chunk_index += 1
                         if para_words:
                             if overlap_words > 0 and len(take) > 1:
-                                overlap_len = min(overlap_words, len(take) - 1)
+                                overlap_cap = max(0, len(take) // 4)
+                                overlap_len = min(overlap_words, overlap_cap)
                                 overlap = take[-overlap_len:] if overlap_len > 0 else []
                             else:
                                 overlap = []

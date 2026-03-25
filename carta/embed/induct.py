@@ -57,6 +57,7 @@ def generate_sidecar_stub(
     stub = {
         "slug": slug,
         "doc_type": doc_type,
+        "current_path": str(rel_path),
         "status": "pending",
         "indexed_at": None,
         "chunk_count": None,

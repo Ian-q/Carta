@@ -96,7 +96,7 @@ def cmd_scan(args):
         print("doc_audit module is disabled in config.", file=sys.stderr)
         sys.exit(1)
     output_path = cfg_path.parent / "scan-results.json"
-    results = run_scan(cfg_path.parent.parent, cfg, output_path=output_path)
+    results = run_scan(cfg_path.parent.parent, cfg, output_path=output_path, verbose=True)
     issue_count = len(results["issues"])
     print(f"Scan complete: {issue_count} issue(s). Results at {output_path}")
 
@@ -129,7 +129,7 @@ def cmd_embed(args):
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, _signal_handler)
 
-    summary = run_embed(Path.cwd(), cfg)
+    summary = run_embed(Path.cwd(), cfg, verbose=True)
     print(f"Embedded: {summary['embedded']}, Skipped: {summary['skipped']}")
     if summary["errors"]:
         sys.exit(1)
@@ -143,7 +143,7 @@ def cmd_search(args):
     from carta.embed.pipeline import run_search
     query = " ".join(args.query)
     try:
-        results = run_search(query, cfg)
+        results = run_search(query, cfg, verbose=True)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
