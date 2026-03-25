@@ -1,6 +1,7 @@
 """Top-level pipeline orchestration for carta embed."""
 
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -35,7 +36,7 @@ def _update_sidecar(sidecar_path: Path, updates: dict) -> None:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
-def discover_pending_files(repo_root: Path, cfg: dict) -> list[dict]:
+def discover_pending_files(repo_root: Path) -> list[dict]:
     """Find all .embed-meta.yaml sidecars with status: pending under repo_root.
 
     Returns list of dicts: sidecar data + 'sidecar_path' + 'file_path'.
@@ -79,12 +80,19 @@ def run_embed(repo_root: Path, cfg: dict) -> dict:
     """
     summary: dict = {"embedded": 0, "skipped": 0, "errors": []}
 
-    # Check Qdrant reachability
+    # Pre-flight: check Qdrant reachability with a short timeout
+    print("carta embed: checking Qdrant connectivity...", flush=True)
     try:
         client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
         client.get_collections()
     except Exception as e:
-        summary["errors"].append(f"[Qdrant: skipped — unreachable] {e}")
+        err = (
+            f"carta embed: ERROR — Qdrant is not reachable at {cfg['qdrant_url']}.\n"
+            f"  Is Docker running? Start it and try again.\n"
+            f"  Detail: {e}"
+        )
+        print(err, file=sys.stderr, flush=True)
+        summary["errors"].append(err)
         return summary
 
     coll_name = collection_name(cfg, "doc")
@@ -93,19 +101,23 @@ def run_embed(repo_root: Path, cfg: dict) -> dict:
     chunking = cfg.get("embed", {}).get("chunking", {})
     max_tokens = chunking.get("max_tokens", 800)
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
-    ollama_url = cfg["embed"]["ollama_url"]
-    model = cfg["embed"]["ollama_model"]
 
-    pending = discover_pending_files(repo_root, cfg)
+    pending = discover_pending_files(repo_root)
+    total = len(pending)
+    print(f"carta embed: {total} file(s) pending.", flush=True)
 
-    for file_info in pending:
+    for idx, file_info in enumerate(pending, start=1):
         file_path: Path = file_info["file_path"]
         sidecar_path: Path = file_info["sidecar_path"]
 
         # LFS guard
         if is_lfs_pointer(file_path):
+            print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
             summary["skipped"] += 1
             continue
+
+        print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
+        t0 = time.monotonic()
 
         try:
             pages = extract_pdf_text(file_path)
@@ -131,9 +143,13 @@ def run_embed(repo_root: Path, cfg: dict) -> dict:
                 "indexed_at": datetime.now(timezone.utc).isoformat(),
                 "chunk_count": count,
             })
+            elapsed = time.monotonic() - t0
+            print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
             summary["embedded"] += 1
 
         except Exception as e:
+            elapsed = time.monotonic() - t0
+            print(f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}", file=sys.stderr, flush=True)
             summary["errors"].append(f"Error processing {file_path.name}: {e}")
 
     return summary
@@ -171,8 +187,7 @@ def run_search(query: str, cfg: dict) -> list[dict]:
             with_payload=True,
         )
     except Exception as e:
-        print(f"Warning: search failed: {e}", file=sys.stderr)
-        return []
+        raise RuntimeError(f"Qdrant search failed: {e}") from e
 
     hits = []
     for r in response.points:

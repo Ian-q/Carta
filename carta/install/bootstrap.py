@@ -155,6 +155,16 @@ def _install_skills() -> None:
     # cached version when multiple version dirs coexist.
     version_parent = Path.home() / ".claude/plugins/cache/carta-cc/carta-cc"
     if version_parent.exists():
+        stale_dirs = sorted(
+            entry.name
+            for entry in version_parent.iterdir()
+            if entry.is_dir() and entry.name != version
+        )
+        if stale_dirs:
+            print(
+                f"  Removing stale skill cache version dir(s): {', '.join(stale_dirs)} "
+                f"(installing v{version}). Restart Claude Code to load the new skills."
+            )
         for entry in version_parent.iterdir():
             if entry.is_dir() and entry.name != version:
                 shutil.rmtree(entry)
@@ -179,6 +189,12 @@ def _install_skills() -> None:
     now = datetime.datetime.utcnow().isoformat() + "Z"
     data = json.loads(plugins_json.read_text()) if plugins_json.exists() else {"version": 2, "plugins": {}}
     existing = data.get("plugins", {}).get("carta-cc@carta-cc", [{}])[0]
+    prev_ver = existing.get("version") if isinstance(existing, dict) else None
+    if prev_ver and prev_ver != version:
+        print(
+            f"  Warning: skill plugin metadata was v{prev_ver}; updating to v{version}. "
+            "Restart Claude Code so sessions load the new skills."
+        )
     data.setdefault("plugins", {})["carta-cc@carta-cc"] = [{
         "scope": "user",
         "installPath": install_path,

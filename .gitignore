@@ -44,3 +44,4 @@ build/
 # Scratch / logs
 tmp/
 *.log
+latest-log.txt

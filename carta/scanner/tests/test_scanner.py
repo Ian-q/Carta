@@ -164,6 +164,31 @@ def test_anchor_doc_exempt_from_homeless(tmp_path):
     assert "stray-notes.md" in doc_paths
 
 
+def test_anchor_doc_path_normalized_to_basename(tmp_path):
+    """anchor_doc may be a relative path; only the basename is used for exemption."""
+    _make_tree(tmp_path, ["docs/x.md", "CLAUDE.md"])
+    cfg = _minimal_cfg(tmp_path)
+    cfg["anchor_doc"] = "some/prefix/../CLAUDE.md"
+    issues = check_homeless_docs(tmp_path, cfg)
+    assert not any(i["doc"] == "CLAUDE.md" for i in issues)
+
+
+def test_default_root_whitelist_skips_common_root_docs(tmp_path):
+    """Built-in whitelist exempts standard root markdown without extra config."""
+    _make_tree(tmp_path, [
+        "docs/x.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "LICENSE.md",
+    ])
+    cfg = _minimal_cfg(tmp_path)
+    issues = check_homeless_docs(tmp_path, cfg)
+    doc_paths = [i["doc"] for i in issues]
+    assert "CHANGELOG.md" not in doc_paths
+    assert "CONTRIBUTING.md" not in doc_paths
+    assert "LICENSE.md" not in doc_paths
+
+
 def test_nested_docs_folder_detected(tmp_path):
     _make_tree(tmp_path, [
         "docs/ARCHITECTURE.md",
