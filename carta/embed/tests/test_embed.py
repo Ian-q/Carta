@@ -373,7 +373,8 @@ def test_upsert_chunks_calls_qdrant(mock_embed, mock_qdrant_cls):
     count = upsert_chunks(chunks, MINIMAL_CFG)
 
     assert count == 3
-    assert mock_client.upsert.call_count == 3
+    # With batching, 3 chunks < BATCH_SIZE=32 so 1 upsert call (remainder flush)
+    assert mock_client.upsert.call_count == 1
     call_kwargs = mock_client.upsert.call_args
     assert call_kwargs.kwargs["collection_name"] == "test-proj_doc"
 
@@ -415,7 +416,8 @@ def test_upsert_chunks_bad_chunk_does_not_kill_good_chunks(mock_embed, mock_qdra
     count = upsert_chunks(chunks, MINIMAL_CFG)
 
     assert count == 2  # chunk 2 failed, chunks 1 and 3 succeeded
-    assert mock_client.upsert.call_count == 2
+    # With batching: 2 successful chunks < BATCH_SIZE=32 -> 1 flush call
+    assert mock_client.upsert.call_count == 1
 
 
 @patch("carta.embed.embed.QdrantClient")
@@ -597,3 +599,103 @@ def test_run_search_query_failure_raises(mock_qdrant_cls, mock_embed):
 
     with pytest.raises(RuntimeError, match="Qdrant search failed"):
         run_search("query", MINIMAL_CFG)
+
+
+# ---------------------------------------------------------------------------
+# embed.py — upsert_chunks batching (PIPE-01)
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.embed.QdrantClient")
+@patch("carta.embed.embed.get_embedding")
+def test_upsert_chunks_batches_at_32(mock_embed, mock_qdrant_cls):
+    """64 chunks should produce exactly 2 client.upsert() calls (32 + 32)."""
+    mock_embed.return_value = [0.0] * 768
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    chunks = _make_chunks(64)
+    count = upsert_chunks(chunks, MINIMAL_CFG)
+
+    assert count == 64
+    assert mock_client.upsert.call_count == 2
+    for call in mock_client.upsert.call_args_list:
+        assert len(call.kwargs["points"]) <= 32
+
+
+@patch("carta.embed.embed.QdrantClient")
+@patch("carta.embed.embed.get_embedding")
+def test_upsert_chunks_remainder_flushed(mock_embed, mock_qdrant_cls):
+    """10 chunks < BATCH_SIZE -> exactly 1 upsert call with 10 points."""
+    mock_embed.return_value = [0.0] * 768
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    chunks = _make_chunks(10)
+    count = upsert_chunks(chunks, MINIMAL_CFG)
+
+    assert count == 10
+    assert mock_client.upsert.call_count == 1
+    assert len(mock_client.upsert.call_args.kwargs["points"]) == 10
+
+
+@patch("carta.embed.embed.QdrantClient")
+@patch("carta.embed.embed.get_embedding")
+def test_upsert_chunks_skips_bad_embedding(mock_embed, mock_qdrant_cls):
+    """Embedding failure on one chunk skips it; others still upserted."""
+    call_count_tracker = {"n": 0}
+
+    def embed_side_effect(text, **kwargs):
+        call_count_tracker["n"] += 1
+        if call_count_tracker["n"] == 5:  # fail on chunk index 4 (5th call)
+            raise RuntimeError("embedding failed")
+        return [0.0] * 768
+
+    mock_embed.side_effect = embed_side_effect
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    chunks = _make_chunks(10)
+    count = upsert_chunks(chunks, MINIMAL_CFG)
+
+    assert count == 9  # 1 chunk skipped
+
+
+# ---------------------------------------------------------------------------
+# parse.py — overlap cap (PIPE-03)
+# ---------------------------------------------------------------------------
+
+def test_chunk_text_overlap_cap_25_percent():
+    """5000-word single paragraph with overlap_fraction=0.5 must terminate and return chunks."""
+    big_text = " ".join(["word"] * 5000)
+    pages = _make_pages(big_text)
+    chunks = chunk_text(pages, max_tokens=800, overlap_fraction=0.5)
+    assert chunks
+    for c in chunks:
+        assert c["text"].strip()
+
+
+def test_chunk_text_safety_counter_lowered():
+    """chunk_text completes on pathological input with lowered safety counter."""
+    # Pathological: single paragraph 200 words, tiny max_tokens, high overlap
+    pages = _make_pages(" ".join(["word"] * 200))
+    # Should terminate quickly (not hit 10_000 iterations)
+    chunks = chunk_text(pages, max_tokens=5, overlap_fraction=0.8)
+    assert chunks
+    assert len(chunks) < 500
+
+
+# ---------------------------------------------------------------------------
+# induct.py — sidecar current_path (PIPE-05)
+# ---------------------------------------------------------------------------
+
+def test_generate_sidecar_stub_includes_current_path(tmp_path):
+    """generate_sidecar_stub must include 'current_path' with the relative path string."""
+    f = tmp_path / "docs" / "ref" / "chip.pdf"
+    f.parent.mkdir(parents=True)
+    f.touch()
+    stub = generate_sidecar_stub(f, tmp_path, MINIMAL_CFG)
+    assert "current_path" in stub
+    assert stub["current_path"] == "docs/ref/chip.pdf"
