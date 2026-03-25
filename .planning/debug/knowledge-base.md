@@ -36,6 +36,14 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Files changed:** carta/cli.py, docs/testing/install-test-guide.md
 ---
 
+## skill-cache-old-version-wins — stale skill version loaded after upgrade; old version dir never removed
+- **Date:** 2026-03-24
+- **Error patterns:** skill cache, old version, 0.1.6, 0.1.7, upgrade, plugin cache, versioned dir, skill resolver, installed_plugins.json, base directory
+- **Root cause:** _install_skills() in bootstrap.py wrote a new versioned skill directory but never removed sibling directories from prior versions. After upgrade both 0.1.6 and 0.1.7 dirs coexisted and Claude Code's skill resolver loaded from the stale one.
+- **Fix:** Added a cleanup loop at the start of _install_skills() that calls shutil.rmtree() on every sibling directory under version_parent whose name does not match the current version, before writing the new version's files.
+- **Files changed:** carta/install/bootstrap.py
+---
+
 ## carta-search-and-changed-since-bugs — carta search silent; changed_since_last_audit empty on first run
 - **Date:** 2026-03-24
 - **Error patterns:** carta search, silent, no output, changed_since_last_audit, empty, first run, QdrantClient, search, query_points, tracked_docs, docs_root, git ls-files
