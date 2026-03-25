@@ -16,6 +16,9 @@ from carta.config import collection_name
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
 
+# Maximum number of PointStructs sent per client.upsert() call
+BATCH_SIZE = 32
+
 
 def get_embedding(
     text: str,
@@ -73,6 +76,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     ensure_collection(client, coll_name)
 
     upserted = 0
+    batch: list[PointStruct] = []
+
     for chunk in chunks:
         chunk_id = f"{chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}]"
         try:
@@ -84,9 +89,25 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
                 vector=vec,
                 payload=payload,
             )
-            client.upsert(collection_name=coll_name, points=[point])
-            upserted += 1
+            batch.append(point)
         except Exception as e:
-            print(f"Warning: skipping chunk {chunk_id} — {e}")
+            print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
+            continue
+
+        if len(batch) >= BATCH_SIZE:
+            try:
+                client.upsert(collection_name=coll_name, points=batch)
+                upserted += len(batch)
+            except Exception as e:
+                print(f"Warning: batch upsert failed — {e}", flush=True)
+            batch = []
+
+    # Flush remaining points
+    if batch:
+        try:
+            client.upsert(collection_name=coll_name, points=batch)
+            upserted += len(batch)
+        except Exception as e:
+            print(f"Warning: batch upsert failed — {e}", flush=True)
 
     return upserted
