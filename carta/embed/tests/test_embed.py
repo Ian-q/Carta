@@ -25,6 +25,7 @@ from carta.embed.pipeline import (
     is_lfs_pointer,
     run_embed,
     run_search,
+    _heal_sidecar_current_paths,
 )
 
 
@@ -699,3 +700,117 @@ def test_generate_sidecar_stub_includes_current_path(tmp_path):
     stub = generate_sidecar_stub(f, tmp_path, MINIMAL_CFG)
     assert "current_path" in stub
     assert stub["current_path"] == "docs/ref/chip.pdf"
+
+
+# ---------------------------------------------------------------------------
+# pipeline.py — verbose suppression (PIPE-04)
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.pipeline.extract_pdf_text")
+@patch("carta.embed.pipeline.upsert_chunks")
+@patch("carta.embed.pipeline.QdrantClient")
+def test_run_embed_verbose_false_no_stdout(mock_qdrant_cls, mock_upsert, mock_extract, tmp_path, capsys):
+    """run_embed(verbose=False) must produce zero stdout output."""
+    mock_client = MagicMock()
+    mock_qdrant_cls.return_value = mock_client
+    mock_client.collection_exists.return_value = True
+
+    result = run_embed(tmp_path, MINIMAL_CFG, verbose=False)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+@patch("carta.embed.pipeline.extract_pdf_text")
+@patch("carta.embed.pipeline.upsert_chunks")
+@patch("carta.embed.pipeline.QdrantClient")
+def test_run_embed_verbose_true_has_stdout(mock_qdrant_cls, mock_upsert, mock_extract, tmp_path, capsys):
+    """run_embed(verbose=True) must produce stdout output."""
+    import yaml as _yaml
+
+    mock_client = MagicMock()
+    mock_qdrant_cls.return_value = mock_client
+    mock_client.collection_exists.return_value = True
+    mock_extract.return_value = [{"page": 1, "text": "hello", "headings": []}]
+    mock_upsert.return_value = 1
+
+    doc_dir = tmp_path / "docs"
+    doc_dir.mkdir()
+    pdf = doc_dir / "spec.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    sidecar = doc_dir / "spec.embed-meta.yaml"
+    sidecar.write_text(_yaml.dump({"slug": "spec", "doc_type": "spec", "status": "pending"}))
+
+    run_embed(tmp_path, MINIMAL_CFG, verbose=True)
+    captured = capsys.readouterr()
+    assert captured.out != ""
+
+
+# ---------------------------------------------------------------------------
+# pipeline.py — per-file timeout (PIPE-02)
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.pipeline.QdrantClient")
+def test_embed_one_file_timeout(mock_qdrant_cls, tmp_path, monkeypatch):
+    """A file that exceeds FILE_TIMEOUT_S is skipped; pipeline continues."""
+    import yaml as _yaml
+    import carta.embed.pipeline as pipeline_mod
+
+    mock_client = MagicMock()
+    mock_qdrant_cls.return_value = mock_client
+    mock_client.collection_exists.return_value = True
+
+    # Monkeypatch FILE_TIMEOUT_S to 1 second
+    monkeypatch.setattr(pipeline_mod, "FILE_TIMEOUT_S", 1)
+
+    # Monkeypatch _embed_one_file to sleep longer than timeout
+    import time as _time
+
+    def _slow_embed(*args, **kwargs):
+        _time.sleep(5)
+        return (0, {})
+
+    monkeypatch.setattr(pipeline_mod, "_embed_one_file", _slow_embed)
+
+    doc_dir = tmp_path / "docs"
+    doc_dir.mkdir()
+    pdf = doc_dir / "slow.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    sidecar = doc_dir / "slow.embed-meta.yaml"
+    sidecar.write_text(_yaml.dump({"slug": "slow", "doc_type": "spec", "status": "pending"}))
+
+    result = run_embed(tmp_path, MINIMAL_CFG, verbose=False)
+    assert result["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# pipeline.py — sidecar heal pass (PIPE-05)
+# ---------------------------------------------------------------------------
+
+def test_heal_sidecar_current_paths(tmp_path):
+    """Sidecars missing current_path are healed when the source PDF exists."""
+    import yaml as _yaml
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    sidecar = tmp_path / "doc.embed-meta.yaml"
+    sidecar.write_text(_yaml.dump({"slug": "doc", "status": "embedded"}))
+
+    healed = _heal_sidecar_current_paths(tmp_path)
+    assert healed == 1
+
+    data = _yaml.safe_load(sidecar.read_text())
+    assert data["current_path"] == "doc.pdf"
+
+
+def test_heal_sidecar_skips_missing_source(tmp_path):
+    """Sidecars without a matching source file are skipped during heal."""
+    import yaml as _yaml
+
+    sidecar = tmp_path / "ghost.embed-meta.yaml"
+    sidecar.write_text(_yaml.dump({"slug": "ghost", "status": "embedded"}))
+
+    healed = _heal_sidecar_current_paths(tmp_path)
+    assert healed == 0
+
+    data = _yaml.safe_load(sidecar.read_text())
+    assert "current_path" not in data
