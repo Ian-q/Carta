@@ -1,4 +1,6 @@
 ---
+status: resolved
+resolution: "Hooks in carta/hooks/*.sh already use python3 + yaml.safe_load on .carta/config.yaml (no grep). Verified 2026-03-24."
 created: 2026-03-24T22:30:00.000Z
 title: Harden hook config grep parser against false positives
 area: general

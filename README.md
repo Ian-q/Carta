@@ -60,6 +60,8 @@ Less useful for: simple single-repo projects with a handful of docs, or projects
 
 ## Quickstart
 
+**Version history:** [CHANGELOG.md](CHANGELOG.md). **Install (pipx, venv, PATH):** [docs/install.md](docs/install.md).
+
 ### Option 1: Claude Code plugin (recommended)
 
 If you have [Superpowers](https://github.com/obra/superpowers) installed:
@@ -71,6 +73,8 @@ If you have [Superpowers](https://github.com/obra/superpowers) installed:
 That's it. Carta copies the runtime into `.carta/` in your project, registers Claude Code hooks in `.claude/settings.json` (`UserPromptSubmit` and `Stop`), installs Carta skills into `.claude/skills/`, and generates a config from the template.
 
 ### Option 2: pip / uvx
+
+See **[docs/install.md](docs/install.md)** for pipx vs venv, PATH, PlatformIO conflicts, and `--pip-args` syntax.
 
 ```bash
 # One-shot (no install required)

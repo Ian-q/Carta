@@ -509,3 +509,92 @@ Issues discovered during end-to-end install test on a real project.
 - **Evidence**: Field test log — hook output references unimplemented feature
 - **Proposed fix**: Remove the message until the skill is implemented, or replace with a generic reminder.
 - **Status**: **fixed** (removed premature `/carta-save` reference from stop hook)
+
+---
+
+## Field Test — v0.1.10 install on `petsense` repo (2026-03-24)
+
+Issues discovered during end-to-end install test walkthrough of `install-test-guide.md`. Full findings at `docs/testing/install-test-findings-v0.1.10.md`.
+
+### FT-5: `carta embed` has no concurrency lock — machine crash risk
+
+- **Severity**: High (crash risk)
+- **Component**: embed
+- **Symptom**: `carta embed` has no lock file or mutex. Multiple simultaneous invocations each load PDFs and call Ollama independently. During testing, 5–6 concurrent processes exhausted ~180GB RAM and crashed the host machine.
+- **Root cause**: An install agent spawned parallel sub-agents to run the embed skill; each sub-agent independently launched `carta embed`.
+- **Proposed fix**: Add a lock file (e.g. `.carta/embed.lock`) at pipeline start. If lock exists, print "carta embed is already running (PID: X). Exiting." and exit non-zero. Remove lock on exit via trap.
+- **Status**: open
+
+---
+
+### FT-6: `carta embed` hangs indefinitely when Qdrant is unreachable
+
+- **Severity**: High (blocking)
+- **Component**: embed
+- **Symptom**: `carta embed` hangs with no stdout or stderr — not even a startup message. 120s, 180s, and 600s timeouts all expire. All isolated components (imports, fitz, rglob, Ollama calls) work fine individually.
+- **Likely root cause**: Docker was not running at test time, so the Qdrant container was down. QdrantClient initialization appears to block indefinitely (no timeout) when the host is unreachable, rather than failing fast. The machine crash-and-restart from FT-5 is the probable reason Docker was not running.
+- **Proposed fix** (two parts):
+  1. Add a pre-flight Qdrant connectivity check at the top of `cmd_embed` — same pattern as `carta init` readiness checks — and exit with a clear error if Qdrant is unreachable.
+  2. Add `flush=True` progress prints at each stage of `run_embed` so any future hang is immediately locatable.
+- **Note**: The hang may be fully explained by Qdrant being down. Re-test with Docker running before deeper investigation.
+- **Status**: open
+
+---
+
+### FT-7: `carta embed` produces zero progress output
+
+- **Severity**: Medium (UX / diagnosability)
+- **Component**: embed
+- **Symptom**: `run_embed` prints nothing until the entire pipeline completes, then prints one line. Large repos show a blank terminal for minutes with no indication of progress or hang. This also made FT-6 undiagnosable.
+- **Proposed fix**: Add per-file progress lines and per-file chunk counts to `run_embed` and `upsert_chunks`. E.g. `Embedding docs/reference/foo.pdf (72 chunks)... ✓ 72 chunks in 34s`.
+- **Status**: open
+
+---
+
+### FT-8: `pipx upgrade carta-cc` stops at 0.1.9, does not reach 0.1.10
+
+- **Severity**: Medium
+- **Component**: packaging
+- **Symptom**: `pipx upgrade carta-cc` from 0.1.7 upgrades to 0.1.9, not 0.1.10 (latest on PyPI). Confirmed 0.1.10 was available. Required `pipx install carta-cc==0.1.10 --force`.
+- **Proposed fix**: Investigate whether 0.1.10 package metadata causes pipx to skip it — check `python_requires`, yanked flag, or pre-release marker misdetection.
+- **Status**: open
+
+---
+
+### FT-9: Skills load from old cached version after upgrade
+
+- **Severity**: Medium
+- **Component**: skills / packaging
+- **Symptom**: After `pipx install carta-cc==0.1.10 --force` and `carta init` (which reported "Registered 4 Carta skill(s)… v0.1.10"), both `/doc-audit` and `/doc-embed` loaded from the 0.1.6 cache directory. Stale skill logic used silently.
+- **Proposed fix**: `carta init` should verify the skill path in `installed_plugins.json` matches the installed version and warn/overwrite if stale. Clean up old version directories during init.
+- **Status**: open
+
+---
+
+### FT-10: `carta init` fires a false PATH warning for valid pipx binary
+
+- **Severity**: Low
+- **Component**: bootstrap
+- **Symptom**: `carta init` warns "carta found on PATH at /Users/ian/.local/bin/carta does not match the running interpreter" — but that binary IS the correct pipx-installed carta. The real PlatformIO conflict was correctly detected at install time.
+- **Proposed fix**: Tighten PATH conflict check to only warn when the resolved `carta` binary points to a known-bad path (e.g. `.platformio`), not whenever the pipx venv Python and the resolved binary differ.
+- **Status**: open
+
+---
+
+### FT-11 (UX): Agent install guide pause scope is too broad
+
+- **Severity**: Low (friction)
+- **Component**: docs / install-test-guide
+- **Symptom**: The `⚠️ AGENT PAUSE` note after Step 2 says "Do not continue with Steps 3–8." But Steps 3 (config review) and 4 (`carta scan`) require no skills and work fine in the same session. Only Steps 5–8 need newly registered skills.
+- **Proposed fix**: Change pause scope to "Do not continue with Steps 5–8 in this session."
+- **Status**: open
+
+---
+
+### FT-12 (UX): 20 `missing_frontmatter` TRIAGE entries flood backlog on fresh repo
+
+- **Severity**: Low (friction)
+- **Component**: doc-audit skill
+- **Symptom**: On a repo with no Carta frontmatter, `/doc-audit` creates one TRIAGE entry per doc (20 entries on first run). This overwhelms the backlog and makes actionable issues (homeless_doc, embed_induction_needed) hard to find.
+- **Proposed fix**: Group `missing_frontmatter` issues into a single TRIAGE entry with a doc list, or mark them lower priority / bulk-actionable.
+- **Status**: open

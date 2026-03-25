@@ -69,7 +69,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
 
     if client is None:
         qdrant_url = cfg["qdrant_url"]
-        client = QdrantClient(url=qdrant_url)
+        client = QdrantClient(url=qdrant_url, timeout=5)
     ensure_collection(client, coll_name)
 
     upserted = 0

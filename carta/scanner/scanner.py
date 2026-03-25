@@ -72,19 +72,40 @@ def _iter_md_files(repo_root: Path):
 # Structural checks
 # ---------------------------------------------------------------------------
 
+# Standard root-level markdown / convention files — never flagged as homeless_doc.
+DEFAULT_HOMELESS_ROOT_WHITELIST = frozenset({
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "GEMINI.md",
+    ".cursorrules",
+    "CODEOWNERS",
+})
+
+
+def _anchor_basenames(cfg: dict) -> set[str]:
+    """Basenames for anchor_doc / anchor_docs (paths like ./CLAUDE.md → CLAUDE.md)."""
+    names: set[str] = set()
+    anchor_doc = cfg.get("anchor_doc")
+    if anchor_doc:
+        names.add(Path(anchor_doc).name)
+    for item in cfg.get("anchor_docs", []) or []:
+        names.add(Path(item).name)
+    return names
+
+
 def check_homeless_docs(repo_root: Path, cfg: dict) -> list:
     """Flag .md files outside docs/ that aren't README.md, anchor_doc, or excluded."""
     issues = []
     docs_root = repo_root / cfg.get("docs_root", "docs/").rstrip("/")
-    # Build set of anchor doc basenames that are exempt from homeless_doc
-    anchor_names: set[str] = set()
-    anchor_doc = cfg.get("anchor_doc")
-    if anchor_doc:
-        anchor_names.add(anchor_doc)
-    for name in cfg.get("anchor_docs", []):
-        anchor_names.add(name)
+    anchor_names = _anchor_basenames(cfg)
     for p in _iter_md_files(repo_root):
         if p.name == "README.md":
+            continue
+        if p.name in DEFAULT_HOMELESS_ROOT_WHITELIST:
             continue
         if p.name in anchor_names:
             continue

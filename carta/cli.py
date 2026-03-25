@@ -1,5 +1,8 @@
 import argparse
+import atexit
+import os
 import shutil
+import signal
 import sys
 from pathlib import Path
 
@@ -14,6 +17,60 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(package_parent))
 
 from carta import __version__
+
+def _embed_lock_read_pid(lock_path: Path):
+    try:
+        return int(lock_path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _embed_lock_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    else:
+        return True
+
+
+def _acquire_embed_lock(lock_path: Path) -> None:
+    """Ensure only one live embed process; create lock atomically; remove stale locks."""
+    while True:
+        if not lock_path.exists():
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                with os.fdopen(fd, "w") as f:
+                    f.write(str(os.getpid()))
+                return
+            except FileExistsError:
+                continue
+
+        existing_pid = _embed_lock_read_pid(lock_path)
+        if existing_pid is None or existing_pid <= 0:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
+        if _embed_lock_pid_alive(existing_pid):
+            print(
+                f"carta embed is already running (PID: {existing_pid}). "
+                "Wait for it to finish or remove .carta/embed.lock if it is stale.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
 
 def find_config(start: Path = None) -> Path:
     current = (start or Path.cwd()).resolve()
@@ -33,30 +90,48 @@ def find_config(start: Path = None) -> Path:
 def cmd_scan(args):
     from carta.config import load_config
     from carta.scanner.scanner import run_scan
-    import json
     cfg_path = find_config()
     cfg = load_config(cfg_path)
     if not cfg["modules"].get("doc_audit"):
         print("doc_audit module is disabled in config.", file=sys.stderr)
         sys.exit(1)
     output_path = cfg_path.parent / "scan-results.json"
-    results = run_scan(cfg_path.parent.parent, cfg)
-    output_path.write_text(json.dumps(results, indent=2))
+    results = run_scan(cfg_path.parent.parent, cfg, output_path=output_path)
     issue_count = len(results["issues"])
     print(f"Scan complete: {issue_count} issue(s). Results at {output_path}")
 
 def cmd_embed(args):
     from carta.config import load_config
     from carta.embed.pipeline import run_embed
-    cfg = load_config(find_config())
+
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
     if not cfg["modules"].get("doc_embed"):
         print("doc_embed module is disabled in config.", file=sys.stderr)
         sys.exit(1)
+
+    # FT-5: Concurrency lock — only one embed process at a time (atomic create + stale PID).
+    lock_path = cfg_path.parent / "embed.lock"
+    _acquire_embed_lock(lock_path)
+
+    def _remove_lock():
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    atexit.register(_remove_lock)
+
+    def _signal_handler(signum, frame):
+        _remove_lock()
+        sys.exit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(_sig, _signal_handler)
+
     summary = run_embed(Path.cwd(), cfg)
     print(f"Embedded: {summary['embedded']}, Skipped: {summary['skipped']}")
     if summary["errors"]:
-        for err in summary["errors"]:
-            print(f"  ERROR: {err}", file=sys.stderr)
         sys.exit(1)
 
 def cmd_search(args):
@@ -67,12 +142,35 @@ def cmd_search(args):
         sys.exit(1)
     from carta.embed.pipeline import run_search
     query = " ".join(args.query)
-    results = run_search(query, cfg)
+    try:
+        results = run_search(query, cfg)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     if not results:
-        print("No results found.")
+        print(
+            "No results found. If nothing is embedded yet, run `carta embed` first; "
+            "otherwise try different wording."
+        )
         return
     for r in results:
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
+
+def _platformio_carta_paths_on_path() -> list[Path]:
+    found: list[Path] = []
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d:
+            continue
+        candidate = Path(d) / "carta"
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                rp = candidate.resolve()
+                if "platformio" in str(rp).lower():
+                    found.append(rp)
+        except OSError:
+            continue
+    return found
+
 
 def _check_path_conflict() -> None:
     """Warn when a different 'carta' binary is earlier on PATH than the one we're running."""
@@ -86,6 +184,13 @@ def _check_path_conflict() -> None:
     # there is no conflict.
     try:
         on_path.relative_to(running.parent.parent)
+        pio = _platformio_carta_paths_on_path()
+        if pio and "platformio" not in str(carta_on_path).lower():
+            print(
+                f"Note: a PlatformIO `carta` also exists on PATH ({pio[0]}). "
+                "If the wrong tool runs, put pipx/venv first, e.g.: "
+                'export PATH="$HOME/.local/bin:$PATH"'
+            )
         return  # same prefix — no conflict
     except ValueError:
         pass

@@ -2,9 +2,11 @@
 
 **Purpose:** Validate the end-to-end Carta install flow in a real repository using the PyPI package. Note anything that breaks, feels confusing, or requires steps not covered here. Report findings back to the `carta-cc` session when done.
 
-**Target repo:** `/Users/ian/School/Elementrailer/petsense/`
-**Package:** `carta-cc` (latest) on PyPI
+**Target repo:** set this to your test checkout (example: `~/projects/my-repo/`).
+**Package:** `carta-cc` on PyPI (install the version you intend to validate).
 **Expected time:** ~10 minutes
+
+**Install commands and troubleshooting** live in **[docs/install.md](../install.md)** — use that as the source of truth; this guide assumes a working `carta` on `PATH`.
 
 ---
 
@@ -47,78 +49,35 @@ ollama pull nomic-embed-text
 
 ## Step 1: Install carta-cc
 
-> **PlatformIO conflict warning:** PlatformIO ships its own `carta` binary at `~/.platformio/penv/bin/carta`. If this is on your PATH before carta-cc, it will shadow the real `carta` command. Check with `which carta` — it should point to a pipx/uv/venv path, not `.platformio`.
->
-> `carta init` will detect and print this conflict automatically, along with the fix. If you see the warning, run:
-> ```bash
-> export PATH="$HOME/.local/bin:$PATH"
-> ```
-> Add that line to your `~/.zshrc` or `~/.bashrc` and restart your terminal, then re-run `carta init`.
-
-```bash
-# Recommended on macOS (avoids PEP 668 "externally managed environment" errors)
-pipx install carta-cc
-
-# Or with uv
-uv tool install carta-cc
-
-# Or with pip in a venv (works everywhere)
-python3 -m venv ~/.carta-venv
-~/.carta-venv/bin/pip install carta-cc
-# Add to PATH so `carta` resolves correctly:
-export PATH="$HOME/.carta-venv/bin:$PATH"
-# Add that export to your ~/.zshrc or ~/.bashrc to persist it
-```
-
-> **macOS note:** Homebrew Python 3.12+ enforces PEP 668, which blocks
-> `pip install` into the system environment. Use `pipx`, `uv tool`, or
-> create a venv first. If you see `externally-managed-environment`, that's why.
-
-**After `pipx install`, ensure pipx's bin directory is on your PATH:**
-
-```bash
-pipx ensurepath
-```
-
-If it reports adding a path, **restart your terminal** (or run `source ~/.zshrc`) before continuing. This is the most common cause of "carta not found" after a successful pipx install.
-
-**Verify the correct `carta` is on PATH before proceeding:**
+1. Follow **[docs/install.md](../install.md)** (pipx or venv, `pipx ensurepath`, PATH, PlatformIO, `--pip-args`, smoke checks).
+2. Confirm the CLI:
 
 ```bash
 which carta
-```
-
-Expected: a path containing `pipx`, `.local/bin`, or your venv — e.g. `/Users/you/.local/bin/carta`. If it shows `.platformio` or is missing, fix PATH first. `carta init` will also print a warning if it detects the wrong binary.
-
-Verify the right version installed and the entry point works:
-
-```bash
 carta --version
 carta --help
 ```
 
-Expected:
-- Version number (e.g. `carta <version>`)
-- Help text listing `init`, `scan`, `embed`, `search` subcommands
+Expected: `which carta` points at pipx/venv (not `.platformio` unless intentional); `carta --version` matches the package you installed; help lists `init`, `scan`, `embed`, `search`.
 
-**Note any errors.**
+**Note any errors.** If install fails, fix using `docs/install.md` before Step 2.
 
 ---
 
 ## Step 2: Run carta init
 
 ```bash
-cd /Users/ian/School/Elementrailer/petsense
+cd /path/to/your/test/repo
 carta init
 ```
 
 Expected output (roughly):
 ```
-Initialising Carta for project: petsense
+Initialising Carta for project: <dirname>
   Qdrant ready.
   Ollama ready.   (or: Warning: Ollama not reachable...)
   Registered 4 Carta skill(s) in global plugin cache (v<version>)
-Carta ready. Collections: petsense_doc, petsense_session, petsense_quirk
+Carta ready. Collections: <project>_doc, <project>_session, <project>_quirk
 Run /doc-embed to seed the knowledge store.
 ```
 
@@ -142,12 +101,12 @@ grep "carta" .gitignore
 ```
 
 **Checklist:**
-- [ ] `.carta/config.yaml` exists with `project_name: petsense` at the top
+- [ ] `.carta/config.yaml` exists with `project_name: <your project>` at the top
 - [ ] `.carta/carta/` contains Python runtime files (`cli.py`, `config.py`, etc.)
 - [ ] `.carta/hooks/` contains `carta-prompt-hook.sh` and `carta-stop-hook.sh`, both executable (`-rwxr-xr-x`)
 - [ ] Skills registered in global plugin cache — verify:
   ```bash
-  python3 -c "import json; d=json.load(open('/Users/ian/.claude/plugins/installed_plugins.json')); print(json.dumps(d['plugins'].get('carta-cc@carta-cc'), indent=2))"
+  python3 -c "import json, pathlib; p=pathlib.Path.home()/'.claude/plugins/installed_plugins.json'; d=json.load(open(p)); print(json.dumps(d['plugins'].get('carta-cc@carta-cc'), indent=2))"
   ls ~/.claude/plugins/cache/carta-cc/carta-cc/<version>/skills/
   ```
   Expected: entry pointing to `<version>`, and `carta-init doc-audit doc-embed doc-search` in skills dir.
@@ -160,10 +119,11 @@ grep "carta" .gitignore
 > be available until you restart.
 >
 > **Tell the user:** "Please restart Claude Code now (quit and reopen, or press Cmd+Q) so
-> the Carta skills load into the new session. Then reopen this repo and resume from Step 3."
+> the Carta skills load into the new session. Then reopen this repo and resume from Step 5."
 >
-> **Do not continue with Steps 3–8 in this session.** The skills will not be found until
-> after the restart.
+> **Do not continue with Steps 5–8 in this session.** Steps 3 (config review) and 4
+> (`carta scan`) do not require skills and can be run now. The `/doc-audit`, `/doc-embed`,
+> and `/doc-search` skills will not be found until after the restart.
 
 **Note anything missing or incorrect.**
 
@@ -174,7 +134,7 @@ grep "carta" .gitignore
 Open `.carta/config.yaml`. The most important fields to check:
 
 ```yaml
-project_name: petsense       # used to namespace Qdrant collections
+project_name: my-project     # used to namespace Qdrant collections (matches your repo)
 docs_root: docs/             # confirm this directory exists
 qdrant_url: http://localhost:6333
 ```
@@ -237,7 +197,7 @@ Common issue types on a first scan of a repo without Carta frontmatter:
 
 ## Step 5: Run /doc-audit in Claude Code
 
-Open a Claude Code session in the petsense repo and run:
+Open a Claude Code session in the test repo and run:
 
 ```
 /doc-audit
@@ -251,10 +211,12 @@ Expected:
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
 
-> **First-run note:** On a brand-new repo with no prior audit history, `changed_since_last_audit`
-> will be empty (no git baseline exists yet). This is expected — the semantic contradiction check
-> is skipped and only the structural scanner results are written to `AUDIT_REPORT.md`. This is
-> correct behaviour, not a bug.
+> **First-run note:** Before any prior scan, Carta treats **all git-tracked** `.md` / `.embed-meta.yaml`
+> files (minus `excluded_paths`) as “changed” so agents can prioritize work. After the first scan,
+> `changed_since_last_audit` is computed from git history vs the last scan’s commit hash in
+> `.carta/scan-results.json`. If you see an empty list on a true first run, ensure `carta scan`
+> writes results under `.carta/scan-results.json` and that the repo is a git checkout with files
+> visible to `git ls-files`.
 
 If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `<version>`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/<version>/skills/` contains the skill directories. Then restart the Claude Code session.
 
@@ -264,7 +226,7 @@ If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a 
 
 The hooks fire inside Claude Code sessions (not as git hooks). To verify they're wired up:
 
-1. Open Claude Code in the petsense repo
+1. Open Claude Code in the test repo
 2. Submit any prompt — `UserPromptSubmit` hook should fire
 3. End the session — `Stop` hook should fire
 
@@ -312,7 +274,7 @@ for c in data['result']['collections']:
 "
 ```
 
-Expected: `petsense_doc` (and `petsense_session`, `petsense_quirk` from init).
+Expected: `<project>_doc` (and `<project>_session`, `<project>_quirk` from init).
 
 **Note: did embedding complete without errors? How long did it take per document?**
 
@@ -324,7 +286,7 @@ Requires Step 7 to have run.
 
 In Claude Code:
 ```
-/doc-search what does the documentation say about [pick something relevant to petsense]
+/doc-search what does the documentation say about [pick something relevant to this repo]
 ```
 
 **Note: does it return cited results? Are they relevant?**

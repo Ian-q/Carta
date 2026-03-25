@@ -461,7 +461,7 @@ def test_discover_pending_files(tmp_path):
         "status": "pending",
     }))
 
-    pending = discover_pending_files(tmp_path, MINIMAL_CFG)
+    pending = discover_pending_files(tmp_path)
     assert len(pending) == 1
     assert pending[0]["slug"] == "manual"
     assert pending[0]["file_path"] == pdf
@@ -477,7 +477,7 @@ def test_discover_pending_files_skips_embedded(tmp_path):
     sidecar = doc_dir / "doc.embed-meta.yaml"
     sidecar.write_text(_yaml.dump({"slug": "doc", "status": "embedded"}))
 
-    pending = discover_pending_files(tmp_path, MINIMAL_CFG)
+    pending = discover_pending_files(tmp_path)
     assert pending == []
 
 
@@ -564,11 +564,11 @@ def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed):
 
 @patch("carta.embed.pipeline.get_embedding")
 @patch("carta.embed.pipeline.QdrantClient")
-def test_run_search_empty_collection(mock_qdrant_cls, mock_embed):
+def test_run_search_query_failure_raises(mock_qdrant_cls, mock_embed):
     mock_embed.return_value = [0.0] * 768
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
     mock_client.query_points.side_effect = Exception("collection not found")
 
-    results = run_search("query", MINIMAL_CFG)
-    assert results == []
+    with pytest.raises(RuntimeError, match="Qdrant search failed"):
+        run_search("query", MINIMAL_CFG)
