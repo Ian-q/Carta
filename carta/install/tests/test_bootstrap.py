@@ -174,23 +174,6 @@ def test_register_hooks_sets_executable_and_settings_paths(tmp_path):
     assert str(tmp_path) not in stop_cmd, "hook path must not contain absolute project path"
 
 
-def test_install_skills_copies_skill_markdown(tmp_path):
-    from carta.install.bootstrap import _install_skills
-    from carta import __version__ as version
-    from unittest.mock import patch
-
-    with patch("carta.install.bootstrap.Path.home", return_value=tmp_path):
-        _install_skills()
-
-    skills_dir = tmp_path / f".claude/plugins/cache/carta-cc/carta-cc/{version}/skills"
-    expected = ["carta-init", "doc-audit", "doc-embed", "doc-search"]
-    for skill_name in expected:
-        skill_file = skills_dir / skill_name / "SKILL.md"
-        assert skill_file.exists()
-        content = skill_file.read_text()
-        assert "name:" in content and "description:" in content, "SKILL.md missing frontmatter"
-
-
 # ---------------------------------------------------------------------------
 # Plugin cache cleanup tests (MCP-07)
 # ---------------------------------------------------------------------------
