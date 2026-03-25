@@ -7,11 +7,11 @@
 
 ### Pipeline Reliability
 
-- [ ] **PIPE-01**: Embed pipeline upserts Qdrant chunks in batches of 32, reducing HTTP round trips from O(N) to O(N/32)
-- [ ] **PIPE-02**: Per-file embed enforces a configurable timeout (default 300s); files exceeding the limit are skipped with a warning rather than hanging the pipeline
-- [ ] **PIPE-03**: Chunking overlap capped at 25% of take size and safety counter lowered to 2× word count, guaranteeing forward progress on dense single-paragraph documents
-- [ ] **PIPE-04**: Pipeline service functions (`run_embed`, `run_search`, `run_scan`) accept a `verbose=False` parameter that suppresses `print()` output when called from non-CLI contexts
-- [ ] **PIPE-05**: Sidecar `.embed-meta.yaml` files include `current_path` on creation; any sidecar missing the field is auto-healed on next embed run
+- [x] **PIPE-01**: Embed pipeline upserts Qdrant chunks in batches of 32, reducing HTTP round trips from O(N) to O(N/32)
+- [x] **PIPE-02**: Per-file embed enforces a configurable timeout (default 300s); files exceeding the limit are skipped with a warning rather than hanging the pipeline
+- [x] **PIPE-03**: Chunking overlap capped at 25% of take size and safety counter lowered to 2× word count, guaranteeing forward progress on dense single-paragraph documents
+- [x] **PIPE-04**: Pipeline service functions (`run_embed`, `run_search`, `run_scan`) accept a `verbose=False` parameter that suppresses `print()` output when called from non-CLI contexts
+- [x] **PIPE-05**: Sidecar `.embed-meta.yaml` files include `current_path` on creation; any sidecar missing the field is auto-healed on next embed run
 
 ### MCP Server
 
@@ -72,11 +72,11 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | Phase 1 | Pending |
-| PIPE-02 | Phase 1 | Pending |
-| PIPE-03 | Phase 1 | Pending |
-| PIPE-04 | Phase 1 | Pending |
-| PIPE-05 | Phase 1 | Pending |
+| PIPE-01 | Phase 1 | Complete |
+| PIPE-02 | Phase 1 | Complete |
+| PIPE-03 | Phase 1 | Complete |
+| PIPE-04 | Phase 1 | Complete |
+| PIPE-05 | Phase 1 | Complete |
 | MCP-01 | Phase 1 | Complete |
 | MCP-02 | Phase 2 | Pending |
 | MCP-03 | Phase 2 | Pending |
