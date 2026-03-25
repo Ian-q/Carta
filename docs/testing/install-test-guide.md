@@ -154,7 +154,16 @@ grep "carta" .gitignore
 - [ ] `.claude/settings.json` `hooks` entries use array schema with `git rev-parse --show-toplevel`
 - [ ] `.gitignore` includes `.carta/scan-results.json`, `.carta/carta/`, `.carta/hooks/`
 
-> **Restart Claude Code** after `carta init` for skills to load into the session.
+> **⚠️ AGENT PAUSE — Action required before continuing:**
+> `carta init` registers Carta's skills into the global plugin cache. Claude Code only loads
+> skills at session start, so the `/doc-audit`, `/doc-embed`, and `/doc-search` skills won't
+> be available until you restart.
+>
+> **Tell the user:** "Please restart Claude Code now (quit and reopen, or press Cmd+Q) so
+> the Carta skills load into the new session. Then reopen this repo and resume from Step 3."
+>
+> **Do not continue with Steps 3–8 in this session.** The skills will not be found until
+> after the restart.
 
 **Note anything missing or incorrect.**
 
@@ -210,6 +219,10 @@ from collections import Counter
 counts = Counter(i['type'] for i in data.get('issues', []))
 for t, n in counts.most_common():
     print(f'  {t}: {n}')
+print()
+print('First 5 issues:')
+for i in data.get('issues', [])[:5]:
+    print(f'  [{i[\"type\"]}] {i.get(\"doc\", \"?\")} — {i.get(\"detail\", \"\")}')
 "
 ```
 
@@ -237,6 +250,11 @@ Expected:
 - If issues need triage, `docs/BACKLOG/TRIAGE.md` created or updated
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
+
+> **First-run note:** On a brand-new repo with no prior audit history, `changed_since_last_audit`
+> will be empty (no git baseline exists yet). This is expected — the semantic contradiction check
+> is skipped and only the structural scanner results are written to `AUDIT_REPORT.md`. This is
+> correct behaviour, not a bug.
 
 If a skill isn't found, verify `~/.claude/plugins/installed_plugins.json` has a `carta-cc@carta-cc` entry pointing to `<version>`, and that `~/.claude/plugins/cache/carta-cc/carta-cc/<version>/skills/` contains the skill directories. Then restart the Claude Code session.
 
