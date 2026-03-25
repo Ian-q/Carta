@@ -24,7 +24,12 @@
   3. Running `carta init` on a machine with a v0.1.x plugin cache removes the stale cache directory and prints confirmation
   4. `.mcp.json` is present at project root and is the sole Carta registration point; no plugin cache entry exists
   5. Sidecar files written or re-embedded include `current_path`; sidecars missing the field are healed automatically
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Pipeline reliability fixes (batch upsert, timeout, overlap cap, verbose, sidecar current_path)
+- [ ] 01-02-PLAN.md — MCP server scaffold, .mcp.json registration, plugin cache cleanup
+- [ ] 01-03-PLAN.md — Integration verification + human checkpoint
 
 ### Phase 2: MCP Tools
 **Goal**: Claude can invoke carta_search, carta_embed, and carta_scan as working MCP tools with structured, attributed responses
@@ -64,7 +69,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Pipeline Reliability + MCP Foundation | 0/? | Not started | - |
+| 1. Pipeline Reliability + MCP Foundation | 0/3 | Planned | - |
 | 2. MCP Tools | 0/? | Not started | - |
 | 3. Smart Hook + Markdown Embedding | 0/? | Not started | - |
 | 4. Bootstrap Hardening | 0/? | Not started | - |
