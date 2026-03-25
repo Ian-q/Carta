@@ -35,3 +35,11 @@ Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypothe
 - **Fix:** Added _check_path_conflict() in cli.py called at the top of cmd_init. It detects when the resolved `carta` binary on PATH differs from the executable currently running, and when the conflicting path matches known patterns (.platformio), prints both the warning and the actionable export PATH fix.
 - **Files changed:** carta/cli.py, docs/testing/install-test-guide.md
 ---
+
+## carta-search-and-changed-since-bugs — carta search silent; changed_since_last_audit empty on first run
+- **Date:** 2026-03-24
+- **Error patterns:** carta search, silent, no output, changed_since_last_audit, empty, first run, QdrantClient, search, query_points, tracked_docs, docs_root, git ls-files
+- **Root cause:** Bug 1: cmd_search() had no empty-result guard; run_search() swallows query_points() exceptions and returns [], causing the for-loop to print nothing. Bug 2: first-run fallback in run_scan() built changed_since from tracked_docs (only docs_root/*.md), missing all .md files outside docs/.
+- **Fix:** Bug 1: Added `if not results: print("No results found."); return` in carta/cli.py before the for-loop. Bug 2: Replaced tracked_docs fallback with git ls-files filtering for .md/.embed-meta.yaml repo-wide; added get_initial_commit_hash() in scanner.py.
+- **Files changed:** carta/cli.py, carta/scanner/scanner.py
+---
