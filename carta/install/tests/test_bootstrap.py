@@ -189,3 +189,59 @@ def test_install_skills_copies_skill_markdown(tmp_path):
         assert skill_file.exists()
         content = skill_file.read_text()
         assert "name:" in content and "description:" in content, "SKILL.md missing frontmatter"
+
+
+# ---------------------------------------------------------------------------
+# Plugin cache cleanup tests (MCP-07)
+# ---------------------------------------------------------------------------
+
+def test_remove_plugin_cache_removes_both_paths(tmp_path):
+    """_remove_plugin_cache() removes both known cache dirs and returns True."""
+    from carta.install.bootstrap import _remove_plugin_cache
+
+    # Create both cache dirs
+    path_a = tmp_path / ".claude/plugins/carta"
+    path_b = tmp_path / ".claude/plugins/cache/carta-cc"
+    path_a.mkdir(parents=True)
+    path_b.mkdir(parents=True)
+
+    with patch("carta.install.bootstrap.Path.home", return_value=tmp_path):
+        result = _remove_plugin_cache()
+
+    assert result is True
+    assert not path_a.exists()
+    assert not path_b.exists()
+
+
+def test_remove_plugin_cache_noop_when_absent(tmp_path):
+    """_remove_plugin_cache() returns True when neither cache dir exists."""
+    from carta.install.bootstrap import _remove_plugin_cache
+
+    with patch("carta.install.bootstrap.Path.home", return_value=tmp_path):
+        result = _remove_plugin_cache()
+
+    assert result is True
+
+
+def test_remove_plugin_cache_assertion_on_residue(tmp_path, capsys):
+    """_remove_plugin_cache() returns False and prints error when residue remains."""
+    from carta.install.bootstrap import _remove_plugin_cache
+
+    # Create one cache dir
+    path_a = tmp_path / ".claude/plugins/carta"
+    path_a.mkdir(parents=True)
+
+    with patch("carta.install.bootstrap.Path.home", return_value=tmp_path), \
+         patch("carta.install.bootstrap.shutil.rmtree"):  # rmtree is a no-op, residue remains
+        result = _remove_plugin_cache()
+
+    assert result is False
+    captured = capsys.readouterr()
+    assert "plugin cache residue" in captured.err
+
+
+def test_install_skills_removed():
+    """_install_skills() must not exist — replaced by _remove_plugin_cache()."""
+    import carta.install.bootstrap as bootstrap_module
+    assert not hasattr(bootstrap_module, "_install_skills"), \
+        "_install_skills should have been removed; use _remove_plugin_cache() instead"
