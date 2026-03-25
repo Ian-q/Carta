@@ -18,8 +18,13 @@ def test_server_module_has_no_print_calls():
 def test_server_module_has_no_sys_exit():
     """MCP server must never call sys.exit() — use structured errors."""
     server_path = Path(__file__).parent.parent / "server.py"
-    source = server_path.read_text()
-    assert "sys.exit" not in source, "server.py contains sys.exit() call"
+    tree = ast.parse(server_path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "exit":
+                if isinstance(func.value, ast.Name) and func.value.id == "sys":
+                    assert False, f"server.py contains sys.exit() call at line {node.lineno}"
 
 
 def test_server_configures_stderr_logging():

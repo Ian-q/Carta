@@ -12,6 +12,7 @@ dependencies = [
     "qdrant-client>=1.7",
     "requests>=2.31",
     "pymupdf>=1.23",
+    "mcp>=1.7.1",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ dev = ["pytest>=7.0"]
 
 [project.scripts]
 carta = "carta.cli:main"
+carta-mcp = "carta.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
