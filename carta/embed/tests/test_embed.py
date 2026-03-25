@@ -95,6 +95,31 @@ def test_chunk_text_long_page_splits():
         assert c["chunk_index"] == i
 
 
+def test_chunk_text_pathological_long_token_with_overlap_terminates():
+    # A single "word" that is very long can force the fallback splitter path.
+    # With overlap enabled, chunk_text must still make monotonic progress and terminate.
+    long_token = "X" * 10_000
+    words = [long_token] + ["word"] * 50
+    pages = _make_pages(" ".join(words))
+
+    chunks = chunk_text(pages, max_tokens=10, overlap_fraction=0.5)
+
+    assert chunks  # should produce something
+    assert len(chunks) < 500  # sanity bound: no runaway chunk explosion
+    for i, c in enumerate(chunks):
+        assert c["chunk_index"] == i
+        assert c["text"].strip()
+
+
+def test_chunk_text_tiny_max_tokens_with_overlap_terminates():
+    # Stress the overlap logic with a very small max_tokens.
+    # This previously risked re-prepending the entire chunk as overlap.
+    pages = _make_pages(" ".join(["word"] * 80))
+    chunks = chunk_text(pages, max_tokens=5, overlap_fraction=0.6)
+    assert chunks
+    assert len(chunks) < 1000
+
+
 def test_chunk_text_preserves_section_heading():
     pages = [{"page": 1, "text": "Introduction\n\nSome text here.", "headings": ["Introduction"]}]
     chunks = chunk_text(pages, max_tokens=800)
@@ -540,7 +565,7 @@ def test_run_search_returns_hits(mock_qdrant_cls, mock_embed):
 
     results = run_search("what is the voltage rating", MINIMAL_CFG)
     assert len(results) == 1
-    assert results[0]["score"] == 0.92
+    assert results[0]["score"] == pytest.approx(0.92)
     assert results[0]["source"] == "docs/spec.pdf"
     assert results[0]["excerpt"] == "relevant excerpt"
 

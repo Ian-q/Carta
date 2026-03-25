@@ -123,7 +123,15 @@ def chunk_text(
                     current_chunk_words = list(overlap_carry) + para_words
                     current_chunk_heading = current_heading
                 else:
+                    original_words_len = len(para_words)
+                    safety_iters = 0
                     while para_words:
+                        safety_iters += 1
+                        if safety_iters > max(10_000, original_words_len * 50):
+                            raise RuntimeError(
+                                "chunk_text stalled while splitting an oversized paragraph "
+                                f"(page={page_num}, max_tokens={max_tokens}, overlap_words={overlap_words})."
+                            )
                         take = []
                         while para_words and _estimate_tokens(" ".join(take + [para_words[0]])) <= max_tokens:
                             take.append(para_words.pop(0))
@@ -137,7 +145,11 @@ def chunk_text(
                         })
                         chunk_index += 1
                         if para_words:
-                            overlap = take[-overlap_words:] if overlap_words > 0 else []
+                            if overlap_words > 0 and len(take) > 1:
+                                overlap_len = min(overlap_words, len(take) - 1)
+                                overlap = take[-overlap_len:] if overlap_len > 0 else []
+                            else:
+                                overlap = []
                             para_words = overlap + para_words
                     current_chunk_words = []
                     current_chunk_heading = current_heading

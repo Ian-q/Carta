@@ -120,8 +120,11 @@ def run_embed(repo_root: Path, cfg: dict) -> dict:
         t0 = time.monotonic()
 
         try:
+            print(f"  [{idx}/{total}]   extracting PDF text...", flush=True)
             pages = extract_pdf_text(file_path)
+            print(f"  [{idx}/{total}]   extracted {len(pages)} page(s); chunking...", flush=True)
             raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
+            print(f"  [{idx}/{total}]   built {len(raw_chunks)} chunk(s); embedding + upserting...", flush=True)
 
             slug = file_info.get("slug", file_path.stem)
             metadata = {
