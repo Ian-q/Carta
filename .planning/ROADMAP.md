@@ -69,5 +69,16 @@
 | 3. Smart Hook + Markdown Embedding | 0/? | Not started | - |
 | 4. Bootstrap Hardening | 0/? | Not started | - |
 
+## Backlog
+
+### Phase 999.1: Sidecar Enrichment — Agent-Populated Notes, Sidecars as Qdrant Chunks, Cross-Linking (BACKLOG)
+
+**Goal:** On initial embed, an agent reviews the source document and writes project-specific annotations into the sidecar (page/table pointers, quirks, project-relevant notes). The sidecar itself gets embedded as a first-class Qdrant chunk so the smart hook can surface it directly. Cross-links between related sidecars form a semantic web that lets Claude navigate large documents precisely without scanning the whole thing.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
 ---
 *Created: 2026-03-25*
