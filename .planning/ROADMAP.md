@@ -27,8 +27,8 @@
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Pipeline reliability fixes (batch upsert, timeout, overlap cap, verbose, sidecar current_path)
-- [ ] 01-02-PLAN.md — MCP server scaffold, .mcp.json registration, plugin cache cleanup
+- [x] 01-01-PLAN.md — Pipeline reliability fixes (batch upsert, timeout, overlap cap, verbose, sidecar current_path)
+- [x] 01-02-PLAN.md — MCP server scaffold, .mcp.json registration, plugin cache cleanup
 - [ ] 01-03-PLAN.md — Integration verification + human checkpoint
 
 ### Phase 2: MCP Tools

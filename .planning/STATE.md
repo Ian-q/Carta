@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v0.2
+milestone_name: milestone
+status: Ready to execute
+last_updated: "2026-03-25T10:27:37.639Z"
+progress:
+  total_phases: 5
+  completed_phases: 0
+  total_plans: 3
+  completed_plans: 2
+---
+
 # Carta v0.2 — Project State
 
 **Last updated:** 2026-03-25
@@ -7,24 +20,12 @@
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 1 — Pipeline Reliability + MCP Foundation
+**Current focus:** Phase 01 — pipeline-reliability-mcp-foundation
 
 ## Current Position
 
-| Field | Value |
-|-------|-------|
-| Phase | 1 |
-| Plan | None (not started) |
-| Status | Not started |
-| Phase goal | Reliable embed pipeline + MCP scaffold with wire-protocol discipline |
-
-**Progress:**
-```
-[Phase 1] [ ] Pipeline Reliability + MCP Foundation
-[Phase 2] [ ] MCP Tools
-[Phase 3] [ ] Smart Hook + Markdown Embedding
-[Phase 4] [ ] Bootstrap Hardening
-```
+Phase: 01 (pipeline-reliability-mcp-foundation) — EXECUTING
+Plan: 3 of 3
 
 ## Performance Metrics
 
@@ -34,6 +35,7 @@
 | Phases complete | 0 |
 | Requirements total | 23 |
 | Requirements complete | 0 |
+| Phase 01 P02 | 12 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -43,6 +45,8 @@
 - Three-tier architecture: Hook (push) + MCP (pull) + CLI (human batch)
 - Embed reliability before MCP exposure: pipeline fixes are Phase 1 prerequisites
 - Ollama judge for gray-zone relevance: `qwen2.5:0.5b`, 3s hard timeout, fail-open
+- Use AST walk for print/sys.exit detection in MCP tests — avoids docstring false positives (01-02)
+- Plugin cache replaced by cleanup-with-assertion routine; .mcp.json is sole registration (01-02)
 
 ### Pitfalls to Avoid
 
@@ -63,9 +67,9 @@
 - [ ] Begin Phase 1: batch Qdrant upsert in pipeline.py
 - [ ] Phase 1: per-file timeout in pipeline.py
 - [ ] Phase 1: verbose=False parameter on all pipeline service functions
-- [ ] Phase 1: MCP server scaffold in carta/mcp/ with stderr logging
-- [ ] Phase 1: .mcp.json at project root
-- [ ] Phase 1: carta init plugin cache cleanup with post-deletion assertion
+- [x] Phase 1: MCP server scaffold in carta/mcp/ with stderr logging
+- [x] Phase 1: .mcp.json at project root
+- [x] Phase 1: carta init plugin cache cleanup with post-deletion assertion
 
 ### Blockers
 
@@ -73,7 +77,9 @@ None.
 
 ## Session Continuity
 
-**To resume:** Read `.planning/ROADMAP.md` for phase goals and success criteria. Current phase is Phase 1. No plans have been created yet — run `/gsd:plan-phase 1` to begin.
+**Last session:** 2026-03-25 — Completed 01-02-PLAN.md (MCP server scaffold + plugin cache cleanup)
+
+**To resume:** Read `.planning/ROADMAP.md` for phase goals and success criteria. Current phase is Phase 1, Plan 2 of 3 complete. Next: 01-03-PLAN.md.
 
 ---
 *Initialized: 2026-03-25*
