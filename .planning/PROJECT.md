@@ -18,15 +18,15 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 - ✓ Sidecar metadata tracking (`.embed-meta.yaml`) — v0.1.x
 - ✓ UserPromptSubmit/Stop hook infrastructure — v0.1.x
 - ✓ Skill registration via plugin cache — v0.1.x (being replaced)
+- ✓ Embed pipeline reliability: batch Qdrant upsert (32/batch), overlap cap at 25% of take, per-file timeout (300s default) — Validated in Phase 01
+- ✓ Sidecar `current_path` written on creation and auto-healed on embed — Validated in Phase 01
+- ✓ Plugin cache elimination — `.mcp.json` is the sole registration; `_remove_plugin_cache()` cleans legacy paths — Validated in Phase 01
+- ✓ MCP server scaffold (`carta-mcp`) with FastMCP stdio transport, stderr-only logging, no stdout pollution — Validated in Phase 01
 
 ### Active
 
 - [ ] MCP server exposing `carta_search`, `carta_embed`, `carta_scan` tools via stdio transport
 - [ ] Smart hook: similarity threshold fast path (>0.85 inject, <0.6 discard) + Ollama judge for gray zone (0.6–0.85)
-- [ ] Embed pipeline reliability: batch Qdrant upsert (32/batch), overlap cap at 25% of take, per-file timeout (300s default)
-- [ ] Sidecar `current_path` written on creation and auto-healed on embed
-- [ ] Bootstrap hardening: stale skill cache verification, gitignore dedupe, hook quoting fix
-- [ ] Plugin cache elimination — skills replaced by MCP tools; `.mcp.json` is the registration mechanism
 - [ ] Markdown file embedding support (`.md` files scanned but not currently embeddable)
 - [ ] `carta status` command (Qdrant/Ollama health, collection sizes, pending files)
 
@@ -39,7 +39,7 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 
 ## Context
 
-- **Current state (v0.1.11):** CLI-first with four skills registered via plugin cache. Known critical bug: embed pipeline hangs on dense PDFs (overlap loop + sequential Qdrant upserts). Known high bug: stale skill cache not reliably removed, causing wrong skill version to load. Chunk_text overlap fix partially shipped in v0.1.11 but batch upsert and per-file timeout are still missing.
+- **Current state (Phase 01 complete):** Embed pipeline reliability fixed (batch upsert, timeout, overlap cap, sidecar heal). MCP server scaffold (`carta-mcp`) live with wire-protocol discipline. Plugin cache eliminated — `.mcp.json` is the sole registration. 129 tests passing. Foundation ready for Phase 02 (MCP tools: `carta_search`, `carta_embed`, `carta_scan`).
 - **Architecture map:** Modular layered CLI — `carta/cli.py` → `carta/embed/pipeline.py` + `carta/scanner/scanner.py` → Qdrant + Ollama. Config via `.carta/config.yaml`, state via sidecar `.embed-meta.yaml` files.
 - **Plugin cache problem:** Carta manages its own skill cache install rather than using native Claude Code plugin flow. This creates a two-registry problem where lexicographically earlier stale versions win. MCP tools are resolved natively by Claude Code via `.mcp.json` — no cache involved.
 - **Automatic injection design:** Hook fires on UserPromptSubmit, extracts semantic query from prompt, retrieves Qdrant candidates. Fast path: similarity >0.85 → inject immediately. Noise gate: similarity <0.6 → discard. Gray zone: 0.6–0.85 → Ollama lightweight model (0.5B–2B) makes relevance judgment. This keeps context injection demand-driven and noise-free.
@@ -56,11 +56,11 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| MCP-first over hybrid CLI+MCP | Plugin cache is root cause of Issue #7; MCP tools resolve natively via `.mcp.json`, eliminating entire version-resolution problem class | — Pending |
-| Three-tier architecture (Hook + MCP + CLI) | Hook owns automatic injection (push); MCP owns Claude-initiated ops (pull); CLI owns human batch/setup | — Pending |
-| Ollama judge for gray-zone relevance | Binary relevance judgment is a simple task for a small local model; avoids context noise without sacrificing recall | — Pending |
-| Similarity threshold fast path | Avoids Ollama round-trip for clear-hit and clear-miss cases; only gray zone pays the latency cost | — Pending |
-| Embed reliability before MCP exposure | Unreliable pipeline → unreliable MCP tool; fixes are prerequisites not parallel work | — Pending |
+| MCP-first over hybrid CLI+MCP | Plugin cache is root cause of Issue #7; MCP tools resolve natively via `.mcp.json`, eliminating entire version-resolution problem class | — Active |
+| Three-tier architecture (Hook + MCP + CLI) | Hook owns automatic injection (push); MCP owns Claude-initiated ops (pull); CLI owns human batch/setup | — Active |
+| Ollama judge for gray-zone relevance | Binary relevance judgment is a simple task for a small local model; avoids context noise without sacrificing recall | — Active |
+| Similarity threshold fast path | Avoids Ollama round-trip for clear-hit and clear-miss cases; only gray zone pays the latency cost | — Active |
+| Embed reliability before MCP exposure | Unreliable pipeline → unreliable MCP tool; fixes are prerequisites not parallel work | ✓ Validated in Phase 01 |
 
 ## Evolution
 
@@ -80,4 +80,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-25 after initialization*
+*Last updated: 2026-03-25 after Phase 01 completion*
