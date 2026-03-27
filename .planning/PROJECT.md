@@ -21,6 +21,7 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 - ✓ Embed pipeline reliability: batch Qdrant upsert (32/batch), overlap cap at 25% of take, per-file timeout (300s default) — Validated in Phase 01
 - ✓ Sidecar `current_path` written on creation and auto-healed on embed — Validated in Phase 01
 - ✓ Plugin cache elimination — `.mcp.json` is the sole registration; `_remove_plugin_cache()` cleans legacy paths — Validated in Phase 01
+- ✓ Bootstrap hardening: abort on plugin cache residue (BOOT-01), skip gitignore entries covered by parent glob (BOOT-02), portable exec-based hook quoting (BOOT-03) — Validated in Phase 04
 - ✓ MCP server scaffold (`carta-mcp`) with FastMCP stdio transport, stderr-only logging, no stdout pollution — Validated in Phase 01
 
 ### Active
@@ -39,7 +40,7 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 
 ## Context
 
-- **Current state (Phase 02 complete):** Three MCP tools live in `carta/mcp/server.py`: `carta_search` (scored, excerpt-capped results), `carta_embed` (single-file with mtime skip and timeout enforcement), `carta_scan` (pending + drift arrays). Service layer extended: `find_config` moved to `config.py`, `file_mtime` in sidecar schema, `run_embed_file` adapter, `check_embed_drift` in scanner. 144 tests passing. Next: smart hook with Ollama-judge filtering (Phase 03).
+- **Current state (Phase 04 complete):** Bootstrap hardened with three defensive fixes: `carta init` now aborts when plugin cache residue cannot be removed, gitignore entries are skipped when a parent-dir glob already covers them, and hook commands use portable exec-based quoting. `_install_skills()` added to register Carta skills into global plugin cache during init. 17 tests passing.
 - **Architecture map:** Modular layered CLI — `carta/cli.py` → `carta/embed/pipeline.py` + `carta/scanner/scanner.py` → Qdrant + Ollama. Config via `.carta/config.yaml`, state via sidecar `.embed-meta.yaml` files.
 - **Plugin cache problem:** Carta manages its own skill cache install rather than using native Claude Code plugin flow. This creates a two-registry problem where lexicographically earlier stale versions win. MCP tools are resolved natively by Claude Code via `.mcp.json` — no cache involved.
 - **Automatic injection design:** Hook fires on UserPromptSubmit, extracts semantic query from prompt, retrieves Qdrant candidates. Fast path: similarity >0.85 → inject immediately. Noise gate: similarity <0.6 → discard. Gray zone: 0.6–0.85 → Ollama lightweight model (0.5B–2B) makes relevance judgment. This keeps context injection demand-driven and noise-free.
@@ -80,4 +81,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-26 after Phase 02 completion*
+*Last updated: 2026-03-27 after Phase 04 completion*
