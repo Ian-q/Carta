@@ -94,4 +94,15 @@ Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
 
 ---
-*Created: 2026-03-25*
+
+### Phase 999.2: Vision Model Pipeline for Image-Embedded PDF Content (BACKLOG)
+
+**Goal:** Detect image-heavy pages in PDFs via PyMuPDF, extract image bytes, pass to a local vision model (LLaVA or moondream2 via Ollama), and embed the text description. Enables extracting data from charts, plots, and diagrams (e.g. temperature response curves, register timing diagrams in datasheets) that have no text layer.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
+---
+*Created: 2026-03-26*
