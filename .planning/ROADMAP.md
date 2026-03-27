@@ -40,10 +40,10 @@ Plans:
   2. Claude can call `carta_embed` on a specific file path and the file is embedded with per-file timeout enforcement
   3. Claude can call `carta_scan` and receive a structured list of pending-embed and drift files
   4. `carta-mcp` is invokable as a standalone entrypoint (registered in `pyproject.toml`); tool calls do not raise exceptions on Qdrant or Ollama failure — they return structured error objects
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
-- [ ] 02-01-PLAN.md — Service layer prep (find_config to config.py, file_mtime sidecar, run_embed_file adapter, drift detection)
+- [x] 02-01-PLAN.md — Service layer prep (find_config to config.py, file_mtime sidecar, run_embed_file adapter, drift detection)
 - [ ] 02-02-PLAN.md — MCP tool handlers (carta_search, carta_embed, carta_scan) + test suite
 
 ### Phase 3: Smart Hook + Markdown Embedding
@@ -73,7 +73,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Pipeline Reliability + MCP Foundation | 0/3 | Planned | - |
-| 2. MCP Tools | 0/2 | Planned | - |
+| 2. MCP Tools | 1/2 | In Progress|  |
 | 3. Smart Hook + Markdown Embedding | 0/? | Not started | - |
 | 4. Bootstrap Hardening | 0/? | Not started | - |
 
