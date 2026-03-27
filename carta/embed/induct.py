@@ -53,10 +53,12 @@ def generate_sidecar_stub(
     rel_path = file_path.relative_to(repo_root)
     doc_type = infer_doc_type(rel_path)
     slug = slug_from_filename(file_path.name)
+    file_type = "markdown" if file_path.suffix == ".md" else "pdf"
 
     stub = {
         "slug": slug,
         "doc_type": doc_type,
+        "file_type": file_type,
         "current_path": str(rel_path),
         "status": "pending",
         "indexed_at": None,
