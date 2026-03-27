@@ -71,7 +71,10 @@ Plans:
   1. If plugin cache deletion fails or leaves residue, `carta init` prints a clear error rather than silently continuing
   2. Running `carta init` twice on the same project does not add duplicate gitignore entries when a parent glob already covers the target
   3. The hook fires correctly when Claude Code is launched from a project subdirectory — the `exec` quoting pattern resolves the project root portably
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 04-01-PLAN.md — Bootstrap hardening: cache residue exit, gitignore parent-glob skip, portable exec hook quoting + tests
 
 ## Progress
 
@@ -80,7 +83,7 @@ Plans:
 | 1. Pipeline Reliability + MCP Foundation | 0/3 | Planned | - |
 | 2. MCP Tools | 1/2 | In Progress|  |
 | 3. Smart Hook + Markdown Embedding | 3/3 | Complete   | 2026-03-27 |
-| 4. Bootstrap Hardening | 0/? | Not started | - |
+| 4. Bootstrap Hardening | 0/1 | Not started | - |
 
 ## Backlog
 
