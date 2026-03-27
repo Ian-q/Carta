@@ -25,7 +25,7 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 
 ### Active
 
-- [ ] MCP server exposing `carta_search`, `carta_embed`, `carta_scan` tools via stdio transport
+- ✓ MCP server exposing `carta_search`, `carta_embed`, `carta_scan` tools via stdio transport — Validated in Phase 02
 - [ ] Smart hook: similarity threshold fast path (>0.85 inject, <0.6 discard) + Ollama judge for gray zone (0.6–0.85)
 - [ ] Markdown file embedding support (`.md` files scanned but not currently embeddable)
 - [ ] `carta status` command (Qdrant/Ollama health, collection sizes, pending files)
@@ -39,7 +39,7 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 
 ## Context
 
-- **Current state (Phase 01 complete):** Embed pipeline reliability fixed (batch upsert, timeout, overlap cap, sidecar heal). MCP server scaffold (`carta-mcp`) live with wire-protocol discipline. Plugin cache eliminated — `.mcp.json` is the sole registration. 129 tests passing. Foundation ready for Phase 02 (MCP tools: `carta_search`, `carta_embed`, `carta_scan`).
+- **Current state (Phase 02 complete):** Three MCP tools live in `carta/mcp/server.py`: `carta_search` (scored, excerpt-capped results), `carta_embed` (single-file with mtime skip and timeout enforcement), `carta_scan` (pending + drift arrays). Service layer extended: `find_config` moved to `config.py`, `file_mtime` in sidecar schema, `run_embed_file` adapter, `check_embed_drift` in scanner. 144 tests passing. Next: smart hook with Ollama-judge filtering (Phase 03).
 - **Architecture map:** Modular layered CLI — `carta/cli.py` → `carta/embed/pipeline.py` + `carta/scanner/scanner.py` → Qdrant + Ollama. Config via `.carta/config.yaml`, state via sidecar `.embed-meta.yaml` files.
 - **Plugin cache problem:** Carta manages its own skill cache install rather than using native Claude Code plugin flow. This creates a two-registry problem where lexicographically earlier stale versions win. MCP tools are resolved natively by Claude Code via `.mcp.json` — no cache involved.
 - **Automatic injection design:** Hook fires on UserPromptSubmit, extracts semantic query from prompt, retrieves Qdrant candidates. Fast path: similarity >0.85 → inject immediately. Noise gate: similarity <0.6 → discard. Gray zone: 0.6–0.85 → Ollama lightweight model (0.5B–2B) makes relevance judgment. This keeps context injection demand-driven and noise-free.
@@ -80,4 +80,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-25 after Phase 01 completion*
+*Last updated: 2026-03-26 after Phase 02 completion*
