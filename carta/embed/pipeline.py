@@ -13,12 +13,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Filter
 
 from carta.config import collection_name, find_config
-from carta.embed.parse import extract_pdf_text, chunk_text
+from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
 
 
-_SUPPORTED_EXTENSIONS = [".pdf"]
+_SUPPORTED_EXTENSIONS = [".pdf", ".md"]
 
 # Maximum seconds to allow a single file's embed processing to run
 FILE_TIMEOUT_S = 300
@@ -99,8 +99,12 @@ def _embed_one_file(
         Tuple of (chunk_count: int, sidecar_updates: dict).
     """
     if verbose:
-        print(f"    extracting PDF text...", flush=True)
-    pages = extract_pdf_text(file_path)
+        print(f"    extracting {file_path.suffix} text...", flush=True)
+    if file_path.suffix == ".md":
+        pages, frontmatter_meta = extract_markdown_text(file_path)
+    else:
+        pages = extract_pdf_text(file_path)
+        frontmatter_meta = {}
     if verbose:
         print(f"    extracted {len(pages)} page(s); chunking...", flush=True)
     raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
@@ -113,6 +117,8 @@ def _embed_one_file(
         "file_path": str(file_path.relative_to(repo_root)),
         "doc_type": file_info.get("doc_type", "unknown"),
     }
+    if frontmatter_meta:
+        metadata["frontmatter"] = frontmatter_meta
 
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     count = upsert_chunks(enriched, cfg, client=client)
