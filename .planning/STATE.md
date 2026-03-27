@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
-status: Ready to execute
-last_updated: "2026-03-27T03:58:09.782Z"
+status: Phase complete — ready for verification
+last_updated: "2026-03-27T08:25:03.251Z"
 progress:
-  total_phases: 5
-  completed_phases: 2
+  total_phases: 6
+  completed_phases: 3
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Carta v0.2 — Project State
@@ -20,12 +20,12 @@ progress:
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 03 — smart-hook-markdown-embedding
+**Current focus:** Phase 04 — bootstrap-hardening
 
 ## Current Position
 
-Phase: 03 (smart-hook-markdown-embedding) — EXECUTING
-Plan: 3 of 3
+Phase: 03 (smart-hook-markdown-embedding) — COMPLETE
+Plan: 3 of 3 (all plans complete)
 
 ## Performance Metrics
 
@@ -41,6 +41,7 @@ Plan: 3 of 3
 | Phase 02 P02 | 15 | 2 tasks | 3 files |
 | Phase 03 P01 | 20 | 2 tasks | 6 files |
 | Phase 03 P02 | 25 | 2 tasks | 7 files |
+| Phase 03 P03 | 15 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -52,6 +53,7 @@ Plan: 3 of 3
 - Ollama judge for gray-zone relevance: `qwen2.5:0.5b`, 3s hard timeout, fail-open
 - Use AST walk for print/sys.exit detection in MCP tests — avoids docstring false positives (01-02)
 - Plugin cache replaced by cleanup-with-assertion routine; .mcp.json is sole registration (01-02)
+- Hook files restored from git objects (worktree artifact) — no content change; all 20 hook tests pass (03-03)
 
 ### Pitfalls to Avoid
 
@@ -82,9 +84,9 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-03-27T03:58:09.780Z
+**Last session:** 2026-03-27T08:25:03.249Z
 
-**To resume:** Read `.planning/ROADMAP.md` for phase goals and success criteria. Current phase is Phase 1, Plan 2 of 3 complete. Next: 01-03-PLAN.md.
+**To resume:** Phase 3 complete. Next: Phase 4 (Bootstrap Hardening) — stale cache assertions, gitignore deduplication, portable hook quoting. Read `.planning/ROADMAP.md` for Phase 4 requirements.
 
 ---
 *Initialized: 2026-03-25*
