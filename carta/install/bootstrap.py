@@ -147,6 +147,28 @@ def _register_hooks(project_root: Path) -> None:
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
+def _remove_plugin_cache() -> bool:
+    """Remove stale plugin cache directory for carta-cc.
+
+    Returns True if the cache directory is absent after the operation (clean state).
+    Returns False if residue remains — caller should abort and inform the user.
+    """
+    version_parent = Path.home() / ".claude/plugins/cache/carta-cc/carta-cc"
+    if not version_parent.exists():
+        return True
+    try:
+        shutil.rmtree(version_parent)
+    except OSError as e:
+        print(f"  Error: could not remove plugin cache at {version_parent}: {e}", file=sys.stderr)
+    if version_parent.exists():
+        print(
+            f"  Error: plugin cache residue at {version_parent} — remove it manually.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def _install_skills() -> None:
     """Install Carta skills into the global plugin cache so Claude Code can resolve them."""
     import json, datetime
