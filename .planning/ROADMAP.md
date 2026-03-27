@@ -9,7 +9,7 @@
 
 - [ ] **Phase 1: Pipeline Reliability + MCP Foundation** - Reliable embed pipeline, MCP scaffolding, plugin cache migration
 - [ ] **Phase 2: MCP Tools** - Full carta_search / carta_embed / carta_scan tool surface live in Claude Code
-- [ ] **Phase 3: Smart Hook + Markdown Embedding** - Automatic context injection with threshold routing and Ollama judge
+- [x] **Phase 3: Smart Hook + Markdown Embedding** - Automatic context injection with threshold routing and Ollama judge (completed 2026-03-27)
 - [ ] **Phase 4: Bootstrap Hardening** - Stale cache assertions, gitignore deduplication, portable hook quoting
 
 ## Phase Details
@@ -56,12 +56,12 @@ Plans:
   3. On a gray-zone prompt (0.60–0.85), the hook calls the Ollama judge and injects only on a "yes" verdict; if the judge call exceeds 3 seconds the prompt proceeds unblocked
   4. No more than 5 chunks are ever injected in a single prompt regardless of score band
   5. Threshold values (high/low bounds) and judge model are readable from `.carta/config.yaml`; running `carta embed` on a `.md` file embeds it to Qdrant with `file_type: markdown` in the sidecar
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 03-01-PLAN.md — Config schema update + markdown embedding support
 - [x] 03-02-PLAN.md — Smart hook module with three-zone score routing and Ollama judge
-- [ ] 03-03-PLAN.md — Integration verification + human smoke test checkpoint
+- [x] 03-03-PLAN.md — Integration verification + human smoke test checkpoint
 
 ### Phase 4: Bootstrap Hardening
 **Goal**: carta init is defensively correct — stale cache deletion is verified, gitignore is idempotent, and the hook command string is portable across project subdirectories
@@ -79,7 +79,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Pipeline Reliability + MCP Foundation | 0/3 | Planned | - |
 | 2. MCP Tools | 1/2 | In Progress|  |
-| 3. Smart Hook + Markdown Embedding | 2/3 | In Progress|  |
+| 3. Smart Hook + Markdown Embedding | 3/3 | Complete   | 2026-03-27 |
 | 4. Bootstrap Hardening | 0/? | Not started | - |
 
 ## Backlog
