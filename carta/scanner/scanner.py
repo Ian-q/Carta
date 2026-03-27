@@ -428,6 +428,50 @@ def check_embed_induction_needed(repo_root: Path, cfg: dict = None) -> list:
     return issues
 
 
+def check_embed_drift(repo_root: Path, cfg: dict = None) -> list:
+    """Flag embedded files whose mtime is newer than the sidecar's file_mtime.
+
+    Only checks sidecars with status='embedded' and a file_mtime field.
+    Returns list of issue dicts with type='embed_drift'.
+    """
+    import os
+    issues = []
+    scan_dirs = _get_embed_scan_dirs(cfg or {})
+    for scan_dir in scan_dirs:
+        dir_path = repo_root / scan_dir
+        if not dir_path.exists():
+            continue
+        for f in dir_path.rglob("*"):
+            if f.suffix.lower() not in _EMBED_EXTENSIONS:
+                continue
+            if f.name.startswith("."):
+                continue
+            sidecar = f.parent / (f.stem + ".embed-meta.yaml")
+            if not sidecar.exists():
+                continue  # no sidecar = pending, not drift
+            data = parse_sidecar(sidecar)
+            if not data:
+                continue
+            if data.get("status") != "embedded":
+                continue  # only check embedded files
+            stored_mtime = data.get("file_mtime")
+            if stored_mtime is None:
+                continue  # legacy sidecar without mtime
+            try:
+                current_mtime = os.path.getmtime(str(f))
+            except OSError:
+                continue
+            if current_mtime > stored_mtime:
+                rel = str(f.relative_to(repo_root))
+                issues.append({
+                    "type": "embed_drift",
+                    "severity": "warning",
+                    "doc": rel,
+                    "detail": f"File modified since last embed (mtime {current_mtime:.0f} > stored {stored_mtime:.0f})",
+                })
+    return issues
+
+
 def check_embed_lfs_not_pulled(repo_root: Path, cfg: dict = None) -> list:
     """Flag embeddable files that are Git LFS pointers (content not pulled)."""
     issues = []

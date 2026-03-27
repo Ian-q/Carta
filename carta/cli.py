@@ -17,6 +17,8 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(package_parent))
 
 from carta import __version__
+from carta.config import find_config
+
 
 def _embed_lock_read_pid(lock_path: Path):
     try:
@@ -71,21 +73,6 @@ def _acquire_embed_lock(lock_path: Path) -> None:
         except OSError:
             pass
 
-
-def find_config(start: Path = None) -> Path:
-    current = (start or Path.cwd()).resolve()
-    while True:
-        candidate = current / ".carta" / "config.yaml"
-        if candidate.exists():
-            return candidate
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    raise FileNotFoundError(
-        ".carta/config.yaml not found (searched up to filesystem root). "
-        "Run `carta init` first."
-    )
 
 def cmd_scan(args):
     from carta.config import load_config
