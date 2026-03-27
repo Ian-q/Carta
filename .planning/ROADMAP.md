@@ -44,7 +44,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md — Service layer prep (find_config to config.py, file_mtime sidecar, run_embed_file adapter, drift detection)
-- [ ] 02-02-PLAN.md — MCP tool handlers (carta_search, carta_embed, carta_scan) + test suite
+- [x] 02-02-PLAN.md — MCP tool handlers (carta_search, carta_embed, carta_scan) + test suite
 
 ### Phase 3: Smart Hook + Markdown Embedding
 **Goal**: Relevant documentation surfaces automatically on UserPromptSubmit without context noise; markdown files are embeddable alongside PDFs

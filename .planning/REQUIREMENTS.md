@@ -19,7 +19,7 @@
 - [x] **MCP-02**: `carta_search` MCP tool queries Qdrant and returns scored, source-attributed results (score, source path, chunk excerpt)
 - [x] **MCP-03**: `carta_embed` MCP tool embeds a single specified file with per-file timeout enforcement inherited from PIPE-02
 - [x] **MCP-04**: `carta_scan` MCP tool returns structured scan results listing pending-embed and drift files
-- [ ] **MCP-05**: `carta-mcp` packaged as a separate `[project.scripts]` entrypoint in `pyproject.toml`, invokable as `carta-mcp`
+- [x] **MCP-05**: `carta-mcp` packaged as a separate `[project.scripts]` entrypoint in `pyproject.toml`, invokable as `carta-mcp`
 - [x] **MCP-06**: `.mcp.json` added to project root as the sole Carta registration point for Claude Code; plugin cache registration removed entirely
 - [x] **MCP-07**: `carta init` automatically removes stale `~/.claude/plugins/carta/` cache directories from v0.1.x installations; cleanup is verified with a post-deletion assertion
 
@@ -81,7 +81,7 @@
 | MCP-02 | Phase 2 | Complete |
 | MCP-03 | Phase 2 | Complete |
 | MCP-04 | Phase 2 | Complete |
-| MCP-05 | Phase 2 | Pending |
+| MCP-05 | Phase 2 | Complete |
 | MCP-06 | Phase 1 | Complete |
 | MCP-07 | Phase 1 | Complete |
 | HOOK-01 | Phase 3 | Pending |
