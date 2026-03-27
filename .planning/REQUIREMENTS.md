@@ -31,11 +31,11 @@
 - [ ] **HOOK-04**: Gray zone (0.60–0.85): `hooks/judge.py` calls Ollama (`qwen2.5:0.5b` default) for a binary relevance judgment; inject only on "yes"
 - [ ] **HOOK-05**: Hard 3-second wall-clock timeout wraps all Ollama judge calls; on timeout, hook fails open (no injection, prompt proceeds unblocked)
 - [ ] **HOOK-06**: Maximum 5 injected chunks per prompt enforced regardless of score band, preventing context flooding
-- [ ] **HOOK-07**: Similarity thresholds (high/low bounds) and judge model are configurable in `.carta/config.yaml`
+- [x] **HOOK-07**: Similarity thresholds (high/low bounds) and judge model are configurable in `.carta/config.yaml`
 
 ### Embedding Improvements
 
-- [ ] **EMBED-01**: Markdown files (`.md`) processed by the embed pipeline alongside PDFs — text extracted directly, chunked with same logic, upserted to Qdrant with `file_type: markdown` in sidecar
+- [x] **EMBED-01**: Markdown files (`.md`) processed by the embed pipeline alongside PDFs — text extracted directly, chunked with same logic, upserted to Qdrant with `file_type: markdown` in sidecar
 
 ### Bootstrap Hardening
 
@@ -90,8 +90,8 @@
 | HOOK-04 | Phase 3 | Pending |
 | HOOK-05 | Phase 3 | Pending |
 | HOOK-06 | Phase 3 | Pending |
-| HOOK-07 | Phase 3 | Pending |
-| EMBED-01 | Phase 3 | Pending |
+| HOOK-07 | Phase 3 | Complete |
+| EMBED-01 | Phase 3 | Complete |
 | BOOT-01 | Phase 4 | Pending |
 | BOOT-02 | Phase 4 | Pending |
 | BOOT-03 | Phase 4 | Pending |
