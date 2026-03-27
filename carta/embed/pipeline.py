@@ -221,7 +221,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     ensure_collection(client, collection_name(cfg, "doc"))
 
     chunking = cfg.get("embed", {}).get("chunking", {})
-    max_tokens = chunking.get("max_tokens", 800)
+    max_tokens = chunking.get("max_tokens", 400)
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
 
     count, sidecar_updates = _embed_one_file(
@@ -267,7 +267,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
     _heal_sidecar_current_paths(repo_root, verbose=verbose)
 
     chunking = cfg.get("embed", {}).get("chunking", {})
-    max_tokens = chunking.get("max_tokens", 800)
+    max_tokens = chunking.get("max_tokens", 400)
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
 
     pending = discover_pending_files(repo_root)

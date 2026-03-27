@@ -139,7 +139,7 @@ def _estimate_tokens(text: str) -> int:
 
 def chunk_text(
     pages: list[dict],
-    max_tokens: int = 800,
+    max_tokens: int = 400,
     overlap_fraction: float = 0.15,
 ) -> list[dict]:
     """Chunk extracted PDF pages into sized chunks with overlap.
@@ -247,7 +247,7 @@ def chunk_text(
 
 def chunk_transcript(
     transcript_text: str,
-    max_tokens: int = 800,
+    max_tokens: int = 400,
 ) -> list[dict]:
     """Chunk a transcript into sized chunks at speaker/segment boundaries.
 

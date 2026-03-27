@@ -20,21 +20,44 @@ VECTOR_DIM = 768
 BATCH_SIZE = 32
 
 
+_CONTEXT_OVERFLOW = "the input length exceeds the context length"
+
+
 def get_embedding(
     text: str,
     ollama_url: str = "http://localhost:11434",
     model: str = "nomic-embed-text:latest",
     prefix: str = "search_document: ",
 ) -> list[float]:
-    """Get embedding vector from Ollama API."""
-    resp = requests.post(
-        f"{ollama_url}/api/embeddings",
-        json={"model": model, "prompt": f"{prefix}{text}"},
-        timeout=60,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Ollama embedding failed ({resp.status_code}): {resp.text[:200]}")
-    return resp.json()["embedding"]
+    """Get embedding vector from Ollama API.
+
+    If Ollama reports the input exceeds the model's context length, truncates
+    the text by 25% per attempt and retries up to 3 times before raising.
+    """
+    attempt_text = text
+    for attempt in range(4):
+        resp = requests.post(
+            f"{ollama_url}/api/embeddings",
+            json={"model": model, "prompt": f"{prefix}{attempt_text}"},
+            timeout=60,
+        )
+        if resp.status_code == 200:
+            if attempt > 0:
+                print(
+                    f"  (truncated to {len(attempt_text.split())} words after {attempt} attempt(s))",
+                    flush=True,
+                )
+            return resp.json()["embedding"]
+        body = resp.text
+        if resp.status_code == 500 and _CONTEXT_OVERFLOW in body:
+            words = attempt_text.split()
+            keep = int(len(words) * 0.75)
+            if keep < 10:
+                raise RuntimeError(f"Ollama embedding failed — input too long even after truncation: {body[:200]}")
+            attempt_text = " ".join(words[:keep])
+            continue
+        raise RuntimeError(f"Ollama embedding failed ({resp.status_code}): {body[:200]}")
+    raise RuntimeError(f"Ollama embedding failed — input too long after 3 truncation attempts")
 
 
 def ensure_collection(client: QdrantClient, coll_name: str) -> None:
