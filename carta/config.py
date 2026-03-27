@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 import yaml
 
 REQUIRED_FIELDS = ["project_name", "qdrant_url"]
@@ -75,6 +76,33 @@ def load_config(path: Path) -> dict:
 
 def collection_name(cfg: dict, type_: str) -> str:
     return f"{cfg['project_name']}_{type_}"
+
+
+def find_config(start: Path = None) -> Path:
+    """Walk up from start (or cwd) looking for .carta/config.yaml.
+
+    Args:
+        start: directory to begin the search (defaults to cwd).
+
+    Returns:
+        Path to the config file.
+
+    Raises:
+        FileNotFoundError: if no .carta/config.yaml found up to filesystem root.
+    """
+    current = (start or Path.cwd()).resolve()
+    while True:
+        candidate = current / ".carta" / "config.yaml"
+        if candidate.exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    raise FileNotFoundError(
+        ".carta/config.yaml not found (searched up to filesystem root). "
+        "Run `carta init` first."
+    )
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
