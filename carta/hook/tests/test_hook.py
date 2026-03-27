@@ -209,7 +209,7 @@ def test_gray_zone_judge_maybe_discards():
 # ---------------------------------------------------------------------------
 
 def test_judge_timeout_fails_open():
-    """Ollama judge sleeping 5s with 3s timeout: no output, completes within 4s."""
+    """Ollama judge sleeping 5s with 3s timeout: injects (fail-open per HOOK-05), completes within 6.5s."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg(judge_timeout_s=3)
 
@@ -228,9 +228,12 @@ def test_judge_timeout_fails_open():
         out = _capture_main()
     elapsed = time.time() - t_start
 
-    assert out.strip() == "", "Timeout should produce no output (fail-open)"
+    # HOOK-05: timeout is fail-open — inject context rather than discard
+    assert out.strip(), "Timeout should inject (fail-open per HOOK-05)"
+    data = json.loads(out.strip())
+    assert "context" in data
     # Hook logic completes at timeout (3s); thread pool shutdown waits for the
-    # slow thread to finish (5s total). Allow up to 6s for full cleanup.
+    # slow thread to finish (5s total). Allow up to 6.5s for full cleanup.
     assert elapsed < 6.5, f"Should complete within 6.5s, took {elapsed:.2f}s"
 
 
