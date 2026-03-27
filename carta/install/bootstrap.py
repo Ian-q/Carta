@@ -37,6 +37,13 @@ def run_bootstrap(project_root: Path) -> None:
     _write_config(carta_dir, project_name, qdrant_url, modules)
 
     _register_hooks(project_root)
+    if not _remove_plugin_cache():
+        print(
+            "  carta init aborted: stale plugin cache residue remains. "
+            "Remove the directories listed above manually, then re-run carta init.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     _install_skills()
     collections_ok = _create_qdrant_collections(project_name, qdrant_url)
     _update_gitignore(project_root)
@@ -135,7 +142,7 @@ def _register_hooks(project_root: Path) -> None:
         existing = hooks.get(hook_name)
         if existing and "carta" not in str(existing).lower():
             print(f"  Warning: overwriting existing {hook_name} hook: {existing}")
-        cmd = f"""bash -c '"$(git rev-parse --show-toplevel)/.carta/hooks/{script_name}"'"""
+        cmd = f"bash -c 'exec \"$(git rev-parse --show-toplevel)/.carta/hooks/{script_name}\"'"
         hooks[hook_name] = [{"matcher": "", "hooks": [{"type": "command", "command": cmd}]}]
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
@@ -232,6 +239,9 @@ def _update_gitignore(project_root: Path) -> None:
     gitignore = project_root / ".gitignore"
     entries = [".carta/scan-results.json", ".carta/carta/", ".carta/hooks/"]
     existing_lines = gitignore.read_text().splitlines() if gitignore.exists() else []
+    parent_globs = {".carta/", ".carta/*"}
+    if parent_globs & set(existing_lines):
+        return
     new_entries = [e for e in entries if e not in existing_lines]
     if not new_entries:
         return
