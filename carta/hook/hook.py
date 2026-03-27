@@ -186,7 +186,7 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
 def _judge_with_timeout(
     prompt: str, hits: list[dict], cfg: dict, timeout_s: int
 ) -> bool:
-    """Run Ollama judge in a thread; return False on timeout or error (HOOK-05, D-09)."""
+    """Run Ollama judge in a thread; return True on timeout (fail-open per HOOK-05), False on other errors."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_call_ollama_judge, prompt, hits, cfg)
         try:
@@ -196,7 +196,7 @@ def _judge_with_timeout(
                 f"carta-hook: judge timeout after {timeout_s}s (fail-open)",
                 file=sys.stderr,
             )
-            return False
+            return True
         except Exception as e:
             print(f"carta-hook: judge exception (fail-open): {e}", file=sys.stderr)
             return False
