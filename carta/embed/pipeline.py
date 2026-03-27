@@ -266,6 +266,18 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
     # Heal sidecars missing current_path before processing
     _heal_sidecar_current_paths(repo_root, verbose=verbose)
 
+    # Auto-induct any supported files that lack a sidecar (e.g. after sidecar deletion)
+    docs_root_path = repo_root / cfg.get("docs_root", "docs/")
+    if docs_root_path.is_dir():
+        for ext in _SUPPORTED_EXTENSIONS:
+            for file_path in docs_root_path.rglob(f"*{ext}"):
+                sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
+                if not sidecar_path.exists():
+                    stub = generate_sidecar_stub(file_path, repo_root, cfg)
+                    write_sidecar(file_path, stub)
+                    if verbose:
+                        print(f"  inducted: {file_path.relative_to(repo_root)}", flush=True)
+
     chunking = cfg.get("embed", {}).get("chunking", {})
     max_tokens = chunking.get("max_tokens", 400)
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
