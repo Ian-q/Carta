@@ -1,5 +1,6 @@
 """Top-level pipeline orchestration for carta embed."""
 
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -10,13 +11,15 @@ import yaml
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter
 
-from carta.config import collection_name
+from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, chunk_text
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding
-from carta.embed.induct import read_sidecar
+from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
 
 
 _SUPPORTED_EXTENSIONS = [".pdf"]
+
+FILE_TIMEOUT_S = 300
 
 
 def is_lfs_pointer(file_path: Path) -> bool:
@@ -66,6 +69,122 @@ def discover_pending_files(repo_root: Path) -> list[dict]:
             })
 
     return results
+
+
+def _embed_one_file(
+    file_path: Path,
+    file_info: dict,
+    cfg: dict,
+    client,
+    repo_root: Path,
+    max_tokens: int,
+    overlap_fraction: float,
+    verbose: bool = False,
+) -> tuple:
+    """Extract, chunk, embed, and upsert a single file.
+
+    Args:
+        file_path: absolute path to the source file.
+        file_info: sidecar data dict (slug, doc_type, etc.).
+        cfg: carta config dict.
+        client: connected QdrantClient.
+        repo_root: repo root for relative path computation.
+        max_tokens: chunking parameter.
+        overlap_fraction: chunking parameter.
+        verbose: if True, print progress to stdout.
+
+    Returns:
+        Tuple of (chunk_count: int, sidecar_updates: dict).
+    """
+    pages = extract_pdf_text(file_path)
+    raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
+
+    slug = file_info.get("slug", file_path.stem)
+    metadata = {
+        "slug": slug,
+        "file_path": str(file_path.relative_to(repo_root)),
+        "doc_type": file_info.get("doc_type", "unknown"),
+    }
+
+    enriched = [{**metadata, **chunk} for chunk in raw_chunks]
+    count = upsert_chunks(enriched, cfg, client=client)
+
+    sidecar_updates = {
+        "status": "embedded",
+        "indexed_at": datetime.now(timezone.utc).isoformat(),
+        "chunk_count": count,
+        "file_mtime": os.path.getmtime(str(file_path)),
+    }
+    return count, sidecar_updates
+
+
+def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = False) -> dict:
+    """Embed a single specified file. Returns status dict.
+
+    Args:
+        path: absolute or repo-relative path to the file.
+        cfg: carta config dict.
+        force: if True, re-embed even if file mtime is unchanged.
+        verbose: if True, print progress to stdout.
+
+    Returns:
+        {"status": "ok", "chunks": int} on success.
+        {"status": "skipped", "reason": str} when file is already current.
+
+    Raises:
+        FileNotFoundError: if path does not exist.
+        RuntimeError: if Qdrant is unreachable.
+    """
+    # Resolve repo root from find_config
+    cfg_path = find_config()
+    repo_root = cfg_path.parent.parent
+
+    file_path = Path(path)
+    if not file_path.is_absolute():
+        file_path = (repo_root / file_path).resolve()
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"Path does not exist: {path}")
+
+    sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
+
+    # Check mtime skip (only when sidecar exists and force=False)
+    if sidecar_path.exists() and not force:
+        sidecar = read_sidecar(sidecar_path)
+        if sidecar is not None:
+            stored_mtime = sidecar.get("file_mtime")
+            if stored_mtime is not None:
+                current_mtime = os.path.getmtime(str(file_path))
+                if current_mtime == stored_mtime:
+                    return {"status": "skipped", "reason": "already embedded, file unchanged"}
+
+    # Generate sidecar if it doesn't exist
+    if not sidecar_path.exists():
+        stub = generate_sidecar_stub(file_path, repo_root, cfg)
+        write_sidecar(file_path, stub)
+
+    # Read sidecar for file_info
+    sidecar_data = read_sidecar(sidecar_path) or {}
+    file_info = {
+        "slug": sidecar_data.get("slug", file_path.stem),
+        "doc_type": sidecar_data.get("doc_type", "unknown"),
+        "sidecar_path": sidecar_path,
+        "file_path": file_path,
+    }
+
+    # Connect to Qdrant
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+    ensure_collection(client, collection_name(cfg, "doc"))
+
+    chunking = cfg.get("embed", {}).get("chunking", {})
+    max_tokens = chunking.get("max_tokens", 800)
+    overlap_fraction = chunking.get("overlap_fraction", 0.15)
+
+    count, sidecar_updates = _embed_one_file(
+        file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose
+    )
+    _update_sidecar(sidecar_path, sidecar_updates)
+    return {"status": "ok", "chunks": count}
 
 
 def run_embed(repo_root: Path, cfg: dict) -> dict:
@@ -120,32 +239,11 @@ def run_embed(repo_root: Path, cfg: dict) -> dict:
         t0 = time.monotonic()
 
         try:
-            print(f"  [{idx}/{total}]   extracting PDF text...", flush=True)
-            pages = extract_pdf_text(file_path)
-            print(f"  [{idx}/{total}]   extracted {len(pages)} page(s); chunking...", flush=True)
-            raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
-            print(f"  [{idx}/{total}]   built {len(raw_chunks)} chunk(s); embedding + upserting...", flush=True)
-
-            slug = file_info.get("slug", file_path.stem)
-            metadata = {
-                "slug": slug,
-                "file_path": str(file_path.relative_to(repo_root)),
-                "doc_type": file_info.get("doc_type", "unknown"),
-            }
-
-            # Build enriched chunks for upsert_chunks (needs slug + chunk_index)
-            enriched = [
-                {**metadata, **chunk}
-                for chunk in raw_chunks
-            ]
-
-            count = upsert_chunks(enriched, cfg, client=client)
-
-            _update_sidecar(sidecar_path, {
-                "status": "embedded",
-                "indexed_at": datetime.now(timezone.utc).isoformat(),
-                "chunk_count": count,
-            })
+            print(f"  [{idx}/{total}]   extracting and embedding: {file_path.name}...", flush=True)
+            count, sidecar_updates = _embed_one_file(
+                file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose=False
+            )
+            _update_sidecar(sidecar_path, sidecar_updates)
             elapsed = time.monotonic() - t0
             print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
             summary["embedded"] += 1
