@@ -11,6 +11,8 @@
 - [ ] **Phase 2: MCP Tools** - Full carta_search / carta_embed / carta_scan tool surface live in Claude Code
 - [x] **Phase 3: Smart Hook + Markdown Embedding** - Automatic context injection with threshold routing and Ollama judge (completed 2026-03-27)
 - [x] **Phase 4: Bootstrap Hardening** - Stale cache assertions, gitignore deduplication, portable hook quoting (completed 2026-03-27)
+- [ ] **Phase 5: Hook Wiring + Entry Point Fix** - Wire shell stub to Python module, register carta-hook entry point, fix HOOK-05 fail-open logic
+- [ ] **Phase 6: Phase 3 Verification + Housekeeping** - Write Phase 3 VERIFICATION.md, update stale ROADMAP progress entries
 
 ## Phase Details
 
@@ -76,14 +78,44 @@ Plans:
 Plans:
 - [x] 04-01-PLAN.md — Bootstrap hardening: cache residue exit, gitignore parent-glob skip, portable exec hook quoting + tests
 
+### Phase 5: Hook Wiring + Entry Point Fix
+**Goal:** The smart hook is fully wired end-to-end — `carta-prompt-hook.sh` calls the Python module, `carta-hook` is a registered command, and the HOOK-05 fail-open timeout logic is corrected
+**Depends on**: Phase 4
+**Requirements**: HOOK-01, HOOK-02, HOOK-03, HOOK-04, HOOK-05, HOOK-06, HOOK-07
+**Gap Closure:** Closes gaps from v0.2 audit — shell stub wiring, pyproject.toml entry point, HOOK-05 logic inversion
+**Success Criteria** (what must be TRUE):
+  1. `carta-prompt-hook.sh` invokes `carta-hook` after the enabled check — the Python hook module is reachable
+  2. `carta-hook` exists on PATH after `pip install` (registered in `pyproject.toml [project.scripts]`)
+  3. On `TimeoutError` in `_judge_with_timeout`, the hook returns `True` (inject / fail open)
+  4. Flow C works end-to-end: Claude Code hook triggers → shell stub → Python hook → inject/discard
+**Plans:** 0 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Wire hook shell stub, register carta-hook entry point, fix HOOK-05 fail-open
+
+### Phase 6: Phase 3 Verification + Housekeeping
+**Goal:** Phase 3 has a VERIFICATION.md confirming all HOOK-* and EMBED-01 requirements; ROADMAP.md progress table reflects actual completion state
+**Depends on**: Phase 5
+**Requirements**: EMBED-01
+**Gap Closure:** Closes EMBED-01 (code wired, no verification cert); fixes stale ROADMAP.md progress table
+**Success Criteria** (what must be TRUE):
+  1. `phases/03-smart-hook-markdown-embedding/` contains a VERIFICATION.md with SATISFIED status for all Phase 3 requirements
+  2. ROADMAP.md progress table shows Phases 1, 2, 3, 4, 5 with accurate completion status
+**Plans:** 0 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Write Phase 03 VERIFICATION.md; update ROADMAP.md stale progress entries
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Pipeline Reliability + MCP Foundation | 0/3 | Planned | - |
-| 2. MCP Tools | 1/2 | In Progress|  |
-| 3. Smart Hook + Markdown Embedding | 3/3 | Complete   | 2026-03-27 |
-| 4. Bootstrap Hardening | 1/1 | Complete   | 2026-03-27 |
+| 1. Pipeline Reliability + MCP Foundation | 3/3 | Complete | 2026-03-27 |
+| 2. MCP Tools | 2/2 | Complete | 2026-03-27 |
+| 3. Smart Hook + Markdown Embedding | 3/3 | Complete | 2026-03-27 |
+| 4. Bootstrap Hardening | 1/1 | Complete | 2026-03-27 |
+| 5. Hook Wiring + Entry Point Fix | 0/1 | Pending | - |
+| 6. Phase 3 Verification + Housekeeping | 0/1 | Pending | - |
 
 ## Backlog
 
