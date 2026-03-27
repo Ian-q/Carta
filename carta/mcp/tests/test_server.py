@@ -1,8 +1,13 @@
-"""Tests for MCP server scaffold."""
+"""Tests for MCP server scaffold and tool handlers."""
 import ast
+import concurrent.futures
 import json
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
+# ---------------------------------------------------------------------------
+# Existing scaffold tests (must remain passing)
+# ---------------------------------------------------------------------------
 
 def test_server_module_has_no_print_calls():
     """MCP server must never call print() — stdout is JSON-RPC only."""
@@ -48,3 +53,212 @@ def test_server_main_is_callable():
     """main() must be importable and callable."""
     from carta.mcp.server import main
     assert callable(main)
+
+
+# ---------------------------------------------------------------------------
+# Test fixtures
+# ---------------------------------------------------------------------------
+
+_TEST_CFG = {
+    "project_name": "test-project",
+    "qdrant_url": "http://localhost:6333",
+    "embed": {
+        "ollama_url": "http://localhost:11434",
+        "ollama_model": "nomic-embed-text:latest",
+        "chunking": {"max_tokens": 800, "overlap_fraction": 0.15},
+    },
+    "search": {"top_n": 5},
+}
+
+_MOCK_REPO_ROOT = Path("/tmp/test-project")
+
+# ---------------------------------------------------------------------------
+# carta_search tests
+# ---------------------------------------------------------------------------
+
+def test_carta_search_returns_scored_results():
+    """Happy path: returns list of dicts with score, source, excerpt keys."""
+    from carta.mcp.server import carta_search
+    mock_results = [
+        {"score": 0.95, "source": "docs/spec.pdf", "excerpt": "some text here"},
+        {"score": 0.88, "source": "docs/ref.pdf", "excerpt": "other text"},
+        {"score": 0.72, "source": "docs/guide.pdf", "excerpt": "guide text"},
+    ]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.run_search", return_value=mock_results):
+        result = carta_search("test query")
+    assert isinstance(result, list)
+    assert len(result) == 3
+    for item in result:
+        assert "score" in item
+        assert "source" in item
+        assert "excerpt" in item
+
+
+def test_carta_search_truncates_excerpt():
+    """Excerpts longer than 300 chars are truncated to 300."""
+    from carta.mcp.server import carta_search
+    long_excerpt = "x" * 500
+    mock_results = [{"score": 0.9, "source": "a.pdf", "excerpt": long_excerpt}]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.run_search", return_value=mock_results):
+        result = carta_search("query")
+    assert isinstance(result, list)
+    assert len(result[0]["excerpt"]) <= 300
+
+
+def test_carta_search_respects_top_k():
+    """top_k parameter limits result count."""
+    from carta.mcp.server import carta_search
+    mock_results = [
+        {"score": 0.9 - i * 0.1, "source": f"doc{i}.pdf", "excerpt": "text"}
+        for i in range(5)
+    ]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.run_search", return_value=mock_results):
+        result = carta_search("query", top_k=2)
+    assert len(result) == 2
+
+
+def test_carta_search_rounds_score():
+    """Scores are rounded to 4 decimal places."""
+    from carta.mcp.server import carta_search
+    mock_results = [{"score": 0.123456789, "source": "a.pdf", "excerpt": "text"}]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.run_search", return_value=mock_results):
+        result = carta_search("query")
+    assert result[0]["score"] == round(0.123456789, 4)
+
+
+def test_carta_search_service_unavailable():
+    """RuntimeError from run_search returns service_unavailable error dict."""
+    from carta.mcp.server import carta_search
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.run_search", side_effect=RuntimeError("Qdrant down")):
+        result = carta_search("query")
+    assert isinstance(result, dict)
+    assert result["error"] == "service_unavailable"
+    assert "detail" in result
+
+
+def test_carta_search_config_not_found():
+    """FileNotFoundError from _load_cfg returns service_unavailable error dict."""
+    from carta.mcp.server import carta_search
+    with patch("carta.mcp.server._load_cfg", side_effect=FileNotFoundError("no config")):
+        result = carta_search("query")
+    assert isinstance(result, dict)
+    assert result["error"] == "service_unavailable"
+    assert "detail" in result
+
+
+# ---------------------------------------------------------------------------
+# carta_embed tests
+# ---------------------------------------------------------------------------
+
+def test_carta_embed_success():
+    """Happy path: returns {"status": "ok", "chunks": N}."""
+    from carta.mcp.server import carta_embed
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.run_embed_file", return_value={"status": "ok", "chunks": 5}):
+        result = carta_embed("/tmp/test.pdf")
+    assert result == {"status": "ok", "chunks": 5}
+
+
+def test_carta_embed_skipped():
+    """Already-current file returns skipped dict."""
+    from carta.mcp.server import carta_embed
+    skip_result = {"status": "skipped", "reason": "already embedded, file unchanged"}
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.run_embed_file", return_value=skip_result):
+        result = carta_embed("/tmp/test.pdf")
+    assert result == skip_result
+
+
+def test_carta_embed_file_not_found():
+    """FileNotFoundError returns file_not_found error dict."""
+    from carta.mcp.server import carta_embed
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.run_embed_file", side_effect=FileNotFoundError("no such file")):
+        result = carta_embed("/tmp/missing.pdf")
+    assert isinstance(result, dict)
+    assert result["error"] == "file_not_found"
+    assert "detail" in result
+
+
+def test_carta_embed_timeout():
+    """TimeoutError returns timeout error dict."""
+    from carta.mcp.server import carta_embed
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.run_embed_file", side_effect=concurrent.futures.TimeoutError()):
+        result = carta_embed("/tmp/test.pdf")
+    assert isinstance(result, dict)
+    assert result["error"] == "timeout"
+    assert "detail" in result
+
+
+def test_carta_embed_service_unavailable():
+    """RuntimeError returns service_unavailable error dict."""
+    from carta.mcp.server import carta_embed
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.run_embed_file", side_effect=RuntimeError("Cannot connect")):
+        result = carta_embed("/tmp/test.pdf")
+    assert isinstance(result, dict)
+    assert result["error"] == "service_unavailable"
+    assert "detail" in result
+
+
+def test_carta_embed_force_passed():
+    """force=True is forwarded to run_embed_file."""
+    from carta.mcp.server import carta_embed
+    mock_embed = MagicMock(return_value={"status": "ok", "chunks": 3})
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.run_embed_file", mock_embed):
+        carta_embed("/tmp/test.pdf", force=True)
+    call_kwargs = mock_embed.call_args
+    assert call_kwargs.kwargs.get("force") is True or (
+        len(call_kwargs.args) >= 3 and call_kwargs.args[2] is True
+    )
+
+
+# ---------------------------------------------------------------------------
+# carta_scan tests
+# ---------------------------------------------------------------------------
+
+def test_carta_scan_returns_pending_and_drift():
+    """Happy path: returns dict with pending and drift path lists."""
+    from carta.mcp.server import carta_scan
+    pending_issues = [{"type": "embed_induction_needed", "doc": "a.pdf"}]
+    drift_issues = [{"type": "embed_drift", "doc": "b.pdf"}]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.check_embed_induction_needed", return_value=pending_issues), \
+         patch("carta.mcp.server.check_embed_drift", return_value=drift_issues):
+        result = carta_scan()
+    assert result == {"pending": ["a.pdf"], "drift": ["b.pdf"]}
+
+
+def test_carta_scan_empty():
+    """No pending or drift files returns empty arrays."""
+    from carta.mcp.server import carta_scan
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
+         patch("carta.mcp.server.check_embed_induction_needed", return_value=[]), \
+         patch("carta.mcp.server.check_embed_drift", return_value=[]):
+        result = carta_scan()
+    assert result == {"pending": [], "drift": []}
+
+
+def test_carta_scan_config_not_found():
+    """FileNotFoundError from _load_cfg returns service_unavailable error dict."""
+    from carta.mcp.server import carta_scan
+    with patch("carta.mcp.server._load_cfg", side_effect=FileNotFoundError("no config")):
+        result = carta_scan()
+    assert isinstance(result, dict)
+    assert result["error"] == "service_unavailable"
+    assert "detail" in result
