@@ -1,6 +1,6 @@
 """Top-level pipeline orchestration for carta embed."""
 
-import concurrent.futures
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -11,15 +11,14 @@ import yaml
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter
 
-from carta.config import collection_name
+from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, chunk_text
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding
-from carta.embed.induct import read_sidecar
+from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
 
 
 _SUPPORTED_EXTENSIONS = [".pdf"]
 
-# Maximum seconds to allow a single file's embed processing to run
 FILE_TIMEOUT_S = 300
 
 
@@ -80,17 +79,25 @@ def _embed_one_file(
     repo_root: Path,
     max_tokens: int,
     overlap_fraction: float,
-    verbose: bool,
-) -> tuple[int, dict]:
-    """Extract, chunk, embed and upsert one file. Returns (chunk_count, sidecar_updates)."""
-    if verbose:
-        print(f"    extracting PDF text...", flush=True)
+    verbose: bool = False,
+) -> tuple:
+    """Extract, chunk, embed, and upsert a single file.
+
+    Args:
+        file_path: absolute path to the source file.
+        file_info: sidecar data dict (slug, doc_type, etc.).
+        cfg: carta config dict.
+        client: connected QdrantClient.
+        repo_root: repo root for relative path computation.
+        max_tokens: chunking parameter.
+        overlap_fraction: chunking parameter.
+        verbose: if True, print progress to stdout.
+
+    Returns:
+        Tuple of (chunk_count: int, sidecar_updates: dict).
+    """
     pages = extract_pdf_text(file_path)
-    if verbose:
-        print(f"    extracted {len(pages)} page(s); chunking...", flush=True)
     raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
-    if verbose:
-        print(f"    built {len(raw_chunks)} chunk(s); embedding + upserting...", flush=True)
 
     slug = file_info.get("slug", file_path.stem)
     metadata = {
@@ -98,6 +105,7 @@ def _embed_one_file(
         "file_path": str(file_path.relative_to(repo_root)),
         "doc_type": file_info.get("doc_type", "unknown"),
     }
+
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     count = upsert_chunks(enriched, cfg, client=client)
 
@@ -105,47 +113,86 @@ def _embed_one_file(
         "status": "embedded",
         "indexed_at": datetime.now(timezone.utc).isoformat(),
         "chunk_count": count,
+        "file_mtime": os.path.getmtime(str(file_path)),
     }
     return count, sidecar_updates
 
 
-def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
-    """Add current_path to sidecars that are missing the field.
-
-    Skips sidecars whose source file does not exist.
+def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = False) -> dict:
+    """Embed a single specified file. Returns status dict.
 
     Args:
-        repo_root: root directory to scan for .embed-meta.yaml files.
-        verbose: if True, print a summary of healed sidecars.
+        path: absolute or repo-relative path to the file.
+        cfg: carta config dict.
+        force: if True, re-embed even if file mtime is unchanged.
+        verbose: if True, print progress to stdout.
 
     Returns:
-        Number of sidecars healed.
+        {"status": "ok", "chunks": int} on success.
+        {"status": "skipped", "reason": str} when file is already current.
+
+    Raises:
+        FileNotFoundError: if path does not exist.
+        RuntimeError: if Qdrant is unreachable.
     """
-    healed = 0
-    for sidecar_path in repo_root.rglob("*.embed-meta.yaml"):
-        data = read_sidecar(sidecar_path)
-        if data is None or "current_path" in data:
-            continue
-        stem = sidecar_path.name.replace(".embed-meta.yaml", "")
-        for ext in _SUPPORTED_EXTENSIONS:
-            candidate = sidecar_path.parent / f"{stem}{ext}"
-            if candidate.exists():
-                data["current_path"] = str(candidate.relative_to(repo_root))
-                _update_sidecar(sidecar_path, data)
-                healed += 1
-                break
-    if verbose and healed:
-        print(f"carta embed: healed {healed} sidecar(s) missing current_path", flush=True)
-    return healed
+    # Resolve repo root from find_config
+    cfg_path = find_config()
+    repo_root = cfg_path.parent.parent
+
+    file_path = Path(path)
+    if not file_path.is_absolute():
+        file_path = (repo_root / file_path).resolve()
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"Path does not exist: {path}")
+
+    sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
+
+    # Check mtime skip (only when sidecar exists and force=False)
+    if sidecar_path.exists() and not force:
+        sidecar = read_sidecar(sidecar_path)
+        if sidecar is not None:
+            stored_mtime = sidecar.get("file_mtime")
+            if stored_mtime is not None:
+                current_mtime = os.path.getmtime(str(file_path))
+                if current_mtime == stored_mtime:
+                    return {"status": "skipped", "reason": "already embedded, file unchanged"}
+
+    # Generate sidecar if it doesn't exist
+    if not sidecar_path.exists():
+        stub = generate_sidecar_stub(file_path, repo_root, cfg)
+        write_sidecar(file_path, stub)
+
+    # Read sidecar for file_info
+    sidecar_data = read_sidecar(sidecar_path) or {}
+    file_info = {
+        "slug": sidecar_data.get("slug", file_path.stem),
+        "doc_type": sidecar_data.get("doc_type", "unknown"),
+        "sidecar_path": sidecar_path,
+        "file_path": file_path,
+    }
+
+    # Connect to Qdrant
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+    ensure_collection(client, collection_name(cfg, "doc"))
+
+    chunking = cfg.get("embed", {}).get("chunking", {})
+    max_tokens = chunking.get("max_tokens", 800)
+    overlap_fraction = chunking.get("overlap_fraction", 0.15)
+
+    count, sidecar_updates = _embed_one_file(
+        file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose
+    )
+    _update_sidecar(sidecar_path, sidecar_updates)
+    return {"status": "ok", "chunks": count}
 
 
-def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
+def run_embed(repo_root: Path, cfg: dict) -> dict:
     """Run the embed pipeline on all pending files under repo_root.
 
     Args:
         repo_root: root directory to scan for .embed-meta.yaml sidecars.
         cfg: carta config dict.
-        verbose: if True, print progress to stdout. If False, stdout is silent.
 
     Returns:
         {"embedded": int, "skipped": int, "errors": list[str]}
@@ -153,8 +200,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
     summary: dict = {"embedded": 0, "skipped": 0, "errors": []}
 
     # Pre-flight: check Qdrant reachability with a short timeout
-    if verbose:
-        print("carta embed: checking Qdrant connectivity...", flush=True)
+    print("carta embed: checking Qdrant connectivity...", flush=True)
     try:
         client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
         client.get_collections()
@@ -171,17 +217,13 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
     coll_name = collection_name(cfg, "doc")
     ensure_collection(client, coll_name)
 
-    # Heal sidecars missing current_path before processing
-    _heal_sidecar_current_paths(repo_root, verbose=verbose)
-
     chunking = cfg.get("embed", {}).get("chunking", {})
     max_tokens = chunking.get("max_tokens", 800)
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
 
     pending = discover_pending_files(repo_root)
     total = len(pending)
-    if verbose:
-        print(f"carta embed: {total} file(s) pending.", flush=True)
+    print(f"carta embed: {total} file(s) pending.", flush=True)
 
     for idx, file_info in enumerate(pending, start=1):
         file_path: Path = file_info["file_path"]
@@ -189,51 +231,32 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
 
         # LFS guard
         if is_lfs_pointer(file_path):
-            if verbose:
-                print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
+            print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
             summary["skipped"] += 1
             continue
 
-        if verbose:
-            print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
+        print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
         t0 = time.monotonic()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _embed_one_file,
-                file_path, file_info, cfg, client, repo_root,
-                max_tokens, overlap_fraction, verbose,
+        try:
+            print(f"  [{idx}/{total}]   extracting and embedding: {file_path.name}...", flush=True)
+            count, sidecar_updates = _embed_one_file(
+                file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose=False
             )
-            try:
-                count, sidecar_updates = future.result(timeout=FILE_TIMEOUT_S)
-                _update_sidecar(sidecar_path, sidecar_updates)
-                elapsed = time.monotonic() - t0
-                if verbose:
-                    print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-                summary["embedded"] += 1
-            except concurrent.futures.TimeoutError:
-                if verbose:
-                    print(
-                        f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {FILE_TIMEOUT_S}s -- skipping",
-                        flush=True,
-                    )
-                print(
-                    f"  TIMEOUT: {file_path.name} exceeded {FILE_TIMEOUT_S}s",
-                    file=sys.stderr, flush=True,
-                )
-                summary["skipped"] += 1
-            except Exception as e:
-                elapsed = time.monotonic() - t0
-                print(
-                    f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}",
-                    file=sys.stderr, flush=True,
-                )
-                summary["errors"].append(f"Error processing {file_path.name}: {e}")
+            _update_sidecar(sidecar_path, sidecar_updates)
+            elapsed = time.monotonic() - t0
+            print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
+            summary["embedded"] += 1
+
+        except Exception as e:
+            elapsed = time.monotonic() - t0
+            print(f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}", file=sys.stderr, flush=True)
+            summary["errors"].append(f"Error processing {file_path.name}: {e}")
 
     return summary
 
 
-def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
+def run_search(query: str, cfg: dict) -> list[dict]:
     """Search the doc collection for chunks semantically similar to query.
 
     Args:
