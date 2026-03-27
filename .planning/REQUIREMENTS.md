@@ -25,12 +25,12 @@
 
 ### Smart Hook
 
-- [ ] **HOOK-01**: `hooks/hook.sh` registered as `UserPromptSubmit` handler; extracts semantic query from prompt text and queries Qdrant via the shared search service
-- [ ] **HOOK-02**: Fast path: similarity score >0.85 → inject retrieved chunks immediately without calling Ollama
-- [ ] **HOOK-03**: Noise gate: similarity score <0.60 → discard candidates without injection
-- [ ] **HOOK-04**: Gray zone (0.60–0.85): `hooks/judge.py` calls Ollama (`qwen2.5:0.5b` default) for a binary relevance judgment; inject only on "yes"
-- [ ] **HOOK-05**: Hard 3-second wall-clock timeout wraps all Ollama judge calls; on timeout, hook fails open (no injection, prompt proceeds unblocked)
-- [ ] **HOOK-06**: Maximum 5 injected chunks per prompt enforced regardless of score band, preventing context flooding
+- [x] **HOOK-01**: `hooks/hook.sh` registered as `UserPromptSubmit` handler; extracts semantic query from prompt text and queries Qdrant via the shared search service
+- [x] **HOOK-02**: Fast path: similarity score >0.85 → inject retrieved chunks immediately without calling Ollama
+- [x] **HOOK-03**: Noise gate: similarity score <0.60 → discard candidates without injection
+- [x] **HOOK-04**: Gray zone (0.60–0.85): `hooks/judge.py` calls Ollama (`qwen2.5:0.5b` default) for a binary relevance judgment; inject only on "yes"
+- [x] **HOOK-05**: Hard 3-second wall-clock timeout wraps all Ollama judge calls; on timeout, hook fails open (no injection, prompt proceeds unblocked)
+- [x] **HOOK-06**: Maximum 5 injected chunks per prompt enforced regardless of score band, preventing context flooding
 - [x] **HOOK-07**: Similarity thresholds (high/low bounds) and judge model are configurable in `.carta/config.yaml`
 
 ### Embedding Improvements
@@ -39,9 +39,9 @@
 
 ### Bootstrap Hardening
 
-- [ ] **BOOT-01**: `_install_skills()` verifies stale cache deletion with a post-deletion assertion; prints a clear error if residue remains rather than silently continuing
-- [ ] **BOOT-02**: `_update_gitignore()` skips entries already covered by a parent directory glob already present in `.gitignore`
-- [ ] **BOOT-03**: Hook command string uses portable `exec "$(git rev-parse --show-toplevel)/..."` quoting pattern
+- [x] **BOOT-01**: `_install_skills()` verifies stale cache deletion with a post-deletion assertion; prints a clear error if residue remains rather than silently continuing
+- [x] **BOOT-02**: `_update_gitignore()` skips entries already covered by a parent directory glob already present in `.gitignore`
+- [x] **BOOT-03**: Hook command string uses portable `exec "$(git rev-parse --show-toplevel)/..."` quoting pattern
 
 ## v2 Requirements
 
@@ -84,17 +84,17 @@
 | MCP-05 | Phase 2 | Complete |
 | MCP-06 | Phase 1 | Complete |
 | MCP-07 | Phase 1 | Complete |
-| HOOK-01 | Phase 3 | Pending |
-| HOOK-02 | Phase 3 | Pending |
-| HOOK-03 | Phase 3 | Pending |
-| HOOK-04 | Phase 3 | Pending |
-| HOOK-05 | Phase 3 | Pending |
-| HOOK-06 | Phase 3 | Pending |
+| HOOK-01 | Phase 3 | Complete |
+| HOOK-02 | Phase 3 | Complete |
+| HOOK-03 | Phase 3 | Complete |
+| HOOK-04 | Phase 3 | Complete |
+| HOOK-05 | Phase 3 | Complete |
+| HOOK-06 | Phase 3 | Complete |
 | HOOK-07 | Phase 3 | Complete |
 | EMBED-01 | Phase 3 | Complete |
-| BOOT-01 | Phase 4 | Pending |
-| BOOT-02 | Phase 4 | Pending |
-| BOOT-03 | Phase 4 | Pending |
+| BOOT-01 | Phase 4 | Complete |
+| BOOT-02 | Phase 4 | Complete |
+| BOOT-03 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 23 total
