@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # carta-prompt-hook.sh — UserPromptSubmit hook
-# Plan 1: graceful stub. Plan 2 adds proactive recall logic.
 set -euo pipefail
 
 CONFIG="$(git rev-parse --show-toplevel 2>/dev/null)/.carta/config.yaml"
@@ -15,5 +14,6 @@ if [ "$ENABLED" != "true" ]; then
   exit 0
 fi
 
-# Plan 2: proactive recall logic goes here
-exit 0
+# Pass the Claude Code hook payload to the Python module via stdin.
+# carta-hook reads JSON from stdin, queries Qdrant, and writes context JSON to stdout.
+exec carta-hook

@@ -21,6 +21,7 @@ dev = ["pytest>=7.0"]
 [project.scripts]
 carta = "carta.cli:main"
 carta-mcp = "carta.mcp.server:main"
+carta-hook = "carta.hook.hook:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
