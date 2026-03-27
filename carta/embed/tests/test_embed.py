@@ -814,3 +814,79 @@ def test_heal_sidecar_skips_missing_source(tmp_path):
 
     data = _yaml.safe_load(sidecar.read_text())
     assert "current_path" not in data
+
+
+# ---------------------------------------------------------------------------
+# parse.py — extract_markdown_text (03-01)
+# ---------------------------------------------------------------------------
+
+def test_markdown_extract_sections(tmp_path):
+    """Two ## sections produce 2 dicts with correct page/text/headings shape."""
+    from carta.embed.parse import extract_markdown_text
+
+    md = tmp_path / "doc.md"
+    md.write_text("## Section A\ntext a\n## Section B\ntext b\n", encoding="utf-8")
+    sections, meta = extract_markdown_text(md)
+    assert len(sections) == 2
+    assert sections[0]["headings"] == ["## Section A"]
+    assert "text a" in sections[0]["text"]
+    assert sections[1]["headings"] == ["## Section B"]
+    assert "text b" in sections[1]["text"]
+    assert all("page" in s and "text" in s and "headings" in s for s in sections)
+
+
+def test_markdown_strip_frontmatter(tmp_path):
+    """YAML frontmatter is stripped from text; keys returned in meta dict."""
+    from carta.embed.parse import extract_markdown_text
+
+    md = tmp_path / "doc.md"
+    md.write_text("---\ntitle: Test\n---\n## Body\ncontent\n", encoding="utf-8")
+    sections, meta = extract_markdown_text(md)
+    assert meta == {"title": "Test"}
+    # frontmatter must not appear in text
+    for s in sections:
+        assert "title:" not in s["text"]
+        assert "---" not in s["text"]
+
+
+def test_markdown_empty_sections_skipped(tmp_path):
+    """Sections with only whitespace are skipped."""
+    from carta.embed.parse import extract_markdown_text
+
+    md = tmp_path / "doc.md"
+    # Middle section has no body text
+    md.write_text("## A\ntext\n##\n## B\ntext\n", encoding="utf-8")
+    sections, _ = extract_markdown_text(md)
+    # Empty section (##\n) should be skipped
+    texts = [s["text"].strip() for s in sections]
+    assert all(t for t in texts)
+
+
+# ---------------------------------------------------------------------------
+# induct.py — file_type in sidecar (03-01)
+# ---------------------------------------------------------------------------
+
+def test_sidecar_file_type_markdown(tmp_path):
+    """generate_sidecar_stub sets file_type='markdown' for .md files."""
+    f = tmp_path / "note.md"
+    f.touch()
+    stub = generate_sidecar_stub(f, tmp_path, MINIMAL_CFG)
+    assert stub["file_type"] == "markdown"
+
+
+def test_sidecar_file_type_pdf(tmp_path):
+    """generate_sidecar_stub sets file_type='pdf' for .pdf files."""
+    f = tmp_path / "note.pdf"
+    f.touch()
+    stub = generate_sidecar_stub(f, tmp_path, MINIMAL_CFG)
+    assert stub["file_type"] == "pdf"
+
+
+# ---------------------------------------------------------------------------
+# pipeline.py — _SUPPORTED_EXTENSIONS includes .md (03-01)
+# ---------------------------------------------------------------------------
+
+def test_supported_extensions_includes_md():
+    """Pipeline must support .md files."""
+    from carta.embed.pipeline import _SUPPORTED_EXTENSIONS
+    assert ".md" in _SUPPORTED_EXTENSIONS

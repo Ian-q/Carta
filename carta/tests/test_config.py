@@ -55,3 +55,18 @@ def test_collection_name_helper(tmp_path):
     assert collection_name(cfg, "doc") == "test-project_doc"
     assert collection_name(cfg, "session") == "test-project_session"
     assert collection_name(cfg, "quirk") == "test-project_quirk"
+
+
+def test_proactive_recall_defaults(tmp_path):
+    """proactive_recall DEFAULTS must contain three-zone threshold keys, not old keys."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump(MINIMAL_CONFIG))
+    cfg = load_config(cfg_path)
+    pr = cfg["proactive_recall"]
+    assert pr["high_threshold"] == 0.85
+    assert pr["low_threshold"] == 0.60
+    assert pr["max_results"] == 5
+    assert pr["judge_timeout_s"] == 3
+    assert pr["ollama_model"] == "qwen2.5:0.5b"
+    assert "similarity_threshold" not in pr
+    assert "ollama_judge" not in pr

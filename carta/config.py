@@ -28,10 +28,11 @@ DEFAULTS = {
         "chunking": {"max_tokens": 800, "overlap_fraction": 0.15},
     },
     "proactive_recall": {
-        "similarity_threshold": 0.78,
-        "max_results": 3,
-        "ollama_judge": False,
-        "ollama_model": "phi3.5-mini",
+        "high_threshold": 0.85,
+        "low_threshold": 0.60,
+        "max_results": 5,
+        "judge_timeout_s": 3,
+        "ollama_model": "qwen2.5:0.5b",
     },
     "cross_project_recall": {
         "enabled": False,
