@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
-status: Ready to plan
-last_updated: "2026-03-27T09:21:43.311Z"
+status: Executing Phase 05
+last_updated: "2026-03-27T11:30:00.000Z"
 progress:
-  total_phases: 6
-  completed_phases: 4
-  total_plans: 9
-  completed_plans: 9
+  total_phases: 8
+  completed_phases: 5
+  total_plans: 10
+  completed_plans: 10
 ---
 
 # Carta v0.2 — Project State
 
-**Last updated:** 2026-03-25
+**Last updated:** 2026-03-27
 **Milestone:** v0.2 — MCP server + smart hook
 
 ## Project Reference
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 04 — bootstrap-hardening
+**Current focus:** Phase 06 (next)
 
 ## Current Position
 
-Phase: 999.1
-Plan: Not started
+Phase: 05 (hook-wiring-entry-point-fix) — COMPLETE
+Plan: 1 of 1 — COMPLETE
 
 ## Performance Metrics
 
@@ -43,6 +43,7 @@ Plan: Not started
 | Phase 03 P02 | 25 | 2 tasks | 7 files |
 | Phase 03 P03 | 15 | 2 tasks | 4 files |
 | Phase 04 P01 | 12 | 2 tasks | 2 files |
+| Phase 05 P01 | 15 | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -55,6 +56,8 @@ Plan: Not started
 - Use AST walk for print/sys.exit detection in MCP tests — avoids docstring false positives (01-02)
 - Plugin cache replaced by cleanup-with-assertion routine; .mcp.json is sole registration (01-02)
 - Hook files restored from git objects (worktree artifact) — no content change; all 20 hook tests pass (03-03)
+- HOOK-05 fail-open = inject on timeout (return True), not discard — pre-existing inversion fixed (05-01)
+- carta-hook registered as console script; shell stub uses exec delegation pattern (05-01)
 
 ### Pitfalls to Avoid
 
@@ -85,9 +88,9 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-03-27T09:17:34.318Z
+**Last session:** 2026-03-27T11:30:00.000Z
 
-**To resume:** Phase 3 complete. Next: Phase 4 (Bootstrap Hardening) — stale cache assertions, gitignore deduplication, portable hook quoting. Read `.planning/ROADMAP.md` for Phase 4 requirements.
+**To resume:** Phase 5 complete. Next: Phase 6 — read `.planning/ROADMAP.md` for next phase requirements.
 
 ---
 *Initialized: 2026-03-25*

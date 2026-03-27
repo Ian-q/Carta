@@ -11,7 +11,7 @@
 - [ ] **Phase 2: MCP Tools** - Full carta_search / carta_embed / carta_scan tool surface live in Claude Code
 - [x] **Phase 3: Smart Hook + Markdown Embedding** - Automatic context injection with threshold routing and Ollama judge (completed 2026-03-27)
 - [x] **Phase 4: Bootstrap Hardening** - Stale cache assertions, gitignore deduplication, portable hook quoting (completed 2026-03-27)
-- [ ] **Phase 5: Hook Wiring + Entry Point Fix** - Wire shell stub to Python module, register carta-hook entry point, fix HOOK-05 fail-open logic
+- [x] **Phase 5: Hook Wiring + Entry Point Fix** - Wire shell stub to Python module, register carta-hook entry point, fix HOOK-05 fail-open logic
 - [ ] **Phase 6: Phase 3 Verification + Housekeeping** - Write Phase 3 VERIFICATION.md, update stale ROADMAP progress entries
 
 ## Phase Details
@@ -88,10 +88,10 @@ Plans:
   2. `carta-hook` exists on PATH after `pip install` (registered in `pyproject.toml [project.scripts]`)
   3. On `TimeoutError` in `_judge_with_timeout`, the hook returns `True` (inject / fail open)
   4. Flow C works end-to-end: Claude Code hook triggers → shell stub → Python hook → inject/discard
-**Plans:** 0 plans
+**Plans:** 1 plan (1 complete)
 
 Plans:
-- [ ] 05-01-PLAN.md — Wire hook shell stub, register carta-hook entry point, fix HOOK-05 fail-open
+- [x] 05-01-PLAN.md — Wire hook shell stub, register carta-hook entry point, fix HOOK-05 fail-open
 
 ### Phase 6: Phase 3 Verification + Housekeeping
 **Goal:** Phase 3 has a VERIFICATION.md confirming all HOOK-* and EMBED-01 requirements; ROADMAP.md progress table reflects actual completion state
