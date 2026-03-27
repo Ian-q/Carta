@@ -56,11 +56,11 @@ Plans:
   3. On a gray-zone prompt (0.60–0.85), the hook calls the Ollama judge and injects only on a "yes" verdict; if the judge call exceeds 3 seconds the prompt proceeds unblocked
   4. No more than 5 chunks are ever injected in a single prompt regardless of score band
   5. Threshold values (high/low bounds) and judge model are readable from `.carta/config.yaml`; running `carta embed` on a `.md` file embeds it to Qdrant with `file_type: markdown` in the sidecar
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 - [x] 03-01-PLAN.md — Config schema update + markdown embedding support
-- [ ] 03-02-PLAN.md — Smart hook module with three-zone score routing and Ollama judge
+- [x] 03-02-PLAN.md — Smart hook module with three-zone score routing and Ollama judge
 - [ ] 03-03-PLAN.md — Integration verification + human smoke test checkpoint
 
 ### Phase 4: Bootstrap Hardening
@@ -79,7 +79,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Pipeline Reliability + MCP Foundation | 0/3 | Planned | - |
 | 2. MCP Tools | 1/2 | In Progress|  |
-| 3. Smart Hook + Markdown Embedding | 1/3 | In Progress|  |
+| 3. Smart Hook + Markdown Embedding | 2/3 | In Progress|  |
 | 4. Bootstrap Hardening | 0/? | Not started | - |
 
 ## Backlog
