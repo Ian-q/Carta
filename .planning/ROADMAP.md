@@ -12,7 +12,7 @@
 - [x] **Phase 3: Smart Hook + Markdown Embedding** - Automatic context injection with threshold routing and Ollama judge (completed 2026-03-27)
 - [x] **Phase 4: Bootstrap Hardening** - Stale cache assertions, gitignore deduplication, portable hook quoting (completed 2026-03-27)
 - [x] **Phase 5: Hook Wiring + Entry Point Fix** - Wire shell stub to Python module, register carta-hook entry point, fix HOOK-05 fail-open logic
-- [ ] **Phase 6: Phase 3 Verification + Housekeeping** - Write Phase 3 VERIFICATION.md, update stale ROADMAP progress entries
+- [x] **Phase 6: Phase 3 Verification + Housekeeping** - Write Phase 3 VERIFICATION.md, update stale ROADMAP progress entries (completed 2026-03-28)
 
 ## Phase Details
 
@@ -101,7 +101,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. `phases/03-smart-hook-markdown-embedding/` contains a VERIFICATION.md with SATISFIED status for all Phase 3 requirements
   2. ROADMAP.md progress table shows Phases 1, 2, 3, 4, 5 with accurate completion status
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
 - [x] 06-01-PLAN.md — Write Phase 03 VERIFICATION.md; update ROADMAP.md stale progress entries
@@ -115,7 +115,7 @@ Plans:
 | 3. Smart Hook + Markdown Embedding | 3/3 | Complete | 2026-03-27 |
 | 4. Bootstrap Hardening | 1/1 | Complete | 2026-03-27 |
 | 5. Hook Wiring + Entry Point Fix | 1/1 | Complete | 2026-03-27 |
-| 6. Phase 3 Verification + Housekeeping | 0/1 | In Progress | - |
+| 6. Phase 3 Verification + Housekeeping | 1/1 | Complete   | 2026-03-28 |
 
 ## Backlog
 
