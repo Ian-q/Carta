@@ -16,6 +16,7 @@ from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
+from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
 
 
 _SUPPORTED_EXTENSIONS = [".pdf", ".md"]
@@ -192,16 +193,6 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
 
     sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
 
-    # Check mtime skip (only when sidecar exists and force=False)
-    if sidecar_path.exists() and not force:
-        sidecar = read_sidecar(sidecar_path)
-        if sidecar is not None:
-            stored_mtime = sidecar.get("file_mtime")
-            if stored_mtime is not None:
-                current_mtime = os.path.getmtime(str(file_path))
-                if current_mtime == stored_mtime:
-                    return {"status": "skipped", "reason": "already embedded, file unchanged"}
-
     # Generate sidecar if it doesn't exist
     if not sidecar_path.exists():
         stub = generate_sidecar_stub(file_path, repo_root, cfg)
@@ -209,6 +200,62 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
 
     # Read sidecar for file_info
     sidecar_data = read_sidecar(sidecar_path) or {}
+
+    # Mtime fast-path: skip hash computation if mtime unchanged (unless force=True)
+    if not force and not needs_rehash(file_path, sidecar_data):
+        return {"status": "skipped", "reason": "already embedded, file unchanged"}
+
+    # Hash comparison: check if content has changed
+    current_hash = compute_file_hash(file_path)
+    old_hash = sidecar_data.get("file_hash")
+    current_mtime = os.path.getmtime(str(file_path))
+
+    if current_hash == old_hash and old_hash is not None:
+        # Hash unchanged: just update mtime and fast-path fields
+        _update_sidecar(sidecar_path, {
+            "file_mtime": current_mtime,
+            "last_hash_check_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"status": "skipped", "reason": "already embedded, file hash unchanged"}
+
+    # Hash changed: mark for re-embedding and update lifecycle fields
+    now = datetime.now(timezone.utc)
+    old_generation = sidecar_data.get("generation", 0)
+    new_generation = old_generation + 1
+
+    # Build version_history entry
+    version_entry = {
+        "hash": current_hash,
+        "generation": new_generation,
+        "indexed_at": now.isoformat(),
+    }
+
+    # Get current version_history and append new entry
+    version_history = sidecar_data.get("version_history", [])
+    version_history.append(version_entry)
+
+    # Trim to max_generations
+    max_gens = cfg.get("embed", {}).get("max_generations", 2)
+    if len(version_history) > max_gens:
+        version_history = version_history[-max_gens:]
+
+    # Prepare lifecycle updates
+    lifecycle_updates = {
+        "generation": new_generation,
+        "status": "stale",
+        "stale_as_of": now.isoformat(),
+        "file_hash": current_hash,
+        "file_mtime": current_mtime,
+        "last_hash_check_at": now.isoformat(),
+        "version_history": version_history,
+    }
+
+    # Mark chunks as stale in Qdrant (with migration boundary guard)
+    if sidecar_data.get("sidecar_id"):
+        client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+        mark_sidecar_stale(client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now)
+
+    # Proceed with re-embedding
     file_info = {
         "slug": sidecar_data.get("slug", file_path.stem),
         "doc_type": sidecar_data.get("doc_type", "unknown"),
@@ -216,7 +263,6 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         "file_path": file_path,
     }
 
-    # Connect to Qdrant
     client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
     ensure_collection(client, collection_name(cfg, "doc"))
 
@@ -227,6 +273,8 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     count, sidecar_updates = _embed_one_file(
         file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose
     )
+    # Merge lifecycle updates with embedding updates
+    sidecar_updates.update(lifecycle_updates)
     _update_sidecar(sidecar_path, sidecar_updates)
     return {"status": "ok", "chunks": count}
 
@@ -333,6 +381,14 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
                     file=sys.stderr, flush=True,
                 )
                 summary["errors"].append(f"Error processing {file_path.name}: {e}")
+
+    # Emit stale alert after embed loop
+    stale_count = summary["embedded"]  # Files with status="stale" are those that had content changes
+    total_count = summary["embedded"] + summary["skipped"]
+    threshold = cfg.get("embed", {}).get("stale_alert_threshold", 0.30)
+    alert_msg = check_stale_alert(stale_count, total_count, threshold)
+    if alert_msg:
+        print(alert_msg, flush=True)
 
     return summary
 
