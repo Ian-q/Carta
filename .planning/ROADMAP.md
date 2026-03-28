@@ -101,7 +101,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. `phases/03-smart-hook-markdown-embedding/` contains a VERIFICATION.md with SATISFIED status for all Phase 3 requirements
   2. ROADMAP.md progress table shows Phases 1, 2, 3, 4, 5 with accurate completion status
-**Plans:** 0 plans
+**Plans:** 1 plan
 
 Plans:
 - [ ] 06-01-PLAN.md — Write Phase 03 VERIFICATION.md; update ROADMAP.md stale progress entries
