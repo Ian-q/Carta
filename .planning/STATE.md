@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
-status: Ready to plan
-last_updated: "2026-03-28T07:33:21.072Z"
+status: Executing Phase 999.1
+last_updated: "2026-03-28T08:25:24.175Z"
 progress:
-  total_phases: 8
+  total_phases: 9
   completed_phases: 6
-  total_plans: 11
+  total_plans: 12
   completed_plans: 11
 ---
 
@@ -20,12 +20,12 @@ progress:
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 06 — phase-3-verification-housekeeping
+**Current focus:** Phase 999.1 — sidecar-enrichment-agent-populated-notes-sidecars-qdrant-chunks-cross-linking
 
 ## Current Position
 
-Phase: 999.1
-Plan: Not started
+Phase: 999.1 (sidecar-enrichment-agent-populated-notes-sidecars-qdrant-chunks-cross-linking) — EXECUTING
+Plan: 1 of 2 (01a complete, 01b next)
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Plan: Not started
 - Hook files restored from git objects (worktree artifact) — no content change; all 20 hook tests pass (03-03)
 - HOOK-05 fail-open = inject on timeout (return True), not discard — pre-existing inversion fixed (05-01)
 - carta-hook registered as console script; shell stub uses exec delegation pattern (05-01)
+- Lifecycle primitives as pure stdlib leaf module: no Qdrant imports, fully testable in isolation (999.1-01a)
 
 ### Pitfalls to Avoid
 
@@ -82,6 +83,8 @@ Plan: Not started
 - [x] Phase 1: MCP server scaffold in carta/mcp/ with stderr logging
 - [x] Phase 1: .mcp.json at project root
 - [x] Phase 1: carta init plugin cache cleanup with post-deletion assertion
+- [x] Phase 999.1-01a: compute_file_hash and needs_rehash — stdlib primitives
+- [ ] Phase 999.1-01b: Qdrant lifecycle ops (mark_stale, cleanup_orphans)
 
 ### Blockers
 
