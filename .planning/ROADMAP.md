@@ -119,14 +119,18 @@ Plans:
 
 ## Backlog
 
-### Phase 999.1: Sidecar Enrichment — Agent-Populated Notes, Sidecars as Qdrant Chunks, Cross-Linking (BACKLOG)
+### Phase 999.1: Document Versioning, Stale Memory Tracking & Chunk Lifecycle
 
-**Goal:** On initial embed, an agent reviews the source document and writes project-specific annotations into the sidecar (page/table pointers, quirks, project-relevant notes). The sidecar itself gets embedded as a first-class Qdrant chunk so the smart hook can surface it directly. Cross-links between related sidecars form a semantic web that lets Claude navigate large documents precisely without scanning the whole thing.
-**Requirements:** TBD
-**Plans:** 0 plans
+**Goal:** Each embedded document has a content hash that tracks mutations. Chunks in Qdrant carry generation/staleness metadata. When documents change, the system marks them stale. When documents are deleted or superseded, chunks are orphaned and cleaned. Claude Code (via MCP) can autonomously trigger re-embedding.
+**Requirements:** HASH-01, HASH-02, SIDECAR-01, PAYLOAD-01, LIFECYCLE-01, LIFECYCLE-02, LIFECYCLE-03, MCP-01, MCP-02, MCP-03, STALE-01
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (promote with /gsd:review-backlog when ready)
+- [ ] 999.1-01-PLAN.md — lifecycle.py: hash primitives, stale marking, orphan cleanup (TDD)
+- [ ] 999.1-02-PLAN.md — sidecar stub + Qdrant payload schema expansion (TDD)
+- [ ] 999.1-03-PLAN.md — pipeline.py mtime fast-path + stale alert wiring
+- [ ] 999.1-04-PLAN.md — MCP carta_embed scope parameter (TDD)
+
 
 ---
 
@@ -141,3 +145,22 @@ Plans:
 
 ---
 *Created: 2026-03-26*
+
+### Phase 999.3: Qdrant Collection Scoping — Repo Isolation, Shared Pool, and Cross-Repo Recall (BACKLOG)
+
+**Goal:** By default, Carta queries are scoped to the current repository's collections only — no cross-contamination between projects. Users can opt in to a shared/global memory pool for cross-project recall (e.g. a quirk solved in a UI project surfaces in a new backend project). Optionally, a common `carta_global` collection holds memories explicitly promoted as project-agnostic. Collection naming and access control logic lives in `config.py::collection_name()` and the search pipeline.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
+Key design questions for researcher:
+- Default: repo-scoped only (current behavior with named collections)
+- Opt-in: `cross_project_recall.enabled: true` already scaffolded in config — expand this
+- Global pool: `carta_global_*` collections for explicitly promoted memories
+- Scope levels: `repo` | `shared` | `global` (configurable per search call or globally)
+- Depends on: 999.1 (doc_type taxonomy, protected collection types)
+
+---
+*Created: 2026-03-28*
