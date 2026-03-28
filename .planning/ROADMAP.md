@@ -123,7 +123,7 @@ Plans:
 
 **Goal:** Each embedded document has a content hash that tracks mutations. Chunks in Qdrant carry generation/staleness metadata. When documents change, the system marks them stale. When documents are deleted or superseded, chunks are orphaned and cleaned. Claude Code (via MCP) can autonomously trigger re-embedding.
 **Requirements:** HASH-01, HASH-02, SIDECAR-01, PAYLOAD-01, LIFECYCLE-01, LIFECYCLE-02, LIFECYCLE-03, MCP-01, MCP-02, MCP-03, STALE-01
-**Plans:** 4 plans
+**Plans:** 5/1 plans complete
 
 Plans:
 - [ ] 999.1-01-PLAN.md — lifecycle.py: hash primitives, stale marking, orphan cleanup (TDD)
