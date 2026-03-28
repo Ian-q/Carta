@@ -75,6 +75,16 @@ def _point_id(slug: str, chunk_index: int) -> str:
     return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
 
 
+def _point_id_versioned(slug: str, chunk_index: int, generation: int) -> str:
+    """Deterministic UUID from slug + chunk_index + generation for generation-aware upserts.
+
+    Used when chunks carry doc_generation metadata (Plan 999.1-02+).
+    Different generations produce different UUIDs, enabling retries without collisions.
+    """
+    raw = f"{slug}:{chunk_index}:g{generation}"
+    return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
+
+
 def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) -> int:
     """Embed and upsert chunks to Qdrant using settings from cfg.
 
@@ -107,8 +117,25 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             vec = get_embedding(chunk["text"], ollama_url=ollama_url, model=model)
             payload = {k: v for k, v in chunk.items() if k != "text"}
             payload["text"] = chunk["text"]
+
+            # Add lifecycle fields to payload (Plan 999.1-02)
+            payload["doc_generation"] = chunk.get("doc_generation", 1)
+            payload["stale_as_of"] = None
+            payload["superseded_at"] = None
+            payload["orphaned_at"] = None
+            payload["sidecar_id"] = chunk.get("sidecar_id", "")
+            payload["chunk_source_hash"] = chunk.get("chunk_source_hash", "")
+
+            # Use versioned ID if doc_generation present, else fall back to legacy ID
+            if chunk.get("doc_generation") is not None:
+                point_id = _point_id_versioned(
+                    chunk["slug"], chunk["chunk_index"], chunk["doc_generation"]
+                )
+            else:
+                point_id = _point_id(chunk["slug"], chunk["chunk_index"])
+
             point = PointStruct(
-                id=_point_id(chunk["slug"], chunk["chunk_index"]),
+                id=point_id,
                 vector=vec,
                 payload=payload,
             )
