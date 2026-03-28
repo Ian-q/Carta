@@ -79,6 +79,28 @@ def collection_name(cfg: dict, type_: str) -> str:
     return f"{cfg['project_name']}_{type_}"
 
 
+def collection_for_doc_type(cfg: dict, doc_type: str) -> str:
+    """Return the collection name for a given doc_type (Plan 999.1-02).
+
+    Maps protected types (quirk, bug-note, helpful-note) to a dedicated _notes collection.
+    Maps session type to _session collection.
+    Maps all other types (including unknown) to _doc collection.
+
+    Args:
+        cfg: carta config dict (must contain project_name).
+        doc_type: document type string.
+
+    Returns:
+        Collection name (e.g., "myproject_doc", "myproject_notes", "myproject_session").
+    """
+    if doc_type in ("quirk", "bug-note", "helpful-note"):
+        return collection_name(cfg, "notes")
+    elif doc_type == "session":
+        return collection_name(cfg, "session")
+    else:
+        return collection_name(cfg, "doc")
+
+
 def find_config(start: Path = None) -> Path:
     """Walk up from start (or cwd) looking for .carta/config.yaml.
 
