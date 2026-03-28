@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from typing import Literal, Optional
 
 from carta.config import find_config, load_config, ConfigError
-from carta.embed.pipeline import run_search, run_embed_file, FILE_TIMEOUT_S
+from carta.embed.pipeline import run_search, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
 
 # Direct ALL log output to stderr — stdout is reserved for JSON-RPC framing
@@ -83,43 +84,95 @@ def carta_search(query: str, top_k: int = 5) -> list[dict] | dict:
 
 
 @mcp_server.tool()
-def carta_embed(path: str, force: bool = False) -> dict:
-    """Embed a single file into the project's vector store.
+def carta_embed(
+    scope: Literal["stale", "file", "all"] = "all",
+    path: Optional[str] = None,
+    force: bool = False,
+) -> dict:
+    """Embed files into the project's vector store with targeted scope control.
 
     Args:
-        path: Path to the file to embed (absolute or relative to project root).
+        scope: Embedding scope — "all" (full collection), "file" (single file), or "stale" (stale files).
+        path: Path to the file to embed (required when scope='file'). Relative or absolute.
         force: If True, re-embed even if file has not changed since last embed.
 
     Returns:
-        {"status": "ok", "chunks": N} on success.
-        {"status": "skipped", "reason": "..."} if already current.
+        {"status": "ok", ...} on success with scope-specific fields.
         {"error": "<type>", "detail": "..."} on failure.
     """
     try:
         cfg = _load_cfg()
     except (ConfigError, FileNotFoundError) as e:
         return {"error": "service_unavailable", "detail": str(e)}
-    file_path = Path(path)
-    if not file_path.is_absolute():
+
+    # Backward compat: if scope is not in valid enum and path is None, treat scope as path
+    if scope not in ("stale", "file", "all") and path is None:
+        path = scope
+        scope = "file"
+
+    # scope='file' path
+    if scope == "file":
+        if path is None:
+            return {"error": "invalid_request", "detail": "path is required when scope='file'"}
+        file_path = Path(path)
+        if not file_path.is_absolute():
+            try:
+                file_path = _repo_root_from_cfg() / file_path
+            except (FileNotFoundError, ConfigError) as e:
+                return {"error": "service_unavailable", "detail": str(e)}
         try:
-            file_path = _repo_root_from_cfg() / file_path
-        except (FileNotFoundError, ConfigError) as e:
+            result = run_embed_file(file_path, cfg, force=force, verbose=False)
+            result["scope"] = "file"
+            return result
+        except FileNotFoundError as e:
+            return {"error": "file_not_found", "detail": str(e)}
+        except concurrent.futures.TimeoutError:
+            return {"error": "timeout", "detail": f"Embed exceeded {FILE_TIMEOUT_S}s timeout for {path}"}
+        except RuntimeError as e:
+            detail = str(e)
+            if "collection" in detail.lower() and "not found" in detail.lower():
+                return {"error": "collection_not_found", "detail": detail}
+            return {"error": "service_unavailable", "detail": detail}
+        except Exception as e:
+            _logger.warning("carta_embed scope=file unexpected error: %s", e)
             return {"error": "service_unavailable", "detail": str(e)}
-    try:
-        result = run_embed_file(file_path, cfg, force=force, verbose=False)
-        return result
-    except FileNotFoundError as e:
-        return {"error": "file_not_found", "detail": str(e)}
-    except concurrent.futures.TimeoutError:
-        return {"error": "timeout", "detail": f"Embed exceeded {FILE_TIMEOUT_S}s timeout for {path}"}
-    except RuntimeError as e:
-        detail = str(e)
-        if "collection" in detail.lower() and "not found" in detail.lower():
-            return {"error": "collection_not_found", "detail": detail}
-        return {"error": "service_unavailable", "detail": detail}
-    except Exception as e:
-        _logger.warning("carta_embed unexpected error: %s", e)
-        return {"error": "service_unavailable", "detail": str(e)}
+
+    # scope='stale' path
+    if scope == "stale":
+        try:
+            repo_root = _repo_root_from_cfg()
+            stale_files = discover_stale_files(repo_root)
+            reembedded = 0
+            for stale_file in stale_files:
+                try:
+                    result = run_embed_file(stale_file, cfg, force=force, verbose=False)
+                    if result.get("status") in ("ok", "embedded"):
+                        reembedded += 1
+                except Exception as e:
+                    _logger.warning("Error re-embedding stale file %s: %s", stale_file, e)
+            return {"status": "ok", "scope": "stale", "reembedded": reembedded}
+        except (ConfigError, FileNotFoundError) as e:
+            return {"error": "service_unavailable", "detail": str(e)}
+        except Exception as e:
+            _logger.warning("carta_embed scope=stale unexpected error: %s", e)
+            return {"error": "service_unavailable", "detail": str(e)}
+
+    # scope='all' path (default)
+    if scope == "all":
+        try:
+            repo_root = _repo_root_from_cfg()
+            result = run_embed(repo_root, cfg, verbose=False)
+            return result
+        except (ConfigError, FileNotFoundError) as e:
+            return {"error": "service_unavailable", "detail": str(e)}
+        except RuntimeError as e:
+            detail = str(e)
+            if "collection" in detail.lower() and "not found" in detail.lower():
+                return {"error": "collection_not_found", "detail": detail}
+            return {"error": "service_unavailable", "detail": detail}
+        except Exception as e:
+            _logger.warning("carta_embed scope=all unexpected error: %s", e)
+            return {"error": "service_unavailable", "detail": str(e)}
 
 
 @mcp_server.tool()
