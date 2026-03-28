@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 Phase: 999.1 (sidecar-enrichment-agent-populated-notes-sidecars-qdrant-chunks-cross-linking) — EXECUTING
-Plan: 1 of 2 (01a complete, 01b next)
+Plan: 2 of 2 (01a complete, 01b complete, awaiting Plan 02)
 
 ## Performance Metrics
 
@@ -84,7 +84,8 @@ Plan: 1 of 2 (01a complete, 01b next)
 - [x] Phase 1: .mcp.json at project root
 - [x] Phase 1: carta init plugin cache cleanup with post-deletion assertion
 - [x] Phase 999.1-01a: compute_file_hash and needs_rehash — stdlib primitives
-- [ ] Phase 999.1-01b: Qdrant lifecycle ops (mark_stale, cleanup_orphans)
+- [x] Phase 999.1-01b: Qdrant lifecycle ops (mark_stale, cleanup_orphans)
+- [ ] Phase 999.1-02: sidecar schema + chunk payload with lifecycle fields
 
 ### Blockers
 
