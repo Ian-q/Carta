@@ -74,6 +74,34 @@ def discover_pending_files(repo_root: Path) -> list[dict]:
     return results
 
 
+def discover_stale_files(repo_root: Path) -> list[Path]:
+    """Find all files with .embed-meta.yaml sidecars marked status: stale under repo_root.
+
+    Returns list of file paths (the document path, not the sidecar path).
+    """
+    results = []
+    for sidecar_path in repo_root.rglob("*.embed-meta.yaml"):
+        data = read_sidecar(sidecar_path)
+        if data is None:
+            continue
+        if data.get("status") != "stale":
+            continue
+
+        stem = sidecar_path.name.replace(".embed-meta.yaml", "")
+        parent = sidecar_path.parent
+        source_file = None
+        for ext in _SUPPORTED_EXTENSIONS:
+            candidate = parent / f"{stem}{ext}"
+            if candidate.exists():
+                source_file = candidate
+                break
+
+        if source_file:
+            results.append(source_file)
+
+    return results
+
+
 def _embed_one_file(
     file_path: Path,
     file_info: dict,
