@@ -104,7 +104,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 06-01-PLAN.md — Write Phase 03 VERIFICATION.md; update ROADMAP.md stale progress entries
+- [x] 06-01-PLAN.md — Write Phase 03 VERIFICATION.md; update ROADMAP.md stale progress entries
 
 ## Progress
 
@@ -114,8 +114,8 @@ Plans:
 | 2. MCP Tools | 2/2 | Complete | 2026-03-27 |
 | 3. Smart Hook + Markdown Embedding | 3/3 | Complete | 2026-03-27 |
 | 4. Bootstrap Hardening | 1/1 | Complete | 2026-03-27 |
-| 5. Hook Wiring + Entry Point Fix | 0/1 | Pending | - |
-| 6. Phase 3 Verification + Housekeeping | 0/1 | Pending | - |
+| 5. Hook Wiring + Entry Point Fix | 1/1 | Complete | 2026-03-27 |
+| 6. Phase 3 Verification + Housekeeping | 0/1 | In Progress | - |
 
 ## Backlog
 
