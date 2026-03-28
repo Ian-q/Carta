@@ -67,6 +67,12 @@ def generate_sidecar_stub(
         "collection": collection_name(cfg, "doc"),
         "spec_summary": None,
         "notes": notes or "",
+        # Lifecycle fields (Plan 999.1-02)
+        "file_hash": None,
+        "hash_algorithm": "sha256",
+        "generation": 0,
+        "last_hash_check_at": None,
+        "version_history": [],
     }
 
     return stub
