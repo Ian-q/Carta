@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 import yaml
 
-from carta.embed.pipeline import run_embed_file, run_embed
+from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files
 from carta.config import find_config
 
 
@@ -393,3 +393,86 @@ class TestRunEmbedStaleAlert:
                                         for c in calls
                                     )
                                     # Note: This depends on implementation details; adjust if needed
+
+
+class TestDiscoverStaleFiles:
+    """Test discover_stale_files helper function."""
+
+    def test_discover_stale_files_returns_stale_paths(self, temp_repo):
+        """Two sidecars, one stale, one embedded -> returns one Path."""
+        repo_root, cfg = temp_repo
+
+        # Create docs directory
+        docs_dir = repo_root / "docs"
+        docs_dir.mkdir()
+
+        # Create first file with stale sidecar
+        stale_file = docs_dir / "stale.md"
+        stale_file.write_text("# Stale Document")
+        stale_sidecar = docs_dir / "stale.embed-meta.yaml"
+        with open(stale_sidecar, "w") as f:
+            yaml.dump({"status": "stale", "slug": "stale"}, f)
+
+        # Create second file with embedded sidecar
+        embedded_file = docs_dir / "embedded.md"
+        embedded_file.write_text("# Embedded Document")
+        embedded_sidecar = docs_dir / "embedded.embed-meta.yaml"
+        with open(embedded_sidecar, "w") as f:
+            yaml.dump({"status": "embedded", "slug": "embedded"}, f)
+
+        # Call discover_stale_files
+        results = discover_stale_files(repo_root)
+
+        # Should return only the stale file
+        assert len(results) == 1
+        assert results[0] == stale_file
+
+    def test_discover_stale_files_returns_empty_when_none_stale(self, temp_repo):
+        """No stale sidecars -> returns empty list."""
+        repo_root, cfg = temp_repo
+
+        # Create docs directory
+        docs_dir = repo_root / "docs"
+        docs_dir.mkdir()
+
+        # Create file with embedded sidecar
+        embedded_file = docs_dir / "embedded.md"
+        embedded_file.write_text("# Embedded Document")
+        embedded_sidecar = docs_dir / "embedded.embed-meta.yaml"
+        with open(embedded_sidecar, "w") as f:
+            yaml.dump({"status": "embedded", "slug": "embedded"}, f)
+
+        # Call discover_stale_files
+        results = discover_stale_files(repo_root)
+
+        # Should return empty list
+        assert results == []
+
+    def test_discover_stale_files_skips_missing_status(self, temp_repo):
+        """Sidecar missing status key -> not included in results."""
+        repo_root, cfg = temp_repo
+
+        # Create docs directory
+        docs_dir = repo_root / "docs"
+        docs_dir.mkdir()
+
+        # Create file with sidecar missing status
+        file_no_status = docs_dir / "no_status.md"
+        file_no_status.write_text("# Document")
+        sidecar_no_status = docs_dir / "no_status.embed-meta.yaml"
+        with open(sidecar_no_status, "w") as f:
+            yaml.dump({"slug": "no_status"}, f)
+
+        # Create file with stale sidecar
+        stale_file = docs_dir / "stale.md"
+        stale_file.write_text("# Stale Document")
+        stale_sidecar = docs_dir / "stale.embed-meta.yaml"
+        with open(stale_sidecar, "w") as f:
+            yaml.dump({"status": "stale", "slug": "stale"}, f)
+
+        # Call discover_stale_files
+        results = discover_stale_files(repo_root)
+
+        # Should return only the stale file
+        assert len(results) == 1
+        assert results[0] == stale_file
