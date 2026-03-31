@@ -138,7 +138,7 @@ Plans:
 
 **Goal:** Detect image-heavy pages in PDFs via PyMuPDF, extract image bytes, pass to a local vision model (LLaVA or moondream2 via Ollama), and embed the text description. Enables extracting data from charts, plots, and diagrams (e.g. temperature response curves, register timing diagrams in datasheets) that have no text layer.
 **Requirements:** VIS-01, VIS-02, VIS-03, VIS-04, VIS-05, VIS-06, VIS-07, VIS-08, VIS-09
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
 - [ ] 999.2-01-PLAN.md — Vision module (vision.py) with image extraction, Ollama calls, fail-open (TDD)
