@@ -25,6 +25,7 @@ DEFAULTS = {
         "audio_path": "docs/audio/",
         "ollama_url": "http://localhost:11434",
         "ollama_model": "nomic-embed-text:latest",
+        "ollama_vision_model": "llava:latest",
         "chunking": {"max_tokens": 800, "overlap_fraction": 0.15},
     },
     "proactive_recall": {
