@@ -25,7 +25,7 @@ progress:
 ## Current Position
 
 Phase: 999.2
-Plan: 01 complete (vision module TDD)
+Plan: 02 complete (pipeline integration + sidecar schema)
 
 ## Performance Metrics
 
@@ -48,6 +48,7 @@ Plan: 01 complete (vision module TDD)
 | Phase 999.1 P03 | 25 | 2 tasks | 2 files |
 | Phase 999.1 P04 | 25 | 2 tasks | 2 files |
 | Phase 999.2 P01 | 25 | 2 tasks | 3 files |
+| Phase 999.2 P02 | 8 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,9 @@ Plan: 01 complete (vision module TDD)
 - HOOK-05 fail-open = inject on timeout (return True), not discard — pre-existing inversion fixed (05-01)
 - carta-hook registered as console script; shell stub uses exec delegation pattern (05-01)
 - Lifecycle primitives as pure stdlib leaf module: no Qdrant imports, fully testable in isolation (999.1-01a)
+- Lazy import of extract_image_descriptions inside pdf if-block — keeps vision optional for non-PDF flows (999.2-02)
+- chunk_index offset = len(raw_chunks) + position — prevents _point_id UUID collision between text and image chunks (999.2-02)
+- status always 'embedded' even when image_chunks=0 per D-14 — zero signals model unavailability, not failure (999.2-02)
 
 ### Pitfalls to Avoid
 
@@ -96,9 +100,9 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-03-29T08:25:14.082Z
+**Last session:** 2026-03-31T19:28:20Z
 
-**To resume:** Phase 5 complete. Next: Phase 6 — read `.planning/ROADMAP.md` for next phase requirements.
+**To resume:** Phase 999.2 Plan 02 complete. Vision pipeline fully integrated. All 78 tests pass. Phase 999.2 is done.
 
 ---
 *Initialized: 2026-03-25*
