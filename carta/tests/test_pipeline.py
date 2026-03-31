@@ -476,3 +476,80 @@ class TestDiscoverStaleFiles:
         # Should return only the stale file
         assert len(results) == 1
         assert results[0] == stale_file
+
+
+class TestVisionIntegration:
+    """Test vision module integration in pipeline (_embed_one_file)."""
+
+    def test_embed_one_file_calls_vision_for_pdf(self, temp_repo, mock_qdrant):
+        """_embed_one_file calls extract_image_descriptions for PDF files."""
+        repo_root, cfg = temp_repo
+
+        # Create a test PDF file
+        docs_dir = repo_root / "docs"
+        docs_dir.mkdir()
+        test_pdf = docs_dir / "test.pdf"
+        test_pdf.write_bytes(b"%PDF-1.4\n...")  # Minimal PDF header
+
+        # Mock the embedding pipeline
+        with patch("carta.embed.pipeline.QdrantClient") as mock_client_cls:
+            with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Sample text"}]):
+                with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk 1", "page": 1}]):
+                    with patch("carta.embed.vision.extract_image_descriptions") as mock_vision:
+                        with patch("carta.embed.pipeline.upsert_chunks"):
+                            with patch("carta.embed.pipeline.write_sidecar"):
+                                # Vision returns 2 image chunks
+                                mock_vision.return_value = [
+                                    {"page_num": 1, "image_index": 0, "doc_type": "image_description", "text": "Chart showing data"},
+                                    {"page_num": 2, "image_index": 0, "doc_type": "image_description", "text": "Diagram with labels"},
+                                ]
+                                mock_client_cls.return_value = mock_qdrant
+
+                                from carta.embed.pipeline import _embed_one_file
+
+                                file_info = {"mtime": 0.0, "hash": "abc"}
+                                chunk_count, sidecar = _embed_one_file(
+                                    test_pdf, file_info, cfg, mock_qdrant,
+                                    repo_root, max_tokens=400, overlap_fraction=0.15
+                                )
+
+                                # Verify vision was called for PDF
+                                mock_vision.assert_called_once()
+
+                                # Verify sidecar includes image fields
+                                assert "image_count" in sidecar
+                                assert "image_chunks" in sidecar
+                                assert sidecar["image_count"] == 2
+
+    def test_vision_fail_open_text_embedding_continues(self, temp_repo, mock_qdrant):
+        """If vision unavailable, text embedding completes with image_count>0, image_chunks=0."""
+        repo_root, cfg = temp_repo
+
+        docs_dir = repo_root / "docs"
+        docs_dir.mkdir()
+        test_pdf = docs_dir / "test.pdf"
+        test_pdf.write_bytes(b"%PDF-1.4\n...")
+
+        with patch("carta.embed.pipeline.QdrantClient") as mock_client_cls:
+            with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Text content"}]):
+                with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1}]):
+                    with patch("carta.embed.vision.extract_image_descriptions") as mock_vision:
+                        with patch("carta.embed.pipeline.upsert_chunks"):
+                            with patch("carta.embed.pipeline.write_sidecar"):
+                                # Vision model unavailable: returns empty (fail-open)
+                                mock_vision.return_value = []
+                                mock_client_cls.return_value = mock_qdrant
+
+                                from carta.embed.pipeline import _embed_one_file
+
+                                file_info = {"mtime": 0.0, "hash": "abc"}
+                                chunk_count, sidecar = _embed_one_file(
+                                    test_pdf, file_info, cfg, mock_qdrant,
+                                    repo_root, max_tokens=400, overlap_fraction=0.15
+                                )
+
+                                # Sidecar reflects: no images processed
+                                assert sidecar.get("image_count") == 0
+                                assert sidecar.get("image_chunks") == 0
+                                # Status remains embedded (not failed)
+                                assert sidecar.get("status") == "embedded"
