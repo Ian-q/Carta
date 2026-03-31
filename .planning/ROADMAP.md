@@ -7,8 +7,8 @@
 
 ## Phases
 
-- [ ] **Phase 1: Pipeline Reliability + MCP Foundation** - Reliable embed pipeline, MCP scaffolding, plugin cache migration
-- [ ] **Phase 2: MCP Tools** - Full carta_search / carta_embed / carta_scan tool surface live in Claude Code
+- [x] **Phase 1: Pipeline Reliability + MCP Foundation** - Reliable embed pipeline, MCP scaffolding, plugin cache migration (completed 2026-03-27)
+- [x] **Phase 2: MCP Tools** - Full carta_search / carta_embed / carta_scan tool surface live in Claude Code (completed 2026-03-27)
 - [x] **Phase 3: Smart Hook + Markdown Embedding** - Automatic context injection with threshold routing and Ollama judge (completed 2026-03-27)
 - [x] **Phase 4: Bootstrap Hardening** - Stale cache assertions, gitignore deduplication, portable hook quoting (completed 2026-03-27)
 - [x] **Phase 5: Hook Wiring + Entry Point Fix** - Wire shell stub to Python module, register carta-hook entry point, fix HOOK-05 fail-open logic
@@ -26,12 +26,12 @@
   3. Running `carta init` on a machine with a v0.1.x plugin cache removes the stale cache directory and prints confirmation
   4. `.mcp.json` is present at project root and is the sole Carta registration point; no plugin cache entry exists
   5. Sidecar files written or re-embedded include `current_path`; sidecars missing the field are healed automatically
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 01-01-PLAN.md — Pipeline reliability fixes (batch upsert, timeout, overlap cap, verbose, sidecar current_path)
 - [x] 01-02-PLAN.md — MCP server scaffold, .mcp.json registration, plugin cache cleanup
-- [ ] 01-03-PLAN.md — Integration verification + human checkpoint
+- [x] 01-03-PLAN.md — Integration verification + human checkpoint
 
 ### Phase 2: MCP Tools
 **Goal**: Claude can invoke carta_search, carta_embed, and carta_scan as working MCP tools with structured, attributed responses
@@ -42,7 +42,7 @@ Plans:
   2. Claude can call `carta_embed` on a specific file path and the file is embedded with per-file timeout enforcement
   3. Claude can call `carta_scan` and receive a structured list of pending-embed and drift files
   4. `carta-mcp` is invokable as a standalone entrypoint (registered in `pyproject.toml`); tool calls do not raise exceptions on Qdrant or Ollama failure — they return structured error objects
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [x] 02-01-PLAN.md — Service layer prep (find_config to config.py, file_mtime sidecar, run_embed_file adapter, drift detection)
@@ -116,33 +116,36 @@ Plans:
 | 4. Bootstrap Hardening | 1/1 | Complete | 2026-03-27 |
 | 5. Hook Wiring + Entry Point Fix | 1/1 | Complete | 2026-03-27 |
 | 6. Phase 3 Verification + Housekeeping | 1/1 | Complete   | 2026-03-28 |
+| 999.1. Sidecar Enrichment + Lifecycle | 5/5 | Complete | 2026-03-28 |
+| 999.2. Vision Pipeline for PDFs | 2/2 | Complete | 2026-03-31 |
 
 ## Backlog
 
-### Phase 999.1: Document Versioning, Stale Memory Tracking & Chunk Lifecycle
+### Phase 999.1: Document Versioning, Stale Memory Tracking & Chunk Lifecycle (COMPLETE)
 
 **Goal:** Each embedded document has a content hash that tracks mutations. Chunks in Qdrant carry generation/staleness metadata. When documents change, the system marks them stale. When documents are deleted or superseded, chunks are orphaned and cleaned. Claude Code (via MCP) can autonomously trigger re-embedding.
 **Requirements:** HASH-01, HASH-02, SIDECAR-01, PAYLOAD-01, LIFECYCLE-01, LIFECYCLE-02, LIFECYCLE-03, MCP-01, MCP-02, MCP-03, STALE-01
-**Plans:** 5/1 plans complete
+**Plans:** 5/5 plans complete
 
 Plans:
-- [ ] 999.1-01-PLAN.md — lifecycle.py: hash primitives, stale marking, orphan cleanup (TDD)
-- [ ] 999.1-02-PLAN.md — sidecar stub + Qdrant payload schema expansion (TDD)
-- [ ] 999.1-03-PLAN.md — pipeline.py mtime fast-path + stale alert wiring
-- [ ] 999.1-04-PLAN.md — MCP carta_embed scope parameter (TDD)
+- [x] 999.1-01a-SUMMARY.md — hash and mtime primitives (TDD)
+- [x] 999.1-01b-SUMMARY.md — Qdrant lifecycle operations + migration guard
+- [x] 999.1-02-SUMMARY.md — sidecar lifecycle schema + payload extension
+- [x] 999.1-03-SUMMARY.md — pipeline integration (mtime/hash/generation + stale alert)
+- [x] 999.1-04-SUMMARY.md — MCP `carta_embed` scope + stale discovery
 
 
 ---
 
-### Phase 999.2: Vision Model Pipeline for Image-Embedded PDF Content (BACKLOG)
+### Phase 999.2: Vision Model Pipeline for Image-Embedded PDF Content (COMPLETE)
 
 **Goal:** Detect image-heavy pages in PDFs via PyMuPDF, extract image bytes, pass to a local vision model (LLaVA or moondream2 via Ollama), and embed the text description. Enables extracting data from charts, plots, and diagrams (e.g. temperature response curves, register timing diagrams in datasheets) that have no text layer.
 **Requirements:** VIS-01, VIS-02, VIS-03, VIS-04, VIS-05, VIS-06, VIS-07, VIS-08, VIS-09
-**Plans:** 2/2 plans complete
+**Plans:** 2/2 plans complete (verified 2026-03-31)
 
 Plans:
-- [ ] 999.2-01-PLAN.md — Vision module (vision.py) with image extraction, Ollama calls, fail-open (TDD)
-- [ ] 999.2-02-PLAN.md — Pipeline integration + sidecar schema extension
+- [x] 999.2-01-PLAN.md — Vision module (vision.py) with image extraction, Ollama calls, fail-open (TDD)
+- [x] 999.2-02-PLAN.md — Pipeline integration + sidecar schema extension
 
 ---
 *Created: 2026-03-26*
