@@ -152,13 +152,40 @@ def _embed_one_file(
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     count = upsert_chunks(enriched, cfg, client=client)
 
+    # Vision: extract image descriptions for PDF files (fail-open per D-11, D-12)
+    image_count = 0
+    image_chunk_count = 0
+
+    if file_path.suffix == ".pdf":
+        from carta.embed.vision import extract_image_descriptions
+        img_descs = extract_image_descriptions(file_path, cfg)
+        image_count = len(img_descs)
+
+        if img_descs:
+            image_chunks = []
+            for desc in img_descs:
+                image_chunks.append({
+                    "slug": slug,
+                    "file_path": str(file_path.relative_to(repo_root)),
+                    "doc_type": "image_description",
+                    "page_num": desc["page_num"],
+                    "image_index": desc["image_index"],
+                    "chunk_index": len(raw_chunks) + len(image_chunks),
+                    "text": desc["text"],
+                })
+            image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+            if verbose:
+                print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
+
     sidecar_updates = {
         "status": "embedded",
         "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "chunk_count": count,
+        "chunk_count": count + image_chunk_count,
+        "image_count": image_count,
+        "image_chunks": image_chunk_count,
         "file_mtime": os.path.getmtime(str(file_path)),
     }
-    return count, sidecar_updates
+    return count + image_chunk_count, sidecar_updates
 
 
 def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:

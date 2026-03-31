@@ -63,6 +63,8 @@ def generate_sidecar_stub(
         "status": "pending",
         "indexed_at": None,
         "chunk_count": None,
+        "image_count": None,
+        "image_chunks": None,
         "file_mtime": None,
         "collection": collection_name(cfg, "doc"),
         "spec_summary": None,
