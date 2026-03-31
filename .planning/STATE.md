@@ -3,24 +3,24 @@ gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
 status: Ready to plan
-last_updated: "2026-03-31T19:38:22.021Z"
+last_updated: "2026-03-31T22:10:00.000Z"
 progress:
   total_phases: 9
   completed_phases: 8
-  total_plans: 14
+  total_plans: 18
   completed_plans: 18
 ---
 
 # Carta v0.2 — Project State
 
-**Last updated:** 2026-03-27
+**Last updated:** 2026-03-31
 **Milestone:** v0.2 — MCP server + smart hook
 
 ## Project Reference
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 999.1 — sidecar-enrichment-agent-populated-notes-sidecars-qdrant-chunks-cross-linking
+**Current focus:** Phase 999.3 — Qdrant collection scoping
 
 ## Current Position
 
@@ -31,24 +31,14 @@ Plan: Not started
 
 | Metric | Value |
 |--------|-------|
-| Phases total | 4 |
-| Phases complete | 0 |
+| Phases total | 9 |
+| Phases complete | 8 |
 | Requirements total | 23 |
-| Requirements complete | 0 |
-| Phase 01 P02 | 12 | 2 tasks | 8 files |
-| Phase 01-pipeline-reliability-mcp-foundation P01 | 8 | 2 tasks | 7 files |
-| Phase 02 P01 | 10 | 2 tasks | 8 files |
-| Phase 02 P02 | 15 | 2 tasks | 3 files |
-| Phase 03 P01 | 20 | 2 tasks | 6 files |
-| Phase 03 P02 | 25 | 2 tasks | 7 files |
-| Phase 03 P03 | 15 | 2 tasks | 4 files |
-| Phase 04 P01 | 12 | 2 tasks | 2 files |
-| Phase 05 P01 | 15 | 3 tasks | 4 files |
-| Phase 06 P01 | 8 | 2 tasks | 4 files |
-| Phase 999.1 P03 | 25 | 2 tasks | 2 files |
-| Phase 999.1 P04 | 25 | 2 tasks | 2 files |
-| Phase 999.2 P01 | 25 | 2 tasks | 3 files |
-| Phase 999.2 P02 | 8 | 2 tasks | 3 files |
+| Requirements complete | 23 |
+| Total plans | 18 |
+| Completed plans | 18 |
+| Active phase | 999.3 |
+| Active plan | Not started |
 
 ## Accumulated Context
 
@@ -93,6 +83,10 @@ Plan: Not started
 - [x] Phase 999.1-01a: compute_file_hash and needs_rehash — stdlib primitives
 - [x] Phase 999.1-01b: Qdrant lifecycle ops (mark_stale, cleanup_orphans)
 - [x] Phase 999.1-02: sidecar schema + chunk payload with lifecycle fields
+- [x] Phase 999.1-03: pipeline lifecycle integration (mtime/hash/generation + stale alert)
+- [x] Phase 999.1-04: MCP `carta_embed` scope support + stale discovery
+- [x] Phase 999.2-01: vision module (PyMuPDF extraction + Ollama call path)
+- [x] Phase 999.2-02: pipeline integration + sidecar image fields + tests
 
 ### Blockers
 
@@ -100,9 +94,9 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-03-31T19:28:20Z
+**Last session:** 2026-03-31T22:10:00Z
 
-**To resume:** Phase 999.2 Plan 02 complete. Vision pipeline fully integrated. All 78 tests pass. Phase 999.2 is done.
+**To resume:** Reconciliation complete across STATE/ROADMAP/999.2 verification docs. Latest full suite run: 75 passing tests. Next planning target is Phase 999.3.
 
 ---
 *Initialized: 2026-03-25*
