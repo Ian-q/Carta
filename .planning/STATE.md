@@ -2,43 +2,46 @@
 gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
-status: Ready to plan
-last_updated: "2026-03-31T22:10:00.000Z"
+status: In progress
+last_updated: "2026-04-01T23:00:00.000Z"
 progress:
-  total_phases: 9
+  total_phases: 10
   completed_phases: 8
-  total_plans: 18
-  completed_plans: 18
+  total_plans: 19
+  completed_plans: 20
+  total_plans_pending: 0
 ---
 
 # Carta v0.2 — Project State
 
-**Last updated:** 2026-03-31
-**Milestone:** v0.2 — MCP server + smart hook
+**Last updated:** 2026-04-01
+**Milestone:** v0.2 — MCP server + smart hook + multi-platform
 
 ## Project Reference
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 999.3 — Qdrant collection scoping
+**Current focus:** Phase 999.3 — Qdrant collection scoping + multi-platform support
 
 ## Current Position
 
 Phase: 999.3
-Plan: Not started
+Plan: 02 (completed)
+Status: Complete - ready for validation
 
 ## Performance Metrics
 
 | Metric | Value |
 |--------|-------|
-| Phases total | 9 |
+| Phases total | 10 |
 | Phases complete | 8 |
-| Requirements total | 23 |
+| Phases in planning | 1 |
+| Requirements total | 33 |
 | Requirements complete | 23 |
-| Total plans | 18 |
-| Completed plans | 18 |
+| Total plans | 20 |
+| Completed plans | 20 |
 | Active phase | 999.3 |
-| Active plan | Not started |
+| Active plan | 999.3-02 |
 
 ## Accumulated Context
 
@@ -57,6 +60,9 @@ Plan: Not started
 - Lazy import of extract_image_descriptions inside pdf if-block — keeps vision optional for non-PDF flows (999.2-02)
 - chunk_index offset = len(raw_chunks) + position — prevents _point_id UUID collision between text and image chunks (999.2-02)
 - status always 'embedded' even when image_chunks=0 per D-14 — zero signals model unavailability, not failure (999.2-02)
+- **Phase 999.3: Multi-platform support** — Carta supports both Claude Code (`.mcp.json`) and OpenCode (`.opencode.json`) equally
+- **Phase 999.3: Collection scoping** — Three scope levels (repo/shared/global) with repo as secure default
+- **Phase 999.3: Cross-project opt-in** — `cross_project_recall.enabled` controls shared scope access
 
 ### Pitfalls to Avoid
 
@@ -87,6 +93,9 @@ Plan: Not started
 - [x] Phase 999.1-04: MCP `carta_embed` scope support + stale discovery
 - [x] Phase 999.2-01: vision module (PyMuPDF extraction + Ollama call path)
 - [x] Phase 999.2-02: pipeline integration + sidecar image fields + tests
+- [x] Phase 999.3-01: collection scoping module (`carta/search/scoped.py`) — **COMPLETED**
+- [x] Phase 999.3-02: update `carta_search` MCP tool with scope parameter — **COMPLETED**
+- [ ] Phase 999.3-03: OpenCode support (`.opencode.json` generation)
 
 ### Blockers
 

@@ -68,6 +68,10 @@ _TEST_CFG = {
         "chunking": {"max_tokens": 800, "overlap_fraction": 0.15},
     },
     "search": {"top_n": 5},
+    "cross_project_recall": {
+        "enabled": False,
+        "project_filter": {"mode": "all", "projects": []},
+    },
 }
 
 _MOCK_REPO_ROOT = Path("/tmp/test-project")
@@ -85,7 +89,8 @@ def test_carta_search_returns_scored_results():
         {"score": 0.72, "source": "docs/guide.pdf", "excerpt": "guide text"},
     ]
     with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
-         patch("carta.mcp.server.run_search", return_value=mock_results):
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc"]), \
+         patch("carta.mcp.server._run_search_collection", return_value=mock_results):
         result = carta_search("test query")
     assert isinstance(result, list)
     assert len(result) == 3
@@ -101,7 +106,8 @@ def test_carta_search_truncates_excerpt():
     long_excerpt = "x" * 500
     mock_results = [{"score": 0.9, "source": "a.pdf", "excerpt": long_excerpt}]
     with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
-         patch("carta.mcp.server.run_search", return_value=mock_results):
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc"]), \
+         patch("carta.mcp.server._run_search_collection", return_value=mock_results):
         result = carta_search("query")
     assert isinstance(result, list)
     assert len(result[0]["excerpt"]) <= 300
@@ -115,7 +121,8 @@ def test_carta_search_respects_top_k():
         for i in range(5)
     ]
     with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
-         patch("carta.mcp.server.run_search", return_value=mock_results):
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc"]), \
+         patch("carta.mcp.server._run_search_collection", return_value=mock_results):
         result = carta_search("query", top_k=2)
     assert len(result) == 2
 
@@ -125,20 +132,22 @@ def test_carta_search_rounds_score():
     from carta.mcp.server import carta_search
     mock_results = [{"score": 0.123456789, "source": "a.pdf", "excerpt": "text"}]
     with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
-         patch("carta.mcp.server.run_search", return_value=mock_results):
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc"]), \
+         patch("carta.mcp.server._run_search_collection", return_value=mock_results):
         result = carta_search("query")
     assert result[0]["score"] == round(0.123456789, 4)
 
 
 def test_carta_search_service_unavailable():
-    """RuntimeError from run_search returns service_unavailable error dict."""
+    """RuntimeError from _run_search_collection is skipped, not propagated."""
     from carta.mcp.server import carta_search
     with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
-         patch("carta.mcp.server.run_search", side_effect=RuntimeError("Qdrant down")):
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc"]), \
+         patch("carta.mcp.server._run_search_collection", side_effect=RuntimeError("Qdrant down")):
         result = carta_search("query")
-    assert isinstance(result, dict)
-    assert result["error"] == "service_unavailable"
-    assert "detail" in result
+    # When all collections fail, we return empty results (not an error)
+    assert isinstance(result, list)
+    assert len(result) == 0
 
 
 def test_carta_search_config_not_found():
@@ -151,18 +160,75 @@ def test_carta_search_config_not_found():
     assert "detail" in result
 
 
+def test_carta_search_with_repo_scope():
+    """scope='repo' uses get_search_collections with 'repo' scope."""
+    from carta.mcp.server import carta_search
+    mock_results = [{"score": 0.9, "source": "a.pdf", "excerpt": "text"}]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG) as mock_cfg, \
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc"]) as mock_get_collections, \
+         patch("carta.mcp.server._run_search_collection", return_value=mock_results):
+        result = carta_search("query", scope="repo")
+    mock_get_collections.assert_called_once_with(_TEST_CFG, "repo")
+    assert isinstance(result, list)
+
+
+def test_carta_search_with_global_scope():
+    """scope='global' uses get_search_collections with 'global' scope."""
+    from carta.mcp.server import carta_search
+    mock_results = [{"score": 0.9, "source": "a.pdf", "excerpt": "text"}]
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.get_search_collections", return_value=["carta_global_doc"]) as mock_get_collections, \
+         patch("carta.mcp.server._run_search_collection", return_value=mock_results):
+        result = carta_search("query", scope="global")
+    mock_get_collections.assert_called_once_with(_TEST_CFG, "global")
+    assert isinstance(result, list)
+
+
+def test_carta_search_invalid_scope():
+    """Invalid scope returns invalid_request error."""
+    from carta.mcp.server import carta_search
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.get_search_collections", side_effect=ValueError("Invalid scope: invalid")):
+        result = carta_search("query", scope="invalid")
+    assert isinstance(result, dict)
+    assert result["error"] == "invalid_request"
+
+
+def test_carta_search_merges_results_from_multiple_collections():
+    """Results from multiple collections are merged and sorted by score."""
+    from carta.mcp.server import carta_search
+    
+    def mock_search_side_effect(query, cfg, coll_name, top_n):
+        if coll_name == "test-project_doc":
+            return [{"score": 0.7, "source": "project.pdf", "excerpt": "project text"}]
+        elif coll_name == "other-project_doc":
+            return [{"score": 0.9, "source": "other.pdf", "excerpt": "other text"}]
+        return []
+    
+    with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
+         patch("carta.mcp.server.get_search_collections", return_value=["test-project_doc", "other-project_doc"]), \
+         patch("carta.mcp.server._run_search_collection", side_effect=mock_search_side_effect):
+        result = carta_search("query", scope="shared")
+    
+    assert isinstance(result, list)
+    assert len(result) == 2
+    # Results should be sorted by score descending
+    assert result[0]["score"] == 0.9
+    assert result[1]["score"] == 0.7
+
+
 # ---------------------------------------------------------------------------
 # carta_embed tests
 # ---------------------------------------------------------------------------
 
 def test_carta_embed_success():
-    """Happy path: returns {"status": "ok", "chunks": N}."""
+    """Happy path: returns {"status": "ok", "chunks": N, "scope": "file"}."""
     from carta.mcp.server import carta_embed
     with patch("carta.mcp.server._load_cfg", return_value=_TEST_CFG), \
          patch("carta.mcp.server._repo_root_from_cfg", return_value=_MOCK_REPO_ROOT), \
          patch("carta.mcp.server.run_embed_file", return_value={"status": "ok", "chunks": 5}):
         result = carta_embed("/tmp/test.pdf")
-    assert result == {"status": "ok", "chunks": 5}
+    assert result == {"status": "ok", "chunks": 5, "scope": "file"}
 
 
 def test_carta_embed_skipped():

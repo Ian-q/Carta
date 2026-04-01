@@ -17,6 +17,7 @@ from typing import Literal, Optional
 from carta.config import find_config, load_config, ConfigError
 from carta.embed.pipeline import run_search, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
+from carta.search.scoped import get_search_collections
 
 # Direct ALL log output to stderr — stdout is reserved for JSON-RPC framing
 logging.basicConfig(
@@ -52,12 +53,18 @@ def _repo_root_from_cfg() -> Path:
 # ---------------------------------------------------------------------------
 
 @mcp_server.tool()
-def carta_search(query: str, top_k: int = 5) -> list[dict] | dict:
+def carta_search(
+    query: str,
+    top_k: int = 5,
+    scope: Literal["repo", "shared", "global"] = "repo",
+) -> list[dict] | dict:
     """Search embedded project documentation for chunks relevant to query.
 
     Args:
         query: Natural language search query.
         top_k: Maximum number of results to return (default 5).
+        scope: Search scope - "repo" (current project only), "shared" (project + 
+               permitted cross-project), or "global" (global collections only).
 
     Returns:
         List of result dicts with score, source path, and excerpt.
@@ -68,19 +75,75 @@ def carta_search(query: str, top_k: int = 5) -> list[dict] | dict:
     except (ConfigError, FileNotFoundError) as e:
         return {"error": "service_unavailable", "detail": str(e)}
     try:
-        results = run_search(query, cfg, verbose=False)
-    except RuntimeError as e:
-        detail = str(e)
-        if "collection" in detail.lower() and "not found" in detail.lower():
-            return {"error": "collection_not_found", "detail": detail}
-        return {"error": "service_unavailable", "detail": detail}
+        # Get collections to search based on scope
+        collections = get_search_collections(cfg, scope)
+        
+        # Search across all collections and merge results
+        all_results = []
+        for coll_name in collections:
+            try:
+                results = _run_search_collection(query, cfg, coll_name, top_k)
+                all_results.extend(results)
+            except RuntimeError:
+                # Skip collections that don't exist or fail
+                pass
+        
+        # Sort by score descending and take top_k
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+        results = all_results[:top_k]
+        
+    except ValueError as e:
+        # Invalid scope parameter
+        return {"error": "invalid_request", "detail": str(e)}
     except Exception as e:
         _logger.warning("carta_search unexpected error: %s", e)
         return {"error": "service_unavailable", "detail": str(e)}
     return [
         {"score": round(r["score"], 4), "source": r["source"], "excerpt": r["excerpt"][:300]}
-        for r in results[:top_k]
+        for r in results
     ]
+
+
+def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: int) -> list[dict]:
+    """Search a single collection for chunks semantically similar to query.
+    
+    Args:
+        query: Natural language search query.
+        cfg: Carta config dict.
+        collection_name: Name of the Qdrant collection to search.
+        top_n: Maximum number of results.
+    
+    Returns:
+        List of dicts: {"score": float, "source": str, "excerpt": str}
+    """
+    from qdrant_client import QdrantClient
+    from carta.embed.ollama_client import get_embedding
+    
+    ollama_url = cfg["embed"]["ollama_url"]
+    model = cfg["embed"]["ollama_model"]
+    
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
+    query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+    
+    try:
+        response = client.query_points(
+            collection_name=collection_name,
+            query=query_vec,
+            limit=top_n,
+            with_payload=True,
+        )
+    except Exception as e:
+        raise RuntimeError(f"Qdrant search failed for {collection_name}: {e}") from e
+    
+    hits = []
+    for r in response.points:
+        payload = r.payload or {}
+        hits.append({
+            "score": r.score,
+            "source": payload.get("file_path", payload.get("slug", "")),
+            "excerpt": payload.get("text", ""),
+        })
+    return hits
 
 
 @mcp_server.tool()

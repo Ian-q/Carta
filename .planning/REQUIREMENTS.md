@@ -96,12 +96,33 @@
 | BOOT-02 | Phase 4 | Complete |
 | BOOT-03 | Phase 4 | Complete |
 
+## Phase 999.3 Requirements
+
+### Collection Scoping
+
+- [ ] **SCOPE-01**: `get_search_collections(cfg, scope="repo")` returns only current project collections (`{project_name}_doc`, `_notes`, `_session`)
+- [ ] **SCOPE-02**: `get_search_collections(cfg, scope="shared")` returns current project + permitted projects based on `cross_project_recall.project_filter`
+- [ ] **SCOPE-03**: `get_search_collections(cfg, scope="global")` returns only `carta_global_*` collections
+- [ ] **SCOPE-04**: Collection discovery queries Qdrant `/collections` endpoint and filters to Carta-related collections only
+- [ ] **SCOPE-05**: `cross_project_recall.default_search_scope` config option controls default behavior ("repo" | "shared" | "global")
+
+### Multi-Platform Support
+
+- [ ] **PLATFORM-01**: `carta init` creates both `.mcp.json` (Claude Code) and `.opencode.json` (OpenCode) MCP configuration files
+- [ ] **PLATFORM-02**: MCP tools (`carta_search`, `carta_embed`, `carta_scan`) work identically on both Claude Code and OpenCode
+- [ ] **PLATFORM-03**: Documentation mentions both Claude Code and OpenCode as supported platforms
+
+### Global Memory Pool (Future)
+
+- [ ] **GLOBAL-01**: `carta_promote` MCP tool moves a chunk from project collection to `carta_global_*` (backlog)
+- [ ] **GLOBAL-02**: Auto-promotion of high-relevance chunks based on `cross_project_recall.global_pool.auto_promote` setting (backlog)
+
 **Coverage:**
 - v1 requirements: 23 total
-- Mapped to phases: 23
+- v2/999.x requirements: 10 additional
+- Mapped to phases: 23 + 8 pending
 - Unmapped: 0
-- Pending (gap closure): 0
 
 ---
 *Requirements defined: 2026-03-25*
-*Last updated: 2026-03-25 after roadmap creation*
+*Last updated: 2026-04-01 after Phase 999.3 planning*

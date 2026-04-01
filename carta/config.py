@@ -40,6 +40,11 @@ DEFAULTS = {
         "scope": ["quirk"],
         "require_ollama_judge": True,
         "project_filter": {"mode": "all", "projects": []},
+        "default_search_scope": "repo",  # "repo" | "shared" | "global"
+        "global_pool": {
+            "enabled": True,
+            "auto_promote": False,
+        },
     },
     "modules": {
         "doc_audit": True,
@@ -139,3 +144,15 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[k] = v
     return result
+
+
+def get_search_scope(cfg: dict) -> str:
+    """Get the default search scope from config.
+    
+    Args:
+        cfg: Carta config dict
+    
+    Returns:
+        'repo', 'shared', or 'global'
+    """
+    return cfg.get("cross_project_recall", {}).get("default_search_scope", "repo")
