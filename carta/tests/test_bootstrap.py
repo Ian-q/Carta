@@ -25,7 +25,6 @@ def test_boot01_residue_causes_exit(tmp_path):
         patch("carta.install.bootstrap._update_gitignore"),
         patch("carta.install.bootstrap.shutil.copytree"),
         patch("carta.install.bootstrap._append_claude_md"),
-        patch("carta.install.bootstrap._install_skills"),
     ):
         with pytest.raises(SystemExit) as exc_info:
             run_bootstrap(tmp_path)

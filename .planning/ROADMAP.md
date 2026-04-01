@@ -118,6 +118,7 @@ Plans:
 | 6. Phase 3 Verification + Housekeeping | 1/1 | Complete   | 2026-03-28 |
 | 999.1. Sidecar Enrichment + Lifecycle | 5/5 | Complete | 2026-03-28 |
 | 999.2. Vision Pipeline for PDFs | 2/2 | Complete | 2026-03-31 |
+| 999.3. Collection Scoping + Multi-Platform | 2/2 | Complete | — |
 
 ## Backlog
 
@@ -150,21 +151,23 @@ Plans:
 ---
 *Created: 2026-03-26*
 
-### Phase 999.3: Qdrant Collection Scoping — Repo Isolation, Shared Pool, and Cross-Repo Recall (BACKLOG)
+### Phase 999.3: Qdrant Collection Scoping — Multi-Platform Context Sharing (COMPLETE)
 
-**Goal:** By default, Carta queries are scoped to the current repository's collections only — no cross-contamination between projects. Users can opt in to a shared/global memory pool for cross-project recall (e.g. a quirk solved in a UI project surfaces in a new backend project). Optionally, a common `carta_global` collection holds memories explicitly promoted as project-agnostic. Collection naming and access control logic lives in `config.py::collection_name()` and the search pipeline.
-**Requirements:** TBD
-**Plans:** 0 plans
+**Goal:** By default, Carta queries are scoped to the current repository's collections only — no cross-contamination between projects. Users can opt in to a shared/global memory pool for cross-project recall. Supports both Claude Code and OpenCode platforms with `.mcp.json` and `.opencode.json` MCP registration.
+**Requirements:** SCOPE-01, SCOPE-02, SCOPE-03, SCOPE-04, SCOPE-05, PLATFORM-01, PLATFORM-02, PLATFORM-03
+**Plans:** 2/2 plans complete
 
 Plans:
-- [ ] TBD (promote with /gsd:review-backlog when ready)
+- [x] 999.3-01-PLAN.md — Collection scoping module (TDD): `get_search_collections()`, discovery, filtering
+- [x] 999.3-02-PLAN.md — Update `carta_search` MCP tool with scope parameter
 
-Key design questions for researcher:
+Key design decisions:
 - Default: repo-scoped only (current behavior with named collections)
-- Opt-in: `cross_project_recall.enabled: true` already scaffolded in config — expand this
+- Opt-in: `cross_project_recall.enabled: true` expands to shared scope
 - Global pool: `carta_global_*` collections for explicitly promoted memories
 - Scope levels: `repo` | `shared` | `global` (configurable per search call or globally)
+- Multi-platform: `.mcp.json` for Claude Code, `.opencode.json` for OpenCode
 - Depends on: 999.1 (doc_type taxonomy, protected collection types)
 
 ---
-*Created: 2026-03-28*
+*Updated: 2026-04-01*

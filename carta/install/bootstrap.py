@@ -44,17 +44,9 @@ def run_bootstrap(project_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    _install_skills()
     collections_ok = _create_qdrant_collections(project_name, qdrant_url)
     _update_gitignore(project_root)
-
-    runtime_dest = carta_dir / "carta"
-    if runtime_dest.is_symlink():
-        runtime_dest.unlink()
-    elif runtime_dest.exists():
-        shutil.rmtree(runtime_dest)
-    shutil.copytree(CARTA_RUNTIME_SRC, runtime_dest,
-                    ignore=shutil.ignore_patterns("tests", "install", "__pycache__", "*.pyc", "*.pyo", "*.egg-info"))
+    _create_mcp_configs(project_root)
 
     _append_claude_md(project_root, project_name)
 
@@ -180,74 +172,6 @@ def _remove_plugin_cache() -> bool:
     return True
 
 
-def _install_skills() -> None:
-    """Install Carta skills into the global plugin cache so Claude Code can resolve them."""
-    import json, datetime
-    from carta import __version__ as version
-
-    skills_src = Path(__file__).parent.parent / "skills"
-    if not skills_src.exists():
-        print("  Warning: packaged Carta skills not found; skipping skill install.")
-        return
-
-    # Remove stale version directories so only the current version is present.
-    # This prevents Claude Code's skill resolver from loading skills from an older
-    # cached version when multiple version dirs coexist.
-    version_parent = Path.home() / ".claude/plugins/cache/carta-cc/carta-cc"
-    if version_parent.exists():
-        stale_dirs = sorted(
-            entry.name
-            for entry in version_parent.iterdir()
-            if entry.is_dir() and entry.name != version
-        )
-        if stale_dirs:
-            print(
-                f"  Removing stale skill cache version dir(s): {', '.join(stale_dirs)} "
-                f"(installing v{version}). Restart Claude Code to load the new skills."
-            )
-        for entry in version_parent.iterdir():
-            if entry.is_dir() and entry.name != version:
-                shutil.rmtree(entry)
-
-    # Copy skills into the global plugin cache for this version
-    cache_dest = version_parent / version / "skills"
-    installed = 0
-    for skill_file in skills_src.glob("*/SKILL.md"):
-        dest_dir = cache_dest / skill_file.parent.name
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(skill_file, dest_dir / "SKILL.md")
-        installed += 1
-
-    # Write package.json — Claude Code requires this to recognise the plugin
-    package_json = cache_dest.parent / "package.json"
-    package_json.write_text(json.dumps({"name": "carta-cc", "version": version, "type": "module"}) + "\n")
-
-    # Point installed_plugins.json at this version
-    install_path = str(Path.home() / f".claude/plugins/cache/carta-cc/carta-cc/{version}")
-    plugins_json = Path.home() / ".claude/plugins/installed_plugins.json"
-    plugins_json.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.datetime.utcnow().isoformat() + "Z"
-    data = json.loads(plugins_json.read_text()) if plugins_json.exists() else {"version": 2, "plugins": {}}
-    existing = data.get("plugins", {}).get("carta-cc@carta-cc", [{}])[0]
-    prev_ver = existing.get("version") if isinstance(existing, dict) else None
-    if prev_ver and prev_ver != version:
-        print(
-            f"  Warning: skill plugin metadata was v{prev_ver}; updating to v{version}. "
-            "Restart Claude Code so sessions load the new skills."
-        )
-    data.setdefault("plugins", {})["carta-cc@carta-cc"] = [{
-        "scope": "user",
-        "installPath": install_path,
-        "version": version,
-        "installedAt": existing.get("installedAt", now),
-        "lastUpdated": now,
-    }]
-    plugins_json.write_text(json.dumps(data, indent=2) + "\n")
-
-    if installed > 0:
-        print(f"  Registered {installed} Carta skill(s) in global plugin cache (v{version})")
-
-
 def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> bool:
     """Create Qdrant collections. Returns True if all succeeded."""
     failures = 0
@@ -282,6 +206,40 @@ def _update_gitignore(project_root: Path) -> None:
         for entry in new_entries:
             f.write(f"\n{entry}")
         f.write("\n")
+
+
+def _create_mcp_configs(project_root: Path) -> None:
+    """Create MCP configuration files for both Claude Code and OpenCode."""
+    import json
+    
+    # Claude Code: .mcp.json
+    mcp_data = {
+        "mcpServers": {
+            "carta": {
+                "command": "carta-mcp",
+                "args": [],
+                "env": {}
+            }
+        }
+    }
+    mcp_path = project_root / ".mcp.json"
+    mcp_path.write_text(json.dumps(mcp_data, indent=2) + "\n")
+    
+    # OpenCode: .opencode.json
+    opencode_data = {
+        "$schema": "https://opencode.ai/config.json",
+        "mcp": {
+            "carta": {
+                "type": "local",
+                "command": ["carta-mcp"],
+                "enabled": True
+            }
+        }
+    }
+    opencode_path = project_root / ".opencode.json"
+    opencode_path.write_text(json.dumps(opencode_data, indent=2) + "\n")
+    
+    print(f"  MCP configs: {mcp_path}, {opencode_path}")
 
 
 def _append_claude_md(project_root: Path, project_name: str) -> None:
