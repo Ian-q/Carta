@@ -26,22 +26,22 @@ progress:
 ## Current Position
 
 Phase: 999.4
-Plan: 04 (completed)
-Status: Complete - ready for 999.4-05
+Plan: 05 (completed)
+Status: **COMPLETE** - Phase 999.4 finished
 
 ## Performance Metrics
 
 | Metric | Value |
 |--------|-------|
 | Phases total | 10 |
-| Phases complete | 8 |
-| Phases in planning | 1 |
+| Phases complete | 9 |
+| Phases in planning | 0 |
 | Requirements total | 33 |
 | Requirements complete | 23 |
 | Total plans | 21 |
-| Completed plans | 20 |
-| Active phase | 999.4 |
-| Active plan | 999.4-01 |
+| Completed plans | 21 |
+| Active phase | — |
+| Active plan | — |
 
 ## Accumulated Context
 
@@ -102,7 +102,7 @@ Status: Complete - ready for 999.4-05
 - [x] Phase 999.4-02: dual extraction pipeline (GLM-OCR + LLaVA) — **COMPLETED**
 - [x] Phase 999.4-03: structured chunking (table preservation) — **COMPLETED**
 - [x] Phase 999.4-04: sidecar schema updates (extraction provenance) — **COMPLETED**
-- [ ] Phase 999.4-05: integration & validation
+- [x] Phase 999.4-05: integration & validation — **COMPLETED**
 
 ### Blockers
 
