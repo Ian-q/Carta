@@ -890,3 +890,125 @@ def test_supported_extensions_includes_md():
     """Pipeline must support .md files."""
     from carta.embed.pipeline import _SUPPORTED_EXTENSIONS
     assert ".md" in _SUPPORTED_EXTENSIONS
+
+
+# ---------------------------------------------------------------------------
+# embed.py — Visual collection support (Issue #1)
+# ---------------------------------------------------------------------------
+
+def test_ensure_visual_collection_creates_multi_vector_collection():
+    """ensure_visual_collection creates a multi-vector collection for ColPali."""
+    from carta.embed.embed import ensure_visual_collection, COLPALI_VECTOR_DIM
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = False
+
+    ensure_visual_collection(mock_client, "test_visual")
+
+    mock_client.create_collection.assert_called_once()
+    call_kwargs = mock_client.create_collection.call_args.kwargs
+    assert call_kwargs["collection_name"] == "test_visual"
+    # Should be a multi-vector config
+    vectors_config = call_kwargs["vectors_config"]
+    assert "colpali" in vectors_config
+    assert vectors_config["colpali"].size == COLPALI_VECTOR_DIM
+
+
+def test_ensure_visual_collection_skips_when_exists():
+    """ensure_visual_collection skips creation if collection already exists."""
+    from carta.embed.embed import ensure_visual_collection
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+
+    ensure_visual_collection(mock_client, "test_visual")
+
+    mock_client.create_collection.assert_not_called()
+
+
+@patch("carta.embed.embed.QdrantClient")
+def test_upsert_visual_pages(mock_qdrant_cls):
+    """upsert_visual_pages stores multi-vector visual pages."""
+    from carta.embed.embed import upsert_visual_pages
+    import numpy as np
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    # Mock visual page with 1024 patches x 128 dims
+    pages = [
+        {
+            "slug": "datasheet",
+            "file_path": "docs/datasheet.pdf",
+            "page_num": 1,
+            "vectors": np.random.randn(1024, 128).astype(np.float32),
+            "png_path": ".carta/visual_cache/datasheet/page_0001.png",
+            "doc_type": "visual_page",
+            "extraction_model": "vidore/colqwen2-v1.0",
+        }
+    ]
+
+    cfg = {
+        **MINIMAL_CFG,
+        "project_name": "test",
+    }
+
+    count = upsert_visual_pages(pages, cfg, client=mock_client)
+
+    assert count == 1
+    mock_client.upsert.assert_called_once()
+    call_kwargs = mock_client.upsert.call_args.kwargs
+    assert call_kwargs["collection_name"] == "test_visual"
+    points = call_kwargs["points"]
+    assert len(points) == 1
+    # Check payload contains metadata
+    assert points[0].payload["slug"] == "datasheet"
+    assert points[0].payload["doc_type"] == "visual_page"
+
+
+@patch("carta.embed.embed.QdrantClient")
+def test_upsert_visual_pages_skips_bad_vectors(mock_qdrant_cls):
+    """upsert_visual_pages skips pages with bad vector data."""
+    from carta.embed.embed import upsert_visual_pages
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    pages = [
+        {
+            "slug": "bad",
+            "file_path": "docs/bad.pdf",
+            "page_num": 1,
+            "vectors": None,  # Invalid vectors
+            "png_path": ".carta/visual_cache/bad/page_0001.png",
+        }
+    ]
+
+    cfg = {
+        **MINIMAL_CFG,
+        "project_name": "test",
+    }
+
+    count = upsert_visual_pages(pages, cfg, client=mock_client)
+
+    assert count == 0
+
+
+def test_visual_point_id_deterministic():
+    """_visual_point_id should produce deterministic UUIDs."""
+    from carta.embed.embed import _visual_point_id
+
+    a = _visual_point_id("datasheet", 42)
+    b = _visual_point_id("datasheet", 42)
+    assert a == b
+
+
+def test_visual_point_id_unique_per_page():
+    """_visual_point_id should be unique per page number."""
+    from carta.embed.embed import _visual_point_id
+
+    a = _visual_point_id("datasheet", 1)
+    b = _visual_point_id("datasheet", 2)
+    assert a != b

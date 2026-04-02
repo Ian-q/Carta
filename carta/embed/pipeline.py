@@ -14,7 +14,7 @@ from qdrant_client.models import Filter
 
 from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text
-from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding
+from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding, upsert_visual_pages
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
 
@@ -156,8 +156,26 @@ def _embed_one_file(
     image_count = 0
     image_chunk_count = 0
     vision_metadata = None
+    visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
 
     if file_path.suffix == ".pdf":
+        # Check if ColPali multimodal embedding is enabled (Issue #1)
+        colpali_enabled = cfg.get("embed", {}).get("colpali_enabled", False)
+
+        # NEW: ColPali multimodal path for visual pages
+        if colpali_enabled:
+            try:
+                visual_pages_count = _embed_visual_pages_colpali(
+                    file_path, file_info, cfg, client, repo_root, verbose
+                )
+            except Exception as exc:
+                # Fail-open: log error but continue with standard extraction
+                print(
+                    f"Warning: ColPali visual embedding failed for {file_path}: {exc}",
+                    file=sys.stderr,
+                    flush=True
+                )
+
         # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
         try:
             from carta.vision.router import extract_image_descriptions_intelligent
@@ -182,7 +200,7 @@ def _embed_one_file(
                 image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                 if verbose:
                     print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
-                
+
                 # Build vision metadata for sidecar (Phase 999.4-04)
                 vision_metadata = _build_vision_metadata(img_descs)
         except Exception as exc:
@@ -197,7 +215,7 @@ def _embed_one_file(
                 from carta.embed.vision import extract_image_descriptions
                 img_descs = extract_image_descriptions(file_path, cfg)
                 image_count = len(img_descs)
-                
+
                 if img_descs:
                     image_chunks = []
                     for desc in img_descs:
@@ -227,11 +245,19 @@ def _embed_one_file(
         "image_count": image_count,
         "image_chunks": image_chunk_count,
         "file_mtime": os.path.getmtime(str(file_path)),
+        "visual_pages": visual_pages_count,  # NEW: ColPali visual pages
     }
     
     # Add vision metadata if available (Phase 999.4-04)
     if vision_metadata:
         sidecar_updates["vision"] = vision_metadata
+        
+    # Add ColPali metadata if visual pages were embedded (Issue #1)
+    if visual_pages_count > 0:
+        sidecar_updates["colpali"] = {
+            "enabled": True,
+            "visual_pages_embedded": visual_pages_count,
+        }
     
     return count + image_chunk_count, sidecar_updates
 
@@ -271,6 +297,116 @@ def _build_vision_metadata(img_descs: list[dict]) -> dict:
         },
         "page_details": page_details,
     }
+
+
+def _embed_visual_pages_colpali(
+    file_path: Path,
+    file_info: dict,
+    cfg: dict,
+    client,
+    repo_root: Path,
+    verbose: bool = False,
+) -> int:
+    """Embed visual PDF pages using ColPali/ColQwen2 late-interaction retrieval.
+
+    This function implements the parallel multimodal embedding pathway (Issue #1).
+    It embeds each page as multi-vector patches and stores the page PNG in cache.
+
+    Args:
+        file_path: Absolute path to the PDF file.
+        file_info: Sidecar data dict (slug, doc_type, etc.).
+        cfg: Carta config dict (must contain colpali_* settings).
+        client: Connected QdrantClient.
+        repo_root: Repo root for relative path computation.
+        verbose: If True, print progress to stdout.
+
+    Returns:
+        Number of visual pages embedded.
+
+    Raises:
+        ImportError: If colpali-engine is not installed.
+        ColPaliError: If embedding fails.
+    """
+    # Check if ColPali is available
+    from carta.embed.colpali import is_colpali_available, ColPaliEmbedder
+
+    if not is_colpali_available():
+        if verbose:
+            print(
+                "    ColPali not available (install with: pip install 'carta-cc[visual'])",
+                flush=True,
+            )
+        return 0
+
+    # Get ColPali config
+    embed_cfg = cfg.get("embed", {})
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0")
+    device = embed_cfg.get("colpali_device", "cpu")
+    batch_size = embed_cfg.get("colpali_batch_size", 1)
+    cache_dir = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
+
+    # Get file slug
+    slug = file_info.get("slug", file_path.stem)
+
+    if verbose:
+        print(f"    ColPali: embedding visual pages with {model_name}...", flush=True)
+
+    try:
+        # Initialize embedder
+        embedder = ColPaliEmbedder(
+            model_name=model_name,
+            device=device,
+            batch_size=batch_size,
+            cache_dir=cache_dir,
+        )
+
+        # Determine which pages to embed based on visual content
+        # For now, embed all pages (intelligent routing can be added later)
+        # TODO: Use page classifier to select only visual-rich pages
+
+        # Embed all pages (or use specific page numbers if classified)
+        page_results = embedder.embed_pdf_pages(file_path, page_nums=None)
+
+        if not page_results:
+            return 0
+
+        # Save PNGs to cache and prepare for Qdrant upsert
+        visual_pages = []
+        for result in page_results:
+            page_num = result["page_num"]
+            vectors = result["vectors"]
+            png_bytes = result["png_bytes"]
+
+            # Save PNG to cache
+            png_path = embedder.save_page_cache(file_path, page_num, png_bytes)
+
+            # Prepare visual page metadata for Qdrant
+            visual_pages.append({
+                "slug": slug,
+                "file_path": str(file_path.relative_to(repo_root)),
+                "page_num": page_num,
+                "vectors": vectors,
+                "png_path": str(png_path.relative_to(repo_root)),
+                "doc_type": "visual_page",
+                "extraction_model": model_name,
+            })
+
+        # Upsert to visual collection
+        if visual_pages:
+            upserted = upsert_visual_pages(visual_pages, cfg, client=client)
+            if verbose:
+                print(f"    ColPali: embedded {upserted} visual page(s)", flush=True)
+            return upserted
+
+        return 0
+
+    except Exception as exc:
+        print(
+            f"Warning: ColPali embedding failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
 
 
 def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:

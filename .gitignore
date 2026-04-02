@@ -45,3 +45,6 @@ build/
 tmp/
 *.log
 latest-log.txt
+
+.carta/carta/
+.carta/hooks/
