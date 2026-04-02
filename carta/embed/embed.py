@@ -7,6 +7,9 @@ import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    HnswConfigDiff,
+    MultiVectorConfig,
+    MultiVectorComparator,
     PointStruct,
     VectorParams,
 )
@@ -15,6 +18,9 @@ from carta.config import collection_name
 
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
+
+# ColPali produces 128-dimensional patch vectors
+COLPALI_VECTOR_DIM = 128
 
 # Maximum number of PointStructs sent per client.upsert() call
 BATCH_SIZE = 32
@@ -159,5 +165,133 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             upserted += len(batch)
         except Exception as e:
             print(f"Warning: batch upsert failed — {e}", flush=True)
+
+    return upserted
+
+
+def ensure_visual_collection(client: QdrantClient, coll_name: str) -> None:
+    """Create Qdrant multi-vector collection for ColPali visual embeddings.
+
+    Creates a collection configured for late-interaction MaxSim retrieval
+    using 128-dimensional patch vectors.
+
+    Args:
+        client: QdrantClient instance.
+        coll_name: Collection name (typically "{project}_visual").
+
+    Raises:
+        RuntimeError: If collection creation fails.
+    """
+    if not client.collection_exists(coll_name):
+        client.create_collection(
+            collection_name=coll_name,
+            vectors_config={
+                "colpali": VectorParams(
+                    size=COLPALI_VECTOR_DIM,
+                    distance=Distance.COSINE,
+                    multivector_config=MultiVectorConfig(
+                        comparator=MultiVectorComparator.MAX_SIM
+                    ),
+                    hnsw_config=HnswConfigDiff(m=0),  # brute-force for MaxSim
+                )
+            },
+        )
+
+
+def _visual_point_id(slug: str, page_num: int) -> str:
+    """Deterministic UUID for visual page embeddings.
+
+    Args:
+        slug: Document slug identifier.
+        page_num: 1-indexed page number.
+
+    Returns:
+        UUID string for the point ID.
+    """
+    raw = f"{slug}:visual:{page_num}"
+    return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
+
+
+def upsert_visual_pages(
+    pages: list[dict],
+    cfg: dict,
+    client: QdrantClient = None,
+) -> int:
+    """Upsert ColPali visual embeddings to Qdrant.
+
+    Args:
+        pages: List of page dicts with keys:
+            - "slug": Document identifier
+            - "page_num": 1-indexed page number
+            - "vectors": numpy array of shape (num_patches, 128)
+            - "file_path": Relative path to source PDF
+            - "png_path": Relative path to cached PNG
+            - Optional: "doc_type", "extraction_model", etc.
+        cfg: carta config dict (must contain qdrant_url, project_name).
+        client: Optional QdrantClient instance.
+
+    Returns:
+        Number of points upserted.
+
+    Raises:
+        RuntimeError: If upsert fails.
+    """
+    from carta.config import collection_name
+
+    coll_name = f"{cfg['project_name']}_visual"
+
+    if client is None:
+        qdrant_url = cfg["qdrant_url"]
+        client = QdrantClient(url=qdrant_url, timeout=5)
+    ensure_visual_collection(client, coll_name)
+
+    upserted = 0
+    batch: list[PointStruct] = []
+
+    for page in pages:
+        page_id = f"{page.get('slug', '?')}:p{page.get('page_num', '?')}"
+        try:
+            vectors = page["vectors"]
+            # Convert numpy array to list of lists for Qdrant multi-vector
+            if hasattr(vectors, "tolist"):
+                vector_list = vectors.tolist()
+            else:
+                vector_list = list(vectors)
+
+            # Build payload with page metadata
+            payload = {
+                k: v for k, v in page.items()
+                if k not in ("vectors", "png_bytes")
+            }
+            payload["doc_type"] = page.get("doc_type", "visual_page")
+
+            point_id = _visual_point_id(page["slug"], page["page_num"])
+
+            point = PointStruct(
+                id=point_id,
+                vector={"colpali": vector_list},
+                payload=payload,
+            )
+            batch.append(point)
+
+        except Exception as e:
+            print(f"Warning: skipping visual page {page_id} — {e}", flush=True)
+            continue
+
+        if len(batch) >= BATCH_SIZE:
+            try:
+                client.upsert(collection_name=coll_name, points=batch)
+                upserted += len(batch)
+            except Exception as e:
+                print(f"Warning: visual batch upsert failed — {e}", flush=True)
+            batch = []
+
+    # Flush remaining points
+    if batch:
+        try:
+            client.upsert(collection_name=coll_name, points=batch)
+            upserted += len(batch)
+        except Exception as e:
+            print(f"Warning: visual batch upsert failed — {e}", flush=True)
 
     return upserted

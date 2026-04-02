@@ -161,6 +161,50 @@ embed:
 
 ---
 
+## Visual Embedding (ColPali/ColQwen2)
+
+Carta supports multimodal embedding of visually-rich PDF pages (datasheets, register maps, timing diagrams) using [ColPali](https://github.com/illuin-tech/colpali) and [ColQwen2](https://huggingface.co/vidore/colqwen2-v1.0) late-interaction retrieval.
+
+Instead of converting visual content to text (lossy), this pathway:
+1. Embeds each PDF page as 1,024 patch vectors (128-dim) directly into Qdrant's multi-vector collection
+2. Stores the raw page PNG as a sidecar payload in `.carta/visual_cache/`
+3. Enables visual search that returns actual page images alongside text results
+
+**Enable visual embedding:**
+
+```bash
+# Install with visual dependencies
+pip install 'carta-cc[visual]'
+```
+
+Then set in `.carta/config.yaml`:
+
+```yaml
+embed:
+  colpali_enabled: true              # opt-in flag (default: false)
+  colpali_model: "vidore/colqwen2-v1.0"  # or colpali-v1.3 for lower VRAM
+  colpali_device: "cpu"              # "cpu", "cuda", or "mps"
+  colpali_batch_size: 1              # pages per batch (1 for CPU)
+  colpali_sidecar_path: ".carta/visual_cache/"
+```
+
+**Model Selection:**
+
+| Model | VRAM | Speed | Quality | Best For |
+|-------|------|-------|---------|----------|
+| `vidore/colqwen2-v1.0` | ~8GB | Slow | Highest | GPU servers |
+| `vidore/colpali-v1.3` | ~6GB | Medium | High | Balanced GPU |
+| `vidore/colSmol-500M` | ~3GB | Medium | Good | CPU workstations |
+| `vidore/colSmol-256M` | ~2GB | Fast | Fair | CPU-only/laptops |
+
+**Notes:**
+- Visual embedding is additive — existing text embedding pipeline is unchanged
+- Pages are classified automatically; only visually-rich pages are embedded
+- Visual collections are separate: `{project_name}_visual` (multi-vector) vs `{project_name}_doc` (text)
+- Search returns both text and visual results; visual hits include base64-encoded PNGs
+
+---
+
 ## Issue lifecycle
 
 Carta assigns stable `AUDIT-NNN` IDs that survive across audit runs:

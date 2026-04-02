@@ -229,3 +229,5 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 > Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
 > This section is managed by `generate-claude-profile` -- do not edit manually.
 <!-- GSD:profile-end -->
+
+<!-- Carta is active. Collections: doc-audit-cc_doc, doc-audit-cc_session, doc-audit-cc_quirk -->
