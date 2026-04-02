@@ -119,7 +119,7 @@ Plans:
 | 999.1. Sidecar Enrichment + Lifecycle | 5/5 | Complete | 2026-03-28 |
 | 999.2. Vision Pipeline for PDFs | 2/2 | Complete | 2026-03-31 |
 | 999.3. Collection Scoping + Multi-Platform | 2/2 | Complete | — |
-| 999.4. GLM-OCR Intelligent Extraction | 2/5 | In Progress | 999.4-02 complete |
+| 999.4. GLM-OCR Intelligent Extraction | 3/5 | In Progress | 999.4-03 complete |
 
 ## Backlog
 
@@ -184,7 +184,7 @@ Key design decisions:
 Plans:
 - [x] 999.4-01-PLAN.md — Content classification module (TDD): `classify_page_content()`, heuristics-based routing
 - [x] 999.4-02-PLAN.md — Dual extraction pipeline: GLM-OCR for text, LLaVA for visuals, hybrid for mixed
-- [ ] 999.4-03-PLAN.md — Structured chunking: preserve markdown tables, intelligent splitting
+- [x] 999.4-03-PLAN.md — Structured chunking: preserve markdown tables, intelligent splitting
 - [ ] 999.4-04-PLAN.md — Sidecar schema updates: extraction provenance, per-page model tracking
 - [ ] 999.4-05-PLAN.md — Integration & validation: end-to-end tests, sample PDF verification
 
