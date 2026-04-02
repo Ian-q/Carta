@@ -75,6 +75,17 @@ def generate_sidecar_stub(
         "generation": 0,
         "last_hash_check_at": None,
         "version_history": [],
+        # Vision extraction metadata (Plan 999.4-04)
+        "vision": {
+            "enabled": False,
+            "pages_analyzed": 0,
+            "extraction_summary": {
+                "glm_ocr_pages": 0,
+                "llava_pages": 0,
+                "hybrid_pages": 0,
+            },
+            "page_details": [],  # List of per-page extraction info
+        },
     }
 
     return stub
