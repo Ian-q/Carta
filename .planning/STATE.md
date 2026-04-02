@@ -3,31 +3,31 @@ gsd_state_version: 1.0
 milestone: v0.2
 milestone_name: milestone
 status: In progress
-last_updated: "2026-04-01T23:00:00.000Z"
+last_updated: "2026-04-02T00:00:00.000Z"
 progress:
   total_phases: 10
   completed_phases: 8
-  total_plans: 19
+  total_plans: 21
   completed_plans: 20
-  total_plans_pending: 0
+  total_plans_pending: 1
 ---
 
 # Carta v0.2 — Project State
 
-**Last updated:** 2026-04-01
+**Last updated:** 2026-04-02
 **Milestone:** v0.2 — MCP server + smart hook + multi-platform
 
 ## Project Reference
 
 **Core value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
-**Current focus:** Phase 999.3 — Qdrant collection scoping + multi-platform support
+**Current focus:** Phase 999.4 — GLM-OCR intelligent PDF extraction
 
 ## Current Position
 
-Phase: 999.3
-Plan: 02 (completed)
-Status: Complete - ready for validation
+Phase: 999.4
+Plan: 01 (ready to execute)
+Status: Planning complete - ready for development
 
 ## Performance Metrics
 
@@ -38,10 +38,10 @@ Status: Complete - ready for validation
 | Phases in planning | 1 |
 | Requirements total | 33 |
 | Requirements complete | 23 |
-| Total plans | 20 |
+| Total plans | 21 |
 | Completed plans | 20 |
-| Active phase | 999.3 |
-| Active plan | 999.3-02 |
+| Active phase | 999.4 |
+| Active plan | 999.4-01 |
 
 ## Accumulated Context
 
@@ -63,6 +63,8 @@ Status: Complete - ready for validation
 - **Phase 999.3: Multi-platform support** — Carta supports both Claude Code (`.mcp.json`) and OpenCode (`.opencode.json`) equally
 - **Phase 999.3: Collection scoping** — Three scope levels (repo/shared/global) with repo as secure default
 - **Phase 999.3: Cross-project opt-in** — `cross_project_recall.enabled` controls shared scope access
+- **Phase 999.4: GLM-OCR integration** — Intelligent content classification routes text pages to GLM-OCR, visual pages to LLaVA
+- **Phase 999.4: Dual extraction** — Hybrid approach preserves table structure while maintaining visual context
 
 ### Pitfalls to Avoid
 
@@ -93,9 +95,14 @@ Status: Complete - ready for validation
 - [x] Phase 999.1-04: MCP `carta_embed` scope support + stale discovery
 - [x] Phase 999.2-01: vision module (PyMuPDF extraction + Ollama call path)
 - [x] Phase 999.2-02: pipeline integration + sidecar image fields + tests
-- [x] Phase 999.3-01: collection scoping module (`carta/search/scoped.py`) — **COMPLETED**
-- [x] Phase 999.3-02: update `carta_search` MCP tool with scope parameter — **COMPLETED**
-- [ ] Phase 999.3-03: OpenCode support (`.opencode.json` generation)
+- [x] Phase 999.3-01: collection scoping module (`carta/search/scoped.py`)
+- [x] Phase 999.3-02: update `carta_search` MCP tool with scope parameter
+- [x] Phase 999.3-03: OpenCode support (`.opencode.json` generation) — INCLUDED in 999.3-01 bootstrap update
+- [ ] Phase 999.4-01: content classification module (GLM-OCR routing) — **READY TO EXECUTE**
+- [ ] Phase 999.4-02: dual extraction pipeline (GLM-OCR + LLaVA)
+- [ ] Phase 999.4-03: structured chunking (table preservation)
+- [ ] Phase 999.4-04: sidecar schema updates (extraction provenance)
+- [ ] Phase 999.4-05: integration & validation
 
 ### Blockers
 
@@ -103,9 +110,9 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-03-31T22:10:00Z
+**Last session:** 2026-04-02T00:00:00Z
 
-**To resume:** Reconciliation complete across STATE/ROADMAP/999.2 verification docs. Latest full suite run: 75 passing tests. Next planning target is Phase 999.3.
+**To resume:** Phase 999.4 planning complete. Design spec and Plan 999.4-01 created. GLM-OCR model confirmed available locally. Ready to execute content classification module.
 
 ---
 *Initialized: 2026-03-25*

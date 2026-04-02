@@ -119,6 +119,7 @@ Plans:
 | 999.1. Sidecar Enrichment + Lifecycle | 5/5 | Complete | 2026-03-28 |
 | 999.2. Vision Pipeline for PDFs | 2/2 | Complete | 2026-03-31 |
 | 999.3. Collection Scoping + Multi-Platform | 2/2 | Complete | — |
+| 999.4. GLM-OCR Intelligent Extraction | 0/5 | Planned | — |
 
 ## Backlog
 
@@ -171,3 +172,51 @@ Key design decisions:
 
 ---
 *Updated: 2026-04-01*
+
+### Phase 999.4: GLM-OCR Intelligent PDF Extraction (PLANNED)
+
+**Goal:** Enhance Carta's PDF extraction with intelligent content classification that routes pages to the optimal vision model. Text-heavy pages (datasheets, tables, specs) use GLM-OCR for exact structured extraction. Visual pages (plots, schematics, diagrams) use LLaVA for descriptive context. Maximizes extraction quality while maintaining the existing embedding pipeline.
+
+**Requirements:** VISION-01, VISION-02, VISION-03, VISION-04, VISION-05, VISION-06, VISION-07, VISION-08, VISION-09
+
+**Plans:** 5/5 plans defined (ready for execution)
+
+Plans:
+- [ ] 999.4-01-PLAN.md — Content classification module (TDD): `classify_page_content()`, heuristics-based routing
+- [ ] 999.4-02-PLAN.md — Dual extraction pipeline: GLM-OCR for text, LLaVA for visuals, hybrid for mixed
+- [ ] 999.4-03-PLAN.md — Structured chunking: preserve markdown tables, intelligent splitting
+- [ ] 999.4-04-PLAN.md — Sidecar schema updates: extraction provenance, per-page model tracking
+- [ ] 999.4-05-PLAN.md — Integration & validation: end-to-end tests, sample PDF verification
+
+Key design decisions:
+- **Heuristic classification** (not ML): PyMuPDF text analysis + image density for speed/determinism
+- **Thresholds**: >70% text = TEXT, <30% text + >40% image = VISUAL, else MIXED
+- **Dual model**: GLM-OCR (`glm-ocr:latest`) for text/tables, LLaVA for visuals
+- **Hybrid mode**: For MIXED pages, use both models and combine outputs
+- **Table preservation**: GLM-OCR outputs markdown tables; chunker detects and keeps them whole
+- **Backward compatible**: Existing configs without `ocr_model` continue using LLaVA
+- **User-transparent**: No configuration required; automatic routing with optional overrides
+- **Enhanced sidecars**: Track which model extracted each page, content type, table count
+
+Config additions:
+```yaml
+embed:
+  ocr_model: glm-ocr:latest              # NEW: for text/table extraction
+  classification:                        # NEW (optional)
+    text_threshold: 0.70
+    visual_threshold: 0.40
+  vision_routing: auto                  # NEW (optional): auto|ocr|vision|both
+  chunking:
+    preserve_tables: true               # NEW: keep markdown tables intact
+```
+
+Success metrics:
+1. GLM-OCR extracts register tables with >95% accuracy vs LLaVA's ~70%
+2. Search queries for specific values ("temperature range", "pin 47 function") return correct docs more often
+3. Sidecars clearly show which model extracted which content (observability)
+4. Zero regression on visual diagram search (LLaVA descriptions still work)
+
+Depends on: 999.2 (vision pipeline established)
+
+---
+*Planned: 2026-04-02*
