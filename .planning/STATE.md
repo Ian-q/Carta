@@ -26,8 +26,8 @@ progress:
 ## Current Position
 
 Phase: 999.4
-Plan: 02 (completed)
-Status: Complete - ready for 999.4-03
+Plan: 03 (completed)
+Status: Complete - ready for 999.4-04
 
 ## Performance Metrics
 
@@ -100,7 +100,7 @@ Status: Complete - ready for 999.4-03
 - [x] Phase 999.3-03: OpenCode support (`.opencode.json` generation) — INCLUDED in 999.3-01 bootstrap update
 - [x] Phase 999.4-01: content classification module (GLM-OCR routing) — **COMPLETED**
 - [x] Phase 999.4-02: dual extraction pipeline (GLM-OCR + LLaVA) — **COMPLETED**
-- [ ] Phase 999.4-03: structured chunking (table preservation)
+- [x] Phase 999.4-03: structured chunking (table preservation) — **COMPLETED**
 - [ ] Phase 999.4-04: sidecar schema updates (extraction provenance)
 - [ ] Phase 999.4-05: integration & validation
 
