@@ -78,6 +78,7 @@ def carta_search(
     """
     try:
         cfg = _load_cfg()
+        repo_root = _repo_root_from_cfg()
     except (ConfigError, FileNotFoundError) as e:
         return {"error": "service_unavailable", "detail": str(e)}
     
@@ -91,10 +92,13 @@ def carta_search(
             try:
                 # Check if this is a visual collection
                 if coll_name.endswith("_visual"):
-                    # Skip visual collections for now - requires full ColPali query implementation
-                    # TODO: Enable when ColPali query encoding is fully implemented
-                    continue
+                    # Search visual collection using ColPali late-interaction
+                    results = _run_search_visual_collection(
+                        query, cfg, coll_name, top_k, repo_root
+                    )
+                    all_results.extend(results)
                 else:
+                    # Search text collection using standard embedding
                     results = _run_search_collection(query, cfg, coll_name, top_k)
                     # Mark results with type for downstream processing
                     for r in results:
@@ -195,6 +199,7 @@ def _run_search_visual_collection(
         List of dicts with score, source, and image data for visual results.
     """
     from qdrant_client import QdrantClient
+    from qdrant_client.models import Filter
     from carta.embed.colpali import is_colpali_available, ColPaliEmbedder, ColPaliError
 
     if not is_colpali_available():
@@ -213,24 +218,58 @@ def _run_search_visual_collection(
             batch_size=1,
         )
 
-        # Embed the query text using ColPali
-        # Note: ColPali uses the same model for query and document encoding
-        from PIL import Image
-        # Create a text-only representation for the query
-        # ColPali expects images, so we encode query differently
-        # This is a simplified approach - full implementation would use
-        # the proper ColPali query encoding
+        # Encode the query text as multi-vector patches
+        query_vectors = embedder.embed_query(query)
+        
+        # Convert to list format for Qdrant multi-vector query
+        if hasattr(query_vectors, "tolist"):
+            query_vector_list = query_vectors.tolist()
+        else:
+            query_vector_list = list(query_vectors)
 
+        # Search the visual collection using late-interaction MaxSim
         client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
+        
+        try:
+            response = client.query_points(
+                collection_name=collection_name,
+                query=query_vector_list,  # Multi-vector query for MaxSim
+                using="colpali",  # Specify the multi-vector field
+                limit=top_n,
+                with_payload=True,
+            )
+        except Exception as e:
+            _logger.warning("Qdrant visual search failed for %s: %s", collection_name, e)
+            return []
 
-        # For now, use a placeholder approach - in production,
-        # we'd need to properly encode the query using ColPali's query mode
-        # This requires access to the model's query encoding mechanism
-        _logger.warning(
-            "Visual collection search requires full ColPali query implementation"
-        )
+        # Format results with image data
+        hits = []
+        for r in response.points:
+            payload = r.payload or {}
+            png_path_str = payload.get("png_path", "")
+            
+            # Load the image if path is available
+            image_b64 = ""
+            if png_path_str:
+                png_path = repo_root / png_path_str
+                if png_path.exists():
+                    image_b64 = _load_image_as_base64(png_path)
+            
+            hits.append({
+                "score": r.score,
+                "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
+                "excerpt": f"Visual match from page {payload.get('page_num', '?')}",
+                "type": "visual",
+                "image_b64": image_b64,
+                "page_num": payload.get("page_num"),
+                "png_path": png_path_str,
+            })
+        
+        return hits
+
+    except ColPaliError as e:
+        _logger.warning("ColPali query encoding failed: %s", e)
         return []
-
     except Exception as e:
         _logger.warning("Visual search failed for %s: %s", collection_name, e)
         return []

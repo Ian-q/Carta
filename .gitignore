@@ -35,6 +35,7 @@ build/
 
 # Carta runtime state
 .carta/scan-results.json
+.carta/visual_cache/
 
 # Design source files
 *.afdesign
