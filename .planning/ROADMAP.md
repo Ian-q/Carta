@@ -119,7 +119,7 @@ Plans:
 | 999.1. Sidecar Enrichment + Lifecycle | 5/5 | Complete | 2026-03-28 |
 | 999.2. Vision Pipeline for PDFs | 2/2 | Complete | 2026-03-31 |
 | 999.3. Collection Scoping + Multi-Platform | 2/2 | Complete | — |
-| 999.4. GLM-OCR Intelligent Extraction | 0/5 | Planned | — |
+| 999.4. GLM-OCR Intelligent Extraction | 1/5 | In Progress | 999.4-01 complete |
 
 ## Backlog
 
@@ -173,16 +173,16 @@ Key design decisions:
 ---
 *Updated: 2026-04-01*
 
-### Phase 999.4: GLM-OCR Intelligent PDF Extraction (PLANNED)
+### Phase 999.4: GLM-OCR Intelligent PDF Extraction (IN PROGRESS)
 
 **Goal:** Enhance Carta's PDF extraction with intelligent content classification that routes pages to the optimal vision model. Text-heavy pages (datasheets, tables, specs) use GLM-OCR for exact structured extraction. Visual pages (plots, schematics, diagrams) use LLaVA for descriptive context. Maximizes extraction quality while maintaining the existing embedding pipeline.
 
 **Requirements:** VISION-01, VISION-02, VISION-03, VISION-04, VISION-05, VISION-06, VISION-07, VISION-08, VISION-09
 
-**Plans:** 5/5 plans defined (ready for execution)
+**Plans:** 1/5 complete (in progress)
 
 Plans:
-- [ ] 999.4-01-PLAN.md — Content classification module (TDD): `classify_page_content()`, heuristics-based routing
+- [x] 999.4-01-PLAN.md — Content classification module (TDD): `classify_page_content()`, heuristics-based routing
 - [ ] 999.4-02-PLAN.md — Dual extraction pipeline: GLM-OCR for text, LLaVA for visuals, hybrid for mixed
 - [ ] 999.4-03-PLAN.md — Structured chunking: preserve markdown tables, intelligent splitting
 - [ ] 999.4-04-PLAN.md — Sidecar schema updates: extraction provenance, per-page model tracking

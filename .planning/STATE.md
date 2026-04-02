@@ -8,8 +8,8 @@ progress:
   total_phases: 10
   completed_phases: 8
   total_plans: 21
-  completed_plans: 20
-  total_plans_pending: 1
+  completed_plans: 21
+  total_plans_pending: 4
 ---
 
 # Carta v0.2 — Project State
@@ -26,8 +26,8 @@ progress:
 ## Current Position
 
 Phase: 999.4
-Plan: 01 (ready to execute)
-Status: Planning complete - ready for development
+Plan: 01 (completed)
+Status: Complete - ready for 999.4-02
 
 ## Performance Metrics
 
@@ -98,7 +98,7 @@ Status: Planning complete - ready for development
 - [x] Phase 999.3-01: collection scoping module (`carta/search/scoped.py`)
 - [x] Phase 999.3-02: update `carta_search` MCP tool with scope parameter
 - [x] Phase 999.3-03: OpenCode support (`.opencode.json` generation) — INCLUDED in 999.3-01 bootstrap update
-- [ ] Phase 999.4-01: content classification module (GLM-OCR routing) — **READY TO EXECUTE**
+- [x] Phase 999.4-01: content classification module (GLM-OCR routing) — **COMPLETED**
 - [ ] Phase 999.4-02: dual extraction pipeline (GLM-OCR + LLaVA)
 - [ ] Phase 999.4-03: structured chunking (table preservation)
 - [ ] Phase 999.4-04: sidecar schema updates (extraction provenance)
