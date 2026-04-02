@@ -26,7 +26,17 @@ DEFAULTS = {
         "ollama_url": "http://localhost:11434",
         "ollama_model": "nomic-embed-text:latest",
         "ollama_vision_model": "llava:latest",
-        "chunking": {"max_tokens": 800, "overlap_fraction": 0.15},
+        "ocr_model": "glm-ocr:latest",  # NEW: for text/table extraction
+        "classification": {  # NEW: content classification thresholds
+            "text_threshold": 0.70,
+            "visual_threshold": 0.40,
+        },
+        "vision_routing": "auto",  # NEW: auto | ocr | vision | both
+        "chunking": {
+            "max_tokens": 800,
+            "overlap_fraction": 0.15,
+            "preserve_tables": True,  # NEW: keep markdown tables whole
+        },
     },
     "proactive_recall": {
         "high_threshold": 0.85,
