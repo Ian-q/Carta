@@ -26,8 +26,8 @@ progress:
 ## Current Position
 
 Phase: 999.4
-Plan: 03 (completed)
-Status: Complete - ready for 999.4-04
+Plan: 04 (completed)
+Status: Complete - ready for 999.4-05
 
 ## Performance Metrics
 
@@ -101,7 +101,7 @@ Status: Complete - ready for 999.4-04
 - [x] Phase 999.4-01: content classification module (GLM-OCR routing) — **COMPLETED**
 - [x] Phase 999.4-02: dual extraction pipeline (GLM-OCR + LLaVA) — **COMPLETED**
 - [x] Phase 999.4-03: structured chunking (table preservation) — **COMPLETED**
-- [ ] Phase 999.4-04: sidecar schema updates (extraction provenance)
+- [x] Phase 999.4-04: sidecar schema updates (extraction provenance) — **COMPLETED**
 - [ ] Phase 999.4-05: integration & validation
 
 ### Blockers
