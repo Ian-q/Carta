@@ -373,6 +373,47 @@ class ColPaliEmbedder:
 
         return png_path
 
+    def embed_query(self, query: str) -> "np.ndarray":
+        """Embed a text query as multi-vector patches for late-interaction retrieval.
+
+        This method encodes the query text using ColPali's query processor,
+        which tokenizes and prepares the query for MaxSim scoring against
+        document patch vectors.
+
+        Args:
+            query: Natural language search query string.
+
+        Returns:
+            numpy array of shape (num_query_tokens, 128) containing query vectors.
+
+        Raises:
+            ColPaliError: If query encoding fails.
+        """
+        if self._model is None:
+            self._load_model()
+
+        try:
+            # Process query using colpali-engine's query processing
+            # The processor handles tokenization and preparation for the model
+            queries = [query]
+            processed = self._processor.process_queries(queries)
+
+            # Move inputs to device
+            inputs = {k: v.to(self.device) for k, v in processed.items()}
+
+            # Generate embeddings
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+                # outputs is typically (batch_size, num_tokens, hidden_dim)
+                embeddings = outputs[0] if isinstance(outputs, tuple) else outputs
+
+            # Convert to numpy (num_tokens, 128)
+            vectors = embeddings.cpu().float().numpy()
+            return vectors[0]  # Return first (and only) item in batch
+
+        except Exception as exc:
+            raise ColPaliError(f"Failed to encode query: {exc}") from exc
+
 
 def is_colpali_available() -> bool:
     """Check if ColPali dependencies are available.
