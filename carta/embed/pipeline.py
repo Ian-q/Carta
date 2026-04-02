@@ -155,27 +155,70 @@ def _embed_one_file(
     # Vision: extract image descriptions for PDF files (fail-open per D-11, D-12)
     image_count = 0
     image_chunk_count = 0
+    vision_metadata = None
 
     if file_path.suffix == ".pdf":
-        from carta.embed.vision import extract_image_descriptions
-        img_descs = extract_image_descriptions(file_path, cfg)
-        image_count = len(img_descs)
+        # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
+        try:
+            from carta.vision.router import extract_image_descriptions_intelligent
+            img_descs = extract_image_descriptions_intelligent(file_path, cfg)
+            image_count = len(img_descs)
 
-        if img_descs:
-            image_chunks = []
-            for desc in img_descs:
-                image_chunks.append({
-                    "slug": slug,
-                    "file_path": str(file_path.relative_to(repo_root)),
-                    "doc_type": "image_description",
-                    "page_num": desc["page_num"],
-                    "image_index": desc["image_index"],
-                    "chunk_index": len(raw_chunks) + len(image_chunks),
-                    "text": desc["text"],
-                })
-            image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
-            if verbose:
-                print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
+            if img_descs:
+                image_chunks = []
+                for desc in img_descs:
+                    image_chunks.append({
+                        "slug": slug,
+                        "file_path": str(file_path.relative_to(repo_root)),
+                        "doc_type": "image_description",
+                        "page_num": desc["page_num"],
+                        "image_index": desc["image_index"],
+                        "chunk_index": len(raw_chunks) + len(image_chunks),
+                        "text": desc["text"],
+                        # Phase 999.4: extraction provenance
+                        "model_used": desc.get("model_used", "llava"),
+                        "content_type": desc.get("content_type", "visual"),
+                    })
+                image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                if verbose:
+                    print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
+                
+                # Build vision metadata for sidecar (Phase 999.4-04)
+                vision_metadata = _build_vision_metadata(img_descs)
+        except Exception as exc:
+            # Fail-open: log error but don't block embedding
+            print(
+                f"Warning: intelligent vision extraction failed for {file_path}: {exc}",
+                file=sys.stderr,
+                flush=True
+            )
+            # Fallback to legacy extraction if available
+            try:
+                from carta.embed.vision import extract_image_descriptions
+                img_descs = extract_image_descriptions(file_path, cfg)
+                image_count = len(img_descs)
+                
+                if img_descs:
+                    image_chunks = []
+                    for desc in img_descs:
+                        image_chunks.append({
+                            "slug": slug,
+                            "file_path": str(file_path.relative_to(repo_root)),
+                            "doc_type": "image_description",
+                            "page_num": desc["page_num"],
+                            "image_index": desc["image_index"],
+                            "chunk_index": len(raw_chunks) + len(image_chunks),
+                            "text": desc["text"],
+                        })
+                    image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                    if verbose:
+                        print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
+            except Exception as legacy_exc:
+                print(
+                    f"Warning: legacy vision extraction also failed: {legacy_exc}",
+                    file=sys.stderr,
+                    flush=True
+                )
 
     sidecar_updates = {
         "status": "embedded",
@@ -185,7 +228,49 @@ def _embed_one_file(
         "image_chunks": image_chunk_count,
         "file_mtime": os.path.getmtime(str(file_path)),
     }
+    
+    # Add vision metadata if available (Phase 999.4-04)
+    if vision_metadata:
+        sidecar_updates["vision"] = vision_metadata
+    
     return count + image_chunk_count, sidecar_updates
+
+
+def _build_vision_metadata(img_descs: list[dict]) -> dict:
+    """Build vision metadata dict for sidecar from extraction results.
+    
+    Args:
+        img_descs: List of extraction result dicts from intelligent routing
+        
+    Returns:
+        Vision metadata dict for sidecar
+    """
+    # Count pages by model used
+    glm_ocr_pages = sum(1 for d in img_descs if d.get("model_used") == "glm-ocr")
+    llava_pages = sum(1 for d in img_descs if d.get("model_used") == "llava")
+    hybrid_pages = sum(1 for d in img_descs if d.get("model_used") == "hybrid")
+    
+    # Build per-page details
+    page_details = []
+    for desc in img_descs:
+        page_details.append({
+            "page": desc.get("page_num", 0),
+            "content_type": desc.get("content_type", "visual"),
+            "model": desc.get("model_used", "llava"),
+            "has_tables": desc.get("has_tables", False),
+            "confidence": desc.get("confidence", 0.0),
+        })
+    
+    return {
+        "enabled": True,
+        "pages_analyzed": len(img_descs),
+        "extraction_summary": {
+            "glm_ocr_pages": glm_ocr_pages,
+            "llava_pages": llava_pages,
+            "hybrid_pages": hybrid_pages,
+        },
+        "page_details": page_details,
+    }
 
 
 def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:

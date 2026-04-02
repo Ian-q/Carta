@@ -482,7 +482,7 @@ class TestVisionIntegration:
     """Test vision module integration in pipeline (_embed_one_file)."""
 
     def test_embed_one_file_calls_vision_for_pdf(self, temp_repo, mock_qdrant):
-        """_embed_one_file calls extract_image_descriptions for PDF files."""
+        """_embed_one_file calls extract_image_descriptions_intelligent for PDF files."""
         repo_root, cfg = temp_repo
 
         # Create a test PDF file
@@ -495,13 +495,13 @@ class TestVisionIntegration:
         with patch("carta.embed.pipeline.QdrantClient") as mock_client_cls:
             with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Sample text"}]):
                 with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk 1", "page": 1}]):
-                    with patch("carta.embed.vision.extract_image_descriptions") as mock_vision:
+                    with patch("carta.vision.router.extract_image_descriptions_intelligent") as mock_vision:
                         with patch("carta.embed.pipeline.upsert_chunks"):
                             with patch("carta.embed.pipeline.write_sidecar"):
-                                # Vision returns 2 image chunks
+                                # Vision returns 2 image chunks with Phase 999.4 metadata
                                 mock_vision.return_value = [
-                                    {"page_num": 1, "image_index": 0, "doc_type": "image_description", "text": "Chart showing data"},
-                                    {"page_num": 2, "image_index": 0, "doc_type": "image_description", "text": "Diagram with labels"},
+                                    {"page_num": 1, "image_index": 0, "doc_type": "image_description", "text": "Chart showing data", "model_used": "llava", "content_type": "visual", "confidence": 0.9, "has_tables": False},
+                                    {"page_num": 2, "image_index": 0, "doc_type": "image_description", "text": "Diagram with labels", "model_used": "glm-ocr", "content_type": "text", "confidence": 0.85, "has_tables": True},
                                 ]
                                 mock_client_cls.return_value = mock_qdrant
 
@@ -513,13 +513,23 @@ class TestVisionIntegration:
                                     repo_root, max_tokens=400, overlap_fraction=0.15
                                 )
 
-                                # Verify vision was called for PDF
+                                # Verify intelligent vision was called for PDF
                                 mock_vision.assert_called_once()
 
                                 # Verify sidecar includes image fields
                                 assert "image_count" in sidecar
                                 assert "image_chunks" in sidecar
                                 assert sidecar["image_count"] == 2
+                                
+                                # Verify Phase 999.4 vision metadata
+                                assert "vision" in sidecar
+                                assert sidecar["vision"]["enabled"] is True
+                                assert sidecar["vision"]["pages_analyzed"] == 2
+                                assert "extraction_summary" in sidecar["vision"]
+                                assert "page_details" in sidecar["vision"]
+                                # One llava page, one glm-ocr page
+                                assert sidecar["vision"]["extraction_summary"]["llava_pages"] == 1
+                                assert sidecar["vision"]["extraction_summary"]["glm_ocr_pages"] == 1
 
     def test_vision_fail_open_text_embedding_continues(self, temp_repo, mock_qdrant):
         """If vision unavailable, text embedding completes with image_count>0, image_chunks=0."""
@@ -533,7 +543,7 @@ class TestVisionIntegration:
         with patch("carta.embed.pipeline.QdrantClient") as mock_client_cls:
             with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Text content"}]):
                 with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1}]):
-                    with patch("carta.embed.vision.extract_image_descriptions") as mock_vision:
+                    with patch("carta.vision.router.extract_image_descriptions_intelligent") as mock_vision:
                         with patch("carta.embed.pipeline.upsert_chunks"):
                             with patch("carta.embed.pipeline.write_sidecar"):
                                 # Vision model unavailable: returns empty (fail-open)
@@ -552,4 +562,5 @@ class TestVisionIntegration:
                                 assert sidecar.get("image_count") == 0
                                 assert sidecar.get("image_chunks") == 0
                                 # Status remains embedded (not failed)
+                                assert sidecar.get("status") == "embedded"
                                 assert sidecar.get("status") == "embedded"
