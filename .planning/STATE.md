@@ -104,6 +104,14 @@ Status: **COMPLETE** - Phase 999.4 finished
 - [x] Phase 999.4-04: sidecar schema updates (extraction provenance) — **COMPLETED**
 - [x] Phase 999.4-05: integration & validation — **COMPLETED**
 
+### Post-v0.2 Backlog (Non-blocking)
+
+- [ ] Issue #1-Followup-01: Page classifier integration for selective ColPali embedding
+- [ ] Issue #1-Followup-02: Visual collection lifecycle management (mark stale on re-embed)
+- [ ] Issue #1-Followup-03: Comprehensive ColPali embedding tests
+
+**Details:** See `.planning/BACKLOG.md` for full specifications.
+
 ### Blockers
 
 None.
