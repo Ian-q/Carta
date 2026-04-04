@@ -49,11 +49,13 @@ def run_bootstrap(project_root: Path) -> None:
     _create_mcp_configs(project_root)
 
     _append_claude_md(project_root, project_name)
+    _create_agents_md(project_root, project_name)
 
     colls = f"{project_name}_doc, {project_name}_session, {project_name}_quirk"
     if collections_ok:
         print(f"\nCarta ready. Collections: {colls}")
-        print("Run /doc-embed to seed the knowledge store.")
+        print("  Slash commands available: /doc-audit, /doc-embed, /doc-search")
+        print("  (Reload Claude Code window to activate skills)")
     else:
         print(f"\nCarta initialised but Qdrant collections could not be created.")
         print(f"  Expected collections: {colls}")
@@ -250,3 +252,85 @@ def _append_claude_md(project_root: Path, project_name: str) -> None:
             return
         with open(claude_md, "a") as f:
             f.write(note)
+
+
+def _create_agents_md(project_root: Path, project_name: str) -> None:
+    """Create AGENTS.md with Carta slash commands for Claude Code."""
+    agents_md = project_root / "AGENTS.md"
+    if agents_md.exists():
+        return  # Don't overwrite existing
+    
+    content = f'''# Carta Skills
+
+This project uses [Carta](https://github.com/ian-q/carta) for semantic memory and document management.
+
+## Slash Commands
+
+### `/doc-audit`
+Scan for documentation issues and contradictions.
+
+**Example:**
+```
+/doc-audit
+```
+
+Runs a full audit and reports:
+- Pending files needing embedding
+- Drift detection (files changed since last audit)
+- Missing references
+
+Results saved to `.carta/scan-results.json`
+
+---
+
+### `/doc-embed`
+Embed documents into the vector store for semantic search.
+
+**Example:**
+```
+/doc-embed
+```
+
+Seeds the knowledge store by processing markdown/PDF files, generating embeddings, and upserting to Qdrant.
+
+---
+
+### `/doc-search <query>`
+Search across embedded documents using natural language.
+
+**Example:**
+```
+/doc-search how to configure the system
+```
+
+Returns top results from all collections with scores and excerpts.
+
+---
+
+### `/session-memory <text>`
+Capture session context for future recall.
+
+**Example:**
+```
+/session-memory save key decisions about API design
+```
+
+---
+
+## Configuration
+
+- **Project**: {project_name}
+- **Qdrant**: http://localhost:6333
+- **Ollama**: http://localhost:11434
+- **Config**: `.carta/config.yaml`
+
+## Quick Start
+
+1. Check documentation health: `/doc-audit`
+2. Seed knowledge store: `/doc-embed`
+3. Search docs: `/doc-search <query>`
+
+<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_quirk -->
+'''
+    agents_md.write_text(content)
+    print(f"  Created AGENTS.md with Carta slash commands")
