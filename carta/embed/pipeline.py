@@ -684,7 +684,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
 
 
 def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
-    """Search the doc collection for chunks semantically similar to query.
+    """Search both text and visual collections for results matching query.
 
     Args:
         query: natural-language search query.
@@ -695,35 +695,100 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
         List of dicts: {"score": float, "source": str, "excerpt": str}
         Ordered by descending similarity score.
     """
+    from carta.search.scoped import get_search_collections
+    from qdrant_client import QdrantClient
+    from pathlib import Path
+    
     top_n = cfg.get("search", {}).get("top_n", 5)
-    ollama_url = cfg["embed"]["ollama_url"]
-    model = cfg["embed"]["ollama_model"]
-
+    repo_root = Path(find_config()).parent
+    
+    # Get all collections to search
+    try:
+        collections = get_search_collections(cfg, "repo")
+    except ValueError:
+        # Fall back to default collections
+        collections = [collection_name(cfg, "doc")]
+        if cfg.get("embed", {}).get("colpali_enabled", False):
+            collections.append(f"{cfg['project_name']}_visual")
+    
     try:
         client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
     except Exception as e:
         raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
-
-    query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
-
-    coll_name = collection_name(cfg, "doc")
-
-    try:
-        response = client.query_points(
-            collection_name=coll_name,
-            query=query_vec,
-            limit=top_n,
-            with_payload=True,
-        )
-    except Exception as e:
-        raise RuntimeError(f"Qdrant search failed: {e}") from e
-
-    hits = []
-    for r in response.points:
-        payload = r.payload or {}
-        hits.append({
-            "score": r.score,
-            "source": payload.get("file_path", payload.get("slug", "")),
-            "excerpt": payload.get("text", ""),
-        })
-    return hits
+    
+    # Search across all collections and merge results
+    all_results = []
+    
+    for coll_name in collections:
+        try:
+            if coll_name.endswith("_visual"):
+                # Visual collection search using ColPali
+                from carta.embed.colpali import is_colpali_available, ColPaliEmbedder, ColPaliError
+                
+                if not is_colpali_available():
+                    continue
+                    
+                embed_cfg = cfg.get("embed", {})
+                if not embed_cfg.get("colpali_enabled", False):
+                    continue
+                    
+                model_name = embed_cfg.get("colpali_model", "vidore/colpali-v1.3-hf")
+                device = embed_cfg.get("colpali_device", "cpu")
+                
+                try:
+                    embedder = ColPaliEmbedder(
+                        model_name=model_name,
+                        device=device,
+                        batch_size=1,
+                    )
+                    query_vectors = embedder.embed_query(query)
+                    query_vector_list = query_vectors.tolist() if hasattr(query_vectors, "tolist") else list(query_vectors)
+                    
+                    response = client.query_points(
+                        collection_name=coll_name,
+                        query=query_vector_list,
+                        using="colpali",
+                        limit=top_n,
+                        with_payload=True,
+                    )
+                    
+                    for r in response.points:
+                        payload = r.payload or {}
+                        all_results.append({
+                            "score": r.score,
+                            "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
+                            "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
+                            "type": "visual",
+                        })
+                        
+                except Exception:
+                    # Skip visual search on error
+                    pass
+            else:
+                # Text collection search using standard embeddings
+                ollama_url = cfg["embed"]["ollama_url"]
+                model = cfg["embed"]["ollama_model"]
+                query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+                
+                response = client.query_points(
+                    collection_name=coll_name,
+                    query=query_vec,
+                    limit=top_n,
+                    with_payload=True,
+                )
+                
+                for r in response.points:
+                    payload = r.payload or {}
+                    all_results.append({
+                        "score": r.score,
+                        "source": payload.get("file_path", payload.get("slug", "")),
+                        "excerpt": payload.get("text", ""),
+                        "type": "text",
+                    })
+        except Exception:
+            # Skip collections that fail
+            pass
+    
+    # Sort by score descending and take top_n
+    all_results.sort(key=lambda x: x["score"], reverse=True)
+    return all_results[:top_n]
