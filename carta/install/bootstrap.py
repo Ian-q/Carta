@@ -110,7 +110,8 @@ def _write_config(carta_dir: Path, project_name: str, qdrant_url: str, modules: 
 
 
 def _register_hooks(project_root: Path) -> None:
-    import json
+    """Copy hook scripts to .carta/hooks/. Claude Code hook registration is now
+    handled plugin-natively via hooks/hooks.json; we no longer write .claude/settings.json."""
     hooks_src = Path(__file__).parent.parent / "hooks"
     hooks_dest = project_root / ".carta" / "hooks"
     hooks_dest.mkdir(parents=True, exist_ok=True)
@@ -118,29 +119,6 @@ def _register_hooks(project_root: Path) -> None:
         dest_script = hooks_dest / script.name
         shutil.copy2(script, dest_script)
         dest_script.chmod(dest_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    claude_dir = project_root / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    settings_path = claude_dir / "settings.json"
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, ValueError):
-            print("  Warning: .claude/settings.json is malformed — recreating it.")
-            settings = {}
-    else:
-        settings = {}
-    hooks = settings.setdefault("hooks", {})
-    hook_scripts = {
-        "UserPromptSubmit": "carta-prompt-hook.sh",
-        "Stop": "carta-stop-hook.sh",
-    }
-    for hook_name, script_name in hook_scripts.items():
-        existing = hooks.get(hook_name)
-        if existing and "carta" not in str(existing).lower():
-            print(f"  Warning: overwriting existing {hook_name} hook: {existing}")
-        cmd = f"bash -c 'exec \"$(git rev-parse --show-toplevel)/.carta/hooks/{script_name}\"'"
-        hooks[hook_name] = [{"matcher": "", "hooks": [{"type": "command", "command": cmd}]}]
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
 def _remove_plugin_cache() -> bool:
@@ -213,22 +191,14 @@ def _update_gitignore(project_root: Path) -> None:
 
 
 def _create_mcp_configs(project_root: Path) -> None:
-    """Create MCP configuration files for both Claude Code and OpenCode."""
+    """Create MCP configuration files for non-Claude Code editors.
+
+    Claude Code MCP registration (.mcp.json at plugin root) is now handled
+    plugin-natively and must not be duplicated here to avoid conflicts for
+    marketplace users.
+    """
     import json
-    
-    # Claude Code: .mcp.json
-    mcp_data = {
-        "mcpServers": {
-            "carta": {
-                "command": "carta-mcp",
-                "args": [],
-                "env": {}
-            }
-        }
-    }
-    mcp_path = project_root / ".mcp.json"
-    mcp_path.write_text(json.dumps(mcp_data, indent=2) + "\n")
-    
+
     # OpenCode: .opencode.json
     opencode_data = {
         "$schema": "https://opencode.ai/config.json",
@@ -242,8 +212,8 @@ def _create_mcp_configs(project_root: Path) -> None:
     }
     opencode_path = project_root / ".opencode.json"
     opencode_path.write_text(json.dumps(opencode_data, indent=2) + "\n")
-    
-    print(f"  MCP configs: {mcp_path}, {opencode_path}")
+
+    print(f"  MCP configs: {opencode_path}")
 
 
 def _append_claude_md(project_root: Path, project_name: str) -> None:

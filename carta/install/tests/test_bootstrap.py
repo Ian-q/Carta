@@ -148,7 +148,9 @@ def test_register_hooks_copies_scripts_locally(tmp_path):
     assert (hooks_dir / "carta-stop-hook.sh").exists()
 
 
-def test_register_hooks_sets_executable_and_settings_paths(tmp_path):
+def test_register_hooks_sets_executable_and_does_not_write_claude_settings(tmp_path):
+    """_register_hooks copies scripts as executable; does NOT write .claude/settings.json
+    (Claude Code hook registration is now plugin-native via hooks/hooks.json)."""
     from carta.install.bootstrap import _register_hooks
 
     _register_hooks(tmp_path)
@@ -166,20 +168,10 @@ def test_register_hooks_sets_executable_and_settings_paths(tmp_path):
     assert stop_mode & stat.S_IXGRP
     assert stop_mode & stat.S_IXOTH
 
+    # .claude/settings.json must NOT be written — plugin-native handles this
     settings_path = tmp_path / ".claude" / "settings.json"
-    settings = json.loads(settings_path.read_text())
-    # Hooks are now array-of-objects per the Claude Code schema
-    prompt_hook = settings["hooks"]["UserPromptSubmit"]
-    stop_hook = settings["hooks"]["Stop"]
-    assert isinstance(prompt_hook, list), "hook must be an array"
-    prompt_cmd = prompt_hook[0]["hooks"][0]["command"]
-    stop_cmd = stop_hook[0]["hooks"][0]["command"]
-    assert "git rev-parse --show-toplevel" in prompt_cmd
-    assert "carta-prompt-hook.sh" in prompt_cmd
-    assert "git rev-parse --show-toplevel" in stop_cmd
-    assert "carta-stop-hook.sh" in stop_cmd
-    assert str(tmp_path) not in prompt_cmd, "hook path must not contain absolute project path"
-    assert str(tmp_path) not in stop_cmd, "hook path must not contain absolute project path"
+    assert not settings_path.exists(), \
+        "_register_hooks must not write .claude/settings.json (plugin-native handles hooks)"
 
 
 # ---------------------------------------------------------------------------

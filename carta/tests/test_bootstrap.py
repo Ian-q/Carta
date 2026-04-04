@@ -62,19 +62,48 @@ def test_boot02_adds_entries_without_parent_glob(tmp_path):
 
 # --- BOOT-03 ---
 
-def test_boot03_hook_cmd_uses_exec_quoting(tmp_path):
-    """Hook command uses exec with double-quoted $(git rev-parse --show-toplevel) path."""
+def test_boot03_hook_scripts_copied_to_carta_hooks(tmp_path):
+    """_register_hooks copies .sh files to .carta/hooks/ and does NOT write .claude/settings.json."""
     hooks_src = Path(__file__).parent.parent / "hooks"
     if not hooks_src.exists():
         pytest.skip("hooks/ source directory not present")
 
     _register_hooks(tmp_path)
-    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-    hooks = settings["hooks"]
-    for hook_name in ("UserPromptSubmit", "Stop"):
-        cmd = hooks[hook_name][0]["hooks"][0]["command"]
-        assert "exec" in cmd, f"{hook_name}: exec missing from cmd"
-        assert '"$(git rev-parse --show-toplevel)' in cmd, f"{hook_name}: unquoted path"
+
+    # Hook scripts should be copied
+    hooks_dest = tmp_path / ".carta" / "hooks"
+    assert hooks_dest.exists(), ".carta/hooks/ should be created"
+    sh_files = list(hooks_src.glob("*.sh"))
+    if sh_files:
+        for script in sh_files:
+            assert (hooks_dest / script.name).exists(), f"{script.name} should be copied"
+
+    # .claude/settings.json must NOT be written (plugin-native handles this)
+    claude_settings = tmp_path / ".claude" / "settings.json"
+    assert not claude_settings.exists(), \
+        "_register_hooks should not write .claude/settings.json (plugin-native handles hooks)"
+
+
+# --- BOOT-05 ---
+
+def test_bootstrap_does_not_write_claude_settings_hooks(tmp_path):
+    """bootstrap should not mutate .claude/settings.json for hooks (plugin-native now handles this)."""
+    project_root = tmp_path
+    (project_root / ".git").mkdir()
+
+    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
+         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+         patch("carta.install.bootstrap._detect_project_name", return_value="test-proj"), \
+         patch("carta.install.bootstrap._remove_plugin_cache", return_value=True), \
+         patch("carta.install.bootstrap._create_qdrant_collections", return_value=True), \
+         patch("carta.install.bootstrap._update_gitignore"), \
+         patch("carta.install.bootstrap._create_mcp_configs"), \
+         patch("carta.install.bootstrap._write_config"):
+        run_bootstrap(project_root)
+
+    claude_dir = project_root / ".claude"
+    assert not claude_dir.exists() or not (claude_dir / "settings.json").exists(), \
+        ".claude/settings.json should not be written by bootstrap (plugin-native handles hooks)"
 
 
 # --- BOOT-04 ---
