@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "carta": {
+      "command": "carta-mcp",
+      "args": [],
+      "env": {
+        "CARTA_QDRANT_URL": "${user_config.qdrant_url}",
+        "CARTA_OLLAMA_URL": "${user_config.ollama_url}"
+      }
+    }
+  }
+}
