@@ -1,14 +1,25 @@
 {
   "name": "carta-cc",
-  "description": "Maps, connects, and remembers your documentation. Audit, embed, and semantically search project docs from Claude Code.",
-  "version": "0.1.6",
+  "version": "0.3.0",
+  "description": "Maps, connects, and remembers your documentation. Structural scanning, LLM semantic audit, Qdrant embedding, and semantic search.",
   "author": {
     "name": "Ian",
-    "url": "https://github.com/carta-cc/carta-cc"
+    "url": "https://github.com/Ian-q"
   },
-  "homepage": "https://github.com/carta-cc/carta-cc",
-  "repository": "https://github.com/carta-cc/carta-cc",
+  "homepage": "https://github.com/Ian-q/Carta",
+  "repository": "https://github.com/Ian-q/Carta",
   "license": "MIT",
-  "keywords": ["documentation", "audit", "semantic-search", "qdrant", "ollama", "embedding"],
-  "skills": "./skills/"
+  "keywords": ["documentation", "audit", "semantic-search", "qdrant", "ollama", "embedding", "knowledge-base"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "userConfig": {
+    "qdrant_url": {
+      "description": "Qdrant URL (default: http://localhost:6333 — leave blank to use default)",
+      "sensitive": false
+    },
+    "ollama_url": {
+      "description": "Ollama URL for proactive recall (default: http://localhost:11434 — leave blank to disable)",
+      "sensitive": false
+    }
+  }
 }
