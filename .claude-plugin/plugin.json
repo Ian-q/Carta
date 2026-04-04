@@ -14,10 +14,14 @@
   "hooks": "./hooks/hooks.json",
   "userConfig": {
     "qdrant_url": {
+      "type": "string",
+      "title": "Qdrant URL",
       "description": "Qdrant URL (default: http://localhost:6333 — leave blank to use default)",
       "sensitive": false
     },
     "ollama_url": {
+      "type": "string",
+      "title": "Ollama URL",
       "description": "Ollama URL for proactive recall (default: http://localhost:11434 — leave blank to disable)",
       "sensitive": false
     }
