@@ -2,6 +2,13 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] — 2026-04-04
+
+### Fixed
+- Fixed PyPI publish failure caused by version mismatch (tag v0.3.1 vs package 0.3.0).
+- Fixed CI workflow `claude plugin validate` command with correct path argument.
+- Fixed `plugin.json` schema to include required `type` and `title` fields for userConfig.
+
 ## [0.3.0] — 2026-04-04
 
 ### Added
