@@ -344,6 +344,12 @@ def _embed_visual_pages_colpali(
     device = embed_cfg.get("colpali_device", "cpu")
     batch_size = embed_cfg.get("colpali_batch_size", 1)
     cache_dir = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
+    
+    # Ensure cache_dir is absolute (relative to repo_root)
+    cache_dir_path = Path(cache_dir)
+    if not cache_dir_path.is_absolute():
+        cache_dir_path = repo_root / cache_dir_path
+    cache_dir = str(cache_dir_path)
 
     # Get file slug
     slug = file_info.get("slug", file_path.stem)
@@ -381,12 +387,20 @@ def _embed_visual_pages_colpali(
             png_path = embedder.save_page_cache(file_path, page_num, png_bytes)
 
             # Prepare visual page metadata for Qdrant
+            # Handle case where cache_dir is not inside repo_root
+            try:
+                png_rel_path = str(png_path.relative_to(repo_root))
+            except ValueError:
+                # png_path is outside repo_root, use absolute path
+                png_rel_path = str(png_path)
+
+            # Prepare visual page metadata for Qdrant
             visual_pages.append({
                 "slug": slug,
                 "file_path": str(file_path.relative_to(repo_root)),
                 "page_num": page_num,
                 "vectors": vectors,
-                "png_path": str(png_path.relative_to(repo_root)),
+                "png_path": png_rel_path,
                 "doc_type": "visual_page",
                 "extraction_model": model_name,
             })
