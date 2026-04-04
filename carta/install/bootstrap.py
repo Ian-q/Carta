@@ -4,35 +4,91 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-import yaml
+
 import requests
+import yaml
 
 CARTA_RUNTIME_SRC = Path(__file__).parent.parent
 
 VECTOR_DIMENSIONS = {"doc": 768, "session": 768, "quirk": 768}
 
+
 def run_bootstrap(project_root: Path) -> None:
+    """Bootstrap Carta in a project with comprehensive preflight checks."""
+    # Phase 0: Run comprehensive preflight checks
+    from carta.install.preflight import PreflightChecker
+    from carta.install.auto_fix import AutoInstaller
+
+    print("🔍 Running preflight checks...")
+    checker = PreflightChecker(interactive=True, verbose=False)
+    result = checker.run()
+
+    # Print report
+    result.print_report(verbose=False)
+
+    # Handle fixable failures
+    if result.fixable_failures:
+        print(f"\n🔧 {len(result.fixable_failures)} issue(s) can be auto-fixed.")
+
+        # Prompt user for auto-fix
+        response = input("\nAttempt to auto-fix issues? [Y/n]: ").strip().lower()
+        if response not in ("n", "no", "false"):
+            installer = AutoInstaller(interactive=True, verbose=False)
+            fixes = installer.fix_all(result)
+
+            successful = sum(1 for success in fixes.values() if success)
+            print(f"\n✅ Fixed: {successful}/{len(fixes)}")
+
+            # Re-run checks to verify
+            if successful > 0:
+                print("\n🔄 Re-running checks to verify...")
+                result = checker.run()
+                result.print_report(verbose=False)
+
+    # Handle critical failures (block initialization)
+    if not result.can_proceed():
+        print("\n" + "━" * 55)
+        print("🔴 Critical issues must be resolved before Carta can be initialized.")
+        print("\nOptions:")
+        print("  1. Run 'carta doctor --fix' to attempt automatic fixes")
+        print("  2. Run 'carta doctor' to see detailed setup instructions")
+        print("  3. Resolve issues manually and re-run 'carta init'")
+        print("\n" + "━" * 55)
+
+        # Print setup guide
+        installer = AutoInstaller(interactive=False)
+        installer.print_setup_guide(result)
+        sys.exit(1)
+
+    # Extract check results for module configuration
+    qdrant_ok = any(
+        c.name == "qdrant_running" and c.status == "pass"
+        for c in result.checks
+    )
+    ollama_ok = any(
+        c.name == "ollama_running" and c.status == "pass"
+        for c in result.checks
+    )
+
+    # Continue with initialization
     project_name = _detect_project_name(project_root)
-    print(f"Initialising Carta for project: {project_name}")
+    print(f"\nInitialising Carta for project: {project_name}")
 
     qdrant_url = os.environ.get("CARTA_QDRANT_URL", "http://localhost:6333")
-    qdrant_ok = _check_qdrant(qdrant_url)
-    if not qdrant_ok:
-        print(f"  Warning: Qdrant not reachable at {qdrant_url}.")
-        print("  Structural audit (/doc-audit) will work without Qdrant.")
-        print("  For embedding and search: docker run -p 6333:6333 qdrant/qdrant")
-    else:
+    if qdrant_ok:
         print(f"  Qdrant ready at {qdrant_url}")
 
     modules = {
-        "doc_audit": True, "doc_embed": qdrant_ok, "doc_search": qdrant_ok,
-        "session_memory": True, "proactive_recall": True,
+        "doc_audit": True,
+        "doc_embed": qdrant_ok,
+        "doc_search": qdrant_ok,
+        "session_memory": True,
+        "proactive_recall": ollama_ok,
     }
 
     ollama_url = os.environ.get("CARTA_OLLAMA_URL", "http://localhost:11434")
-    if _check_ollama(ollama_url):
+    if ollama_ok:
         print(f"  Ollama ready at {ollama_url}")
-    # _check_ollama already prints a warning on failure — no else needed
 
     carta_dir = project_root / ".carta"
     carta_dir.mkdir(exist_ok=True)
@@ -55,11 +111,11 @@ def run_bootstrap(project_root: Path) -> None:
 
     colls = f"{project_name}_doc, {project_name}_session, {project_name}_quirk"
     if collections_ok:
-        print(f"\nCarta ready. Collections: {colls}")
+        print(f"\n✅ Carta ready. Collections: {colls}")
         print("  Slash commands available: /doc-audit, /doc-embed, /doc-search")
         print("  (Reload Claude Code window to activate skills)")
     else:
-        print(f"\nCarta initialised but Qdrant collections could not be created.")
+        print(f"\n⚠️  Carta initialised but Qdrant collections could not be created.")
         print(f"  Expected collections: {colls}")
         print("  Fix the Qdrant errors above, then re-run: carta init")
 
