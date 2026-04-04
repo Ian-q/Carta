@@ -75,3 +75,24 @@ def test_boot03_hook_cmd_uses_exec_quoting(tmp_path):
         cmd = hooks[hook_name][0]["hooks"][0]["command"]
         assert "exec" in cmd, f"{hook_name}: exec missing from cmd"
         assert '"$(git rev-parse --show-toplevel)' in cmd, f"{hook_name}: unquoted path"
+
+
+# --- BOOT-04 ---
+
+def test_bootstrap_continues_when_qdrant_unreachable(tmp_path):
+    """bootstrap should not sys.exit when Qdrant is down — should warn and disable embed/search modules."""
+    project_root = tmp_path
+    (project_root / ".git").mkdir()
+
+    with patch("carta.install.bootstrap._check_qdrant", return_value=False), \
+         patch("carta.install.bootstrap._detect_project_name", return_value="test-proj"), \
+         patch("carta.install.bootstrap._remove_plugin_cache", return_value=True), \
+         patch("carta.install.bootstrap._create_qdrant_collections", return_value=True), \
+         patch("carta.install.bootstrap._update_gitignore"), \
+         patch("carta.install.bootstrap._create_mcp_configs"), \
+         patch("carta.install.bootstrap._write_config"):
+        # Should NOT raise SystemExit
+        try:
+            run_bootstrap(project_root)
+        except SystemExit as e:
+            raise AssertionError(f"bootstrap exited with code {e.code} when Qdrant was unreachable") from e

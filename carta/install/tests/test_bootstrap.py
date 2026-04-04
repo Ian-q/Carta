@@ -75,12 +75,19 @@ def test_create_qdrant_collections_uses_namespaced_names():
     assert any("my-project_session" in url for url in called_urls)
     assert any("my-project_quirk" in url for url in called_urls)
 
-def test_bootstrap_exits_if_qdrant_unavailable(tmp_path):
+def test_bootstrap_continues_if_qdrant_unavailable(tmp_path):
+    """bootstrap should warn and continue (not exit) when Qdrant is unreachable."""
     from carta.install.bootstrap import run_bootstrap
-    with patch("carta.install.bootstrap._check_qdrant", return_value=False):
-        with pytest.raises(SystemExit) as exc_info:
+    with patch("carta.install.bootstrap._check_qdrant", return_value=False), \
+         patch("carta.install.bootstrap._remove_plugin_cache", return_value=True), \
+         patch("carta.install.bootstrap._create_qdrant_collections", return_value=True), \
+         patch("carta.install.bootstrap._update_gitignore"), \
+         patch("carta.install.bootstrap._create_mcp_configs"), \
+         patch("carta.install.bootstrap._write_config"):
+        try:
             run_bootstrap(tmp_path)
-    assert exc_info.value.code != 0
+        except SystemExit as e:
+            raise AssertionError(f"bootstrap exited with code {e.code} when Qdrant was unreachable") from e
 
 
 def test_bootstrap_uses_qdrant_url_from_env(tmp_path):
