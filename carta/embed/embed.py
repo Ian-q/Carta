@@ -25,6 +25,10 @@ COLPALI_VECTOR_DIM = 128
 # Maximum number of PointStructs sent per client.upsert() call
 BATCH_SIZE = 32
 
+# Visual embeddings have multi-vector patches (1024 x 128 dims per page)
+# Reduce batch size to stay under Qdrant's 32MB payload limit
+VISUAL_BATCH_SIZE = 4
+
 
 _CONTEXT_OVERFLOW = "the input length exceeds the context length"
 
@@ -150,7 +154,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
             continue
 
-        if len(batch) >= BATCH_SIZE:
+        if len(batch) >= VISUAL_BATCH_SIZE:
             try:
                 client.upsert(collection_name=coll_name, points=batch)
                 upserted += len(batch)
@@ -278,7 +282,7 @@ def upsert_visual_pages(
             print(f"Warning: skipping visual page {page_id} — {e}", flush=True)
             continue
 
-        if len(batch) >= BATCH_SIZE:
+        if len(batch) >= VISUAL_BATCH_SIZE:
             try:
                 client.upsert(collection_name=coll_name, points=batch)
                 upserted += len(batch)
