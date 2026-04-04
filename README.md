@@ -1,9 +1,5 @@
 ![Carta](banner.png)
 
-<p align="center">
-  <img src="logo.png" alt="Carta logo" width="80" />
-</p>
-
 # Carta
 
 > *Maps, connects, and remembers your documentation.*
