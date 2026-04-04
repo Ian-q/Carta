@@ -1,4 +1,54 @@
+import sys
+
 import pytest
+
+
+# Module cache backup for MCP test isolation
+_mcp_module_backup = {}
+
+@pytest.fixture(scope="function")
+def isolate_mcp_server():
+    """Clear FastMCP global state before each MCP-related test.
+    
+    FastMCP maintains global state (registered tools, hooks, etc.) that can
+    cause test isolation issues. This fixture removes cached server modules
+    to force a fresh import for each test.
+    
+    Usage: Add this fixture to MCP tests that need fresh state:
+        def test_something(isolate_mcp_server):
+            from carta.mcp.server import carta_search
+            ...
+    """
+    # Remove ALL cached modules in the carta.mcp package to force reimport
+    modules_to_clear = [
+        "carta.mcp.server",
+        "carta.mcp",
+    ]
+    # Also clear any carta submodules that might import from mcp
+    for mod in list(sys.modules.keys()):
+        if mod.startswith("carta.mcp"):
+            modules_to_clear.append(mod)
+    
+    # Clear the mocked mcp modules that test_mcp_server.py creates
+    for mod in ['mcp', 'mcp.server', 'mcp.server.fastmcp']:
+        if mod in sys.modules:
+            modules_to_clear.append(mod)
+    
+    modules_to_clear = list(set(modules_to_clear))  # dedupe
+    
+    # Backup and clear
+    for mod in modules_to_clear:
+        if mod in sys.modules:
+            _mcp_module_backup[mod] = sys.modules[mod]
+            del sys.modules[mod]
+    
+    yield
+    
+    # Restore modules after test (cleanup)
+    for mod in modules_to_clear:
+        if mod in _mcp_module_backup:
+            sys.modules[mod] = _mcp_module_backup[mod]
+            del _mcp_module_backup[mod]
 
 
 @pytest.fixture

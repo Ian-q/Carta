@@ -150,7 +150,7 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
         List of dicts: {"score": float, "source": str, "excerpt": str}
     """
     from qdrant_client import QdrantClient
-    from carta.embed.ollama_client import get_embedding
+    from carta.embed.embed import get_embedding
     
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"]["ollama_model"]
