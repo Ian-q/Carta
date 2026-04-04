@@ -156,7 +156,14 @@ class ColPaliEmbedder:
             ).eval()
             processor = ColPaliProcessor.from_pretrained(self.model_name)
 
-        model = model.to(self.device)
+        # Only move to device if not already on meta device
+        if self.device != "meta":
+            try:
+                model = model.to(self.device)
+            except NotImplementedError:
+                # Model loaded with meta tensors, skip .to() call
+                # Model weights will be loaded on first forward
+                pass
 
         # Cache for reuse
         self._MODEL_CACHE[self.model_name] = (model, processor)
