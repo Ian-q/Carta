@@ -275,6 +275,10 @@ class ColPaliEmbedder:
         if fitz is None:
             raise ImportError("PyMuPDF (fitz) is required for PDF page rendering")
 
+        # Ensure model is loaded before processing
+        if self._model is None:
+            self._load_model()
+
         try:
             doc = fitz.open(str(pdf_path))
         except Exception as exc:
