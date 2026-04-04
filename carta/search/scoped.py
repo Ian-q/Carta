@@ -9,11 +9,11 @@ import requests
 
 # Pattern: {project_name}_{type} or carta_global_{type}
 CARTA_COLLECTION_PATTERN = re.compile(
-    r"^(?:(\w+)_(doc|notes|session)|carta_global_(doc|notes|session))$"
+    r"^(?:(\w+)_(doc|notes|session|visual)|carta_global_(doc|notes|session|visual))$"
 )
 
 # Valid collection types
-COLLECTION_TYPES = ["doc", "notes", "session"]
+COLLECTION_TYPES = ["doc", "notes", "session", "visual"]
 
 
 def get_search_collections(cfg: dict, scope: str = "repo") -> list[str]:
@@ -34,13 +34,23 @@ def get_search_collections(cfg: dict, scope: str = "repo") -> list[str]:
     
     project_name = cfg.get("project_name", "carta-project")
     
+    # Check if ColPali visual embedding is enabled
+    colpali_enabled = cfg.get("embed", {}).get("colpali_enabled", False)
+    
+    # Filter collection types based on config
     if scope == "global":
         # Global scope: only carta_global_* collections
-        return [f"carta_global_{t}" for t in COLLECTION_TYPES]
+        types = COLLECTION_TYPES.copy()
+        if not colpali_enabled:
+            types.remove("visual")  # Skip visual if ColPali not enabled
+        return [f"carta_global_{t}" for t in types]
     
     if scope == "repo":
         # Repo scope: only current project collections
-        return [f"{project_name}_{t}" for t in COLLECTION_TYPES]
+        types = COLLECTION_TYPES.copy()
+        if not colpali_enabled:
+            types.remove("visual")  # Skip visual if ColPali not enabled
+        return [f"{project_name}_{t}" for t in types]
     
     # scope == "shared"
     cross_project = cfg.get("cross_project_recall", {})
