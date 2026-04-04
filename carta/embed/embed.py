@@ -154,7 +154,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
             continue
 
-        if len(batch) >= VISUAL_BATCH_SIZE:
+        if len(batch) >= BATCH_SIZE:
             try:
                 client.upsert(collection_name=coll_name, points=batch)
                 upserted += len(batch)

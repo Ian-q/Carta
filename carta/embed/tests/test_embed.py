@@ -552,9 +552,11 @@ def test_run_embed_qdrant_unreachable(mock_qdrant_cls, tmp_path):
 # pipeline.py — run_search (mocked Qdrant + Ollama)
 # ---------------------------------------------------------------------------
 
+@patch("carta.embed.pipeline.find_config")
 @patch("carta.embed.pipeline.get_embedding")
-@patch("carta.embed.pipeline.QdrantClient")
-def test_run_search_returns_hits(mock_qdrant_cls, mock_embed):
+@patch("qdrant_client.QdrantClient")
+def test_run_search_returns_hits(mock_qdrant_cls, mock_embed, mock_find_config):
+    mock_find_config.return_value = Path("/mock/.carta/config.yaml")
     mock_embed.return_value = [0.1] * 768
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
@@ -567,15 +569,18 @@ def test_run_search_returns_hits(mock_qdrant_cls, mock_embed):
     mock_client.query_points.return_value = mock_response
 
     results = run_search("what is the voltage rating", MINIMAL_CFG)
-    assert len(results) == 1
+    # Search now returns results from all collections (doc, notes, session)
+    assert len(results) == 3
     assert results[0]["score"] == pytest.approx(0.92)
     assert results[0]["source"] == "docs/spec.pdf"
     assert results[0]["excerpt"] == "relevant excerpt"
 
 
+@patch("carta.embed.pipeline.find_config")
 @patch("carta.embed.pipeline.get_embedding")
-@patch("carta.embed.pipeline.QdrantClient")
-def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed):
+@patch("qdrant_client.QdrantClient")
+def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed, mock_find_config):
+    mock_find_config.return_value = Path("/mock/.carta/config.yaml")
     mock_embed.return_value = [0.0] * 768
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
@@ -586,20 +591,31 @@ def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed):
     cfg2 = {**MINIMAL_CFG, "project_name": "proj-x"}
     run_search("query", cfg2)
 
-    call_kwargs = mock_client.query_points.call_args.kwargs
-    assert call_kwargs["collection_name"] == "proj-x_doc"
+    # Check that query_points was called for all 3 collections
+    call_count = mock_client.query_points.call_count
+    assert call_count == 3
+    # Check that proj-x_doc is one of the queried collections
+    queried_collections = [call.kwargs["collection_name"] for call in mock_client.query_points.call_args_list]
+    assert "proj-x_doc" in queried_collections
 
 
+@patch("carta.embed.pipeline.find_config")
 @patch("carta.embed.pipeline.get_embedding")
-@patch("carta.embed.pipeline.QdrantClient")
-def test_run_search_query_failure_raises(mock_qdrant_cls, mock_embed):
+@patch("qdrant_client.QdrantClient")
+def test_run_search_query_failure_raises(mock_qdrant_cls, mock_embed, mock_find_config):
+    """Individual collection failures are swallowed; connection failures raise."""
+    mock_find_config.return_value = Path("/mock/.carta/config.yaml")
     mock_embed.return_value = [0.0] * 768
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
+    # Individual collection query failures are caught and skipped
     mock_client.query_points.side_effect = Exception("collection not found")
 
-    with pytest.raises(RuntimeError, match="Qdrant search failed"):
-        run_search("query", MINIMAL_CFG)
+    # All collections fail but function returns empty results (fail open)
+    results = run_search("query", MINIMAL_CFG)
+    assert results == []
+    # Verify query_points was called (and failed) for all collections
+    assert mock_client.query_points.call_count == 3
 
 
 # ---------------------------------------------------------------------------

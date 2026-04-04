@@ -48,7 +48,7 @@ class TestColPaliEmbedderInit:
             with pytest.raises(ImportError) as exc_info:
                 ColPaliEmbedder()
 
-            assert "colpali-engine is required" in str(exc_info.value)
+            assert "transformers" in str(exc_info.value)
 
     @patch("carta.embed.colpali._COLPALI_AVAILABLE", True)
     @patch("carta.embed.colpali.np", MagicMock())
@@ -177,9 +177,12 @@ class TestEmbedQuery:
         
         # Mock the processor and model behavior
         # Native transformers API: processor(text=[...], return_tensors="pt")
-        mock_processed = {"input_ids": MagicMock(), "attention_mask": MagicMock()}
+        # returns a BatchEncoding object with .to() method
+        mock_processed = MagicMock()
+        mock_processed.input_ids = MagicMock()
+        mock_processed.attention_mask = MagicMock()
+        mock_processed.to = MagicMock(return_value=mock_processed)
         embedder._processor = MagicMock(return_value=mock_processed)
-        embedder._processor.return_value.to = MagicMock(return_value=mock_processed)
         
         # Mock torch and outputs
         mock_outputs = MagicMock()
