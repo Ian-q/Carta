@@ -4,30 +4,32 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-def test_create_mcp_configs_creates_both_files(tmp_path):
-    """_create_mcp_configs() should create both .mcp.json and .opencode.json."""
+def test_create_mcp_configs_creates_only_opencode_file(tmp_path):
+    """_create_mcp_configs() should create .opencode.json but NOT .mcp.json.
+
+    Claude Code MCP registration is now plugin-native (plugin-root .mcp.json);
+    bootstrap must not create a project-level .mcp.json to avoid conflicts for
+    marketplace users.
+    """
     from carta.install.bootstrap import _create_mcp_configs
-    
+
     _create_mcp_configs(tmp_path)
-    
+
     mcp_path = tmp_path / ".mcp.json"
     opencode_path = tmp_path / ".opencode.json"
-    
-    assert mcp_path.exists(), ".mcp.json should be created"
-    assert opencode_path.exists(), ".opencode.json should be created"
+
+    assert not mcp_path.exists(), ".mcp.json must NOT be created by bootstrap (plugin-native handles this)"
+    assert opencode_path.exists(), ".opencode.json should be created for OpenCode compatibility"
 
 
-def test_mcp_json_has_correct_structure(tmp_path):
-    """.mcp.json should have correct structure for Claude Code."""
+def test_mcp_json_not_written_by_bootstrap(tmp_path):
+    """.mcp.json must not be written — Claude Code registration is plugin-native."""
     from carta.install.bootstrap import _create_mcp_configs
-    
+
     _create_mcp_configs(tmp_path)
-    
-    mcp_data = json.loads((tmp_path / ".mcp.json").read_text())
-    
-    assert "mcpServers" in mcp_data
-    assert "carta" in mcp_data["mcpServers"]
-    assert mcp_data["mcpServers"]["carta"]["command"] == "carta-mcp"
+
+    assert not (tmp_path / ".mcp.json").exists(), \
+        ".mcp.json must not be written by _create_mcp_configs (plugin-native handles Claude Code MCP)"
 
 
 def test_opencode_json_has_correct_structure(tmp_path):
