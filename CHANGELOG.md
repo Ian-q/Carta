@@ -2,6 +2,25 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-04-04
+
+### Added
+- **Native Claude Plugin Architecture** 
+  - Integrated `.mcp.json` support.
+  - Added auto-registration hooks in `hooks/hooks.json`.
+  - Removed legacy cache and shifted to canonical `.claude-plugin/plugin.json`.
+- **Multimodal Visual Search**
+  - Added Visual Embeddings (ColPali / ColQwen2) using native transformers API.
+  - Expanded search scope to include visual collections directly from Qdrant.
+  - Implemented structured PDF chunking with dual-extraction and table preservation.
+- **Bootstrapping Enhancements**
+  - Added graceful degradation when Qdrant is unreachable during `carta init`.
+  - Added auto-creation of `AGENTS.md` and default slash commands.
+
+### Changed
+- Reorganized test suite (moved `conftest.py` out of `carta/` to repo root).
+- Migrated away from deprecated `colpali-engine` API.
+
 ## [0.2.0] — 2026-04-01
 
 ### Added
