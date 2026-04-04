@@ -3,8 +3,16 @@
 Provides late-interaction visual retrieval by embedding PDF pages as
 multi-vector patch representations (1024 patches × 128 dimensions).
 
-This module is optional — if colpali-engine is not installed, the
-ColPaliEmbedder class will raise ImportError on instantiation.
+This module uses the native transformers implementation of ColPali/ColQwen2,
+which was added in transformers>=4.49.  The older colpali-engine package is
+no longer required and has been dropped because its PEFT-based model loading
+is incompatible with transformers>=5.x (KeyError: 'llava' in
+_MOE_TARGET_MODULE_MAPPING / AttributeError: use_bidirectional_attention).
+
+Supported checkpoints (HF-native, no PEFT adapters):
+    ColPali  → vidore/colpali-v1.3-hf
+    ColQwen2 → vidore/colqwen2-v1.0-hf   (default, lower VRAM)
+    ColQwen2.5 → vidore/colqwen2.5-v0.2-hf
 """
 
 import io
@@ -19,18 +27,23 @@ except ImportError:
     np = None  # type: ignore
     Image = None  # type: ignore
 
-# colpali-engine is optional — imported lazily
+# Native transformers ColPali/ColQwen2 — added in transformers>=4.49
 _COLPALI_AVAILABLE = False
 try:
-    from colpali_engine.models import ColPali, ColQwen2, ColPaliProcessor, ColQwen2Processor
     import torch
+    from transformers import (
+        ColPaliForRetrieval,
+        ColPaliProcessor,
+        ColQwen2ForRetrieval,
+        ColQwen2Processor,
+    )
     _COLPALI_AVAILABLE = True
 except ImportError:
-    ColPali = None  # type: ignore
-    ColQwen2 = None  # type: ignore
-    ColPaliProcessor = None  # type: ignore
-    ColQwen2Processor = None  # type: ignore
     torch = None  # type: ignore
+    ColPaliForRetrieval = None  # type: ignore
+    ColPaliProcessor = None  # type: ignore
+    ColQwen2ForRetrieval = None  # type: ignore
+    ColQwen2Processor = None  # type: ignore
 
 try:
     import fitz  # PyMuPDF — for PDF page rendering
@@ -54,18 +67,23 @@ class ColPaliError(Exception):
 class ColPaliEmbedder:
     """Embedder for ColPali/ColQwen2 late-interaction visual retrieval.
 
+    Uses the native transformers ColPali/ColQwen2 implementation
+    (ColPaliForRetrieval / ColQwen2ForRetrieval) — no colpali-engine required.
+
     Lazily loads the model on first embed call. Supports CPU, CUDA, and MPS.
     Caches loaded model to avoid reloads across multiple PDFs.
 
     Args:
-        model_name: HuggingFace model name (e.g., "vidore/colqwen2-v1.0")
+        model_name: HuggingFace model name.
+                    ColPali:   "vidore/colpali-v1.3-hf"
+                    ColQwen2:  "vidore/colqwen2-v1.0-hf"  (default)
         device: Device to run inference on ("cpu", "cuda", "mps")
         batch_size: Number of pages to process per batch
         cache_dir: Directory to store cached page PNGs
 
     Example:
         >>> embedder = ColPaliEmbedder(
-        ...     model_name="vidore/colqwen2-v1.0",
+        ...     model_name="vidore/colqwen2-v1.0-hf",
         ...     device="cuda",
         ...     cache_dir=Path(".carta/visual_cache/")
         ... )
@@ -76,14 +94,14 @@ class ColPaliEmbedder:
 
     def __init__(
         self,
-        model_name: str = "vidore/colqwen2-v1.0",
+        model_name: str = "vidore/colqwen2-v1.0-hf",
         device: str = "cpu",
         batch_size: int = 1,
         cache_dir: Optional[Union[str, Path]] = None,
     ):
         if not _COLPALI_AVAILABLE:
             raise ImportError(
-                "colpali-engine is required for ColPaliEmbedder. "
+                "transformers>=4.49 with ColPali/ColQwen2 support is required. "
                 "Install with: pip install 'carta-cc[visual]'"
             )
         if np is None or Image is None:
@@ -100,6 +118,7 @@ class ColPaliEmbedder:
 
         self._model = None
         self._processor = None
+        # Detect architecture from model name
         self._is_colqwen = "qwen" in model_name.lower()
 
     def _resolve_device(self, device: str) -> str:
@@ -132,7 +151,7 @@ class ColPaliEmbedder:
         return device
 
     def _load_model(self) -> Tuple:
-        """Load model and processor, using class-level cache.
+        """Load model and processor using native transformers, with class-level cache.
 
         Returns:
             Tuple of (model, processor).
@@ -143,27 +162,22 @@ class ColPaliEmbedder:
 
         print(f"Loading ColPali model: {self.model_name}...", flush=True)
 
+        dtype = torch.bfloat16 if self.device in ("cuda", "mps") else torch.float32
+
         if self._is_colqwen:
-            model = ColQwen2.from_pretrained(
+            model = ColQwen2ForRetrieval.from_pretrained(
                 self.model_name,
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
+                torch_dtype=dtype,
+                device_map=self.device,
             ).eval()
             processor = ColQwen2Processor.from_pretrained(self.model_name)
         else:
-            model = ColPali.from_pretrained(
+            model = ColPaliForRetrieval.from_pretrained(
                 self.model_name,
-                torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
+                torch_dtype=dtype,
+                device_map=self.device,
             ).eval()
             processor = ColPaliProcessor.from_pretrained(self.model_name)
-
-        # Only move to device if not already on meta device
-        if self.device != "meta":
-            try:
-                model = model.to(self.device)
-            except NotImplementedError:
-                # Model loaded with meta tensors, skip .to() call
-                # Model weights will be loaded on first forward
-                pass
 
         # Cache for reuse
         self._MODEL_CACHE[self.model_name] = (model, processor)
@@ -189,18 +203,14 @@ class ColPaliEmbedder:
             self._load_model()
 
         try:
-            # Process image using colpali-engine processor
-            batch_images = [image]
-            processed = self._processor.process_images(batch_images)
+            # Native transformers API: processor(images=[...]) → forward → .embeddings
+            inputs = self._processor(images=[image], return_tensors="pt").to(self.device)
 
-            # Move inputs to device
-            inputs = {k: v.to(self.device) for k, v in processed.items()}
-
-            # Generate embeddings
             with torch.no_grad():
                 outputs = self._model(**inputs)
-                # outputs is typically (batch_size, num_patches, hidden_dim)
-                embeddings = outputs[0] if isinstance(outputs, tuple) else outputs
+                # Native ColPali/ColQwen2 returns ColPaliForRetrievalOutput
+                # with .embeddings of shape (batch, num_patches, hidden_dim)
+                embeddings = outputs.embeddings
 
             # Convert to numpy (num_patches, 128)
             vectors = embeddings.cpu().float().numpy()
@@ -325,14 +335,15 @@ class ColPaliEmbedder:
                 if not batch_images:
                     continue
 
-                # Embed batch
+                # Embed batch using native transformers API
                 try:
-                    processed = self._processor.process_images(batch_images)
-                    inputs = {k: v.to(self.device) for k, v in processed.items()}
+                    inputs = self._processor(
+                        images=batch_images, return_tensors="pt"
+                    ).to(self.device)
 
                     with torch.no_grad():
                         outputs = self._model(**inputs)
-                        embeddings = outputs[0] if isinstance(outputs, tuple) else outputs
+                        embeddings = outputs.embeddings
 
                     # Convert to numpy
                     vectors_batch = embeddings.cpu().float().numpy()
@@ -386,9 +397,8 @@ class ColPaliEmbedder:
     def embed_query(self, query: str) -> "np.ndarray":
         """Embed a text query as multi-vector patches for late-interaction retrieval.
 
-        This method encodes the query text using ColPali's query processor,
-        which tokenizes and prepares the query for MaxSim scoring against
-        document patch vectors.
+        Encodes the query text using the native transformers ColPali/ColQwen2
+        processor for MaxSim scoring against document patch vectors.
 
         Args:
             query: Natural language search query string.
@@ -403,19 +413,12 @@ class ColPaliEmbedder:
             self._load_model()
 
         try:
-            # Process query using colpali-engine's query processing
-            # The processor handles tokenization and preparation for the model
-            queries = [query]
-            processed = self._processor.process_queries(queries)
+            # Native transformers API: processor(text=[...]) for query encoding
+            inputs = self._processor(text=[query], return_tensors="pt").to(self.device)
 
-            # Move inputs to device
-            inputs = {k: v.to(self.device) for k, v in processed.items()}
-
-            # Generate embeddings
             with torch.no_grad():
                 outputs = self._model(**inputs)
-                # outputs is typically (batch_size, num_tokens, hidden_dim)
-                embeddings = outputs[0] if isinstance(outputs, tuple) else outputs
+                embeddings = outputs.embeddings
 
             # Convert to numpy (num_tokens, 128)
             vectors = embeddings.cpu().float().numpy()
@@ -429,6 +432,6 @@ def is_colpali_available() -> bool:
     """Check if ColPali dependencies are available.
 
     Returns:
-        True if colpali-engine, torch, and numpy are installed.
+        True if transformers>=4.49 with ColPali support, torch, and numpy are installed.
     """
     return _COLPALI_AVAILABLE and np is not None

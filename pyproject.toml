@@ -18,9 +18,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 visual = [
-    "colpali-engine>=0.3.0",
+    # colpali-engine dropped: its PEFT-based loader is broken on transformers>=5.x
+    # (KeyError: 'llava' in _MOE_TARGET_MODULE_MAPPING).
+    # We use the native transformers ColPaliForRetrieval/ColQwen2ForRetrieval API
+    # introduced in transformers 4.49, which needs no PEFT adapters.
     "torch>=2.0.0",
-    "transformers>=4.40.0",
+    "transformers>=4.49.0",
     "pillow>=10.0.0",
     "numpy>=1.24.0",
 ]

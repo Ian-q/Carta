@@ -27,18 +27,14 @@ def _minimal_cfg():
 class TestIsColpaliAvailable:
     """Tests for is_colpali_available() function."""
 
-    def test_returns_false_when_colpali_engine_not_installed(self):
-        """Should return False when colpali-engine is not available."""
-        # Force reimport with unavailable module
-        with patch.dict(sys.modules, {"colpali_engine": None}):
-            # Need to reload the module to test import failure path
-            # This is a simplified test - in reality we'd need more complex mocking
+    def test_returns_false_when_transformers_not_installed(self):
+        """Should return False when transformers ColPali support is not available."""
+        # Patch the module-level flag set at import time
+        with patch("carta.embed.colpali._COLPALI_AVAILABLE", False):
             from carta.embed.colpali import is_colpali_available
 
             result = is_colpali_available()
-            # In test environment, we can't easily mock the import failure
-            # So this test just verifies the function exists and runs
-            assert isinstance(result, bool)
+            assert result is False
 
 
 class TestColPaliEmbedderInit:
@@ -64,7 +60,7 @@ class TestColPaliEmbedderInit:
         with patch.object(Path, "mkdir"):
             embedder = ColPaliEmbedder()
 
-        assert embedder.model_name == "vidore/colqwen2-v1.0"
+        assert embedder.model_name == "vidore/colqwen2-v1.0-hf"
         assert embedder.device == "cpu"
         assert embedder.batch_size == 1
         assert embedder.cache_dir == Path(".carta/visual_cache/")
@@ -180,8 +176,10 @@ class TestEmbedQuery:
         embedder._processor = MagicMock()
         
         # Mock the processor and model behavior
+        # Native transformers API: processor(text=[...], return_tensors="pt")
         mock_processed = {"input_ids": MagicMock(), "attention_mask": MagicMock()}
-        embedder._processor.process_queries = MagicMock(return_value=mock_processed)
+        embedder._processor = MagicMock(return_value=mock_processed)
+        embedder._processor.return_value.to = MagicMock(return_value=mock_processed)
         
         # Mock torch and outputs
         mock_outputs = MagicMock()
@@ -208,7 +206,8 @@ class TestEmbedQuery:
             
         embedder._model = MagicMock()
         embedder._processor = MagicMock()
-        embedder._processor.process_queries = MagicMock(side_effect=RuntimeError("processing failed"))
+        # Native transformers API: processor(text=[...]) call raises
+        embedder._processor = MagicMock(side_effect=RuntimeError("processing failed"))
         
         with pytest.raises(ColPaliError):
             embedder.embed_query("test query")
