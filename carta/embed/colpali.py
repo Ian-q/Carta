@@ -23,7 +23,6 @@ except ImportError:
 _COLPALI_AVAILABLE = False
 try:
     from colpali_engine.models import ColPali, ColQwen2, ColPaliProcessor, ColQwen2Processor
-    from colpali_engine.utils.processing_utils import process_images
     import torch
     _COLPALI_AVAILABLE = True
 except ImportError:
@@ -183,9 +182,9 @@ class ColPaliEmbedder:
             self._load_model()
 
         try:
-            # Process image using colpali-engine utils
+            # Process image using colpali-engine processor
             batch_images = [image]
-            processed = process_images(self._processor, batch_images)
+            processed = self._processor.process_images(batch_images)
 
             # Move inputs to device
             inputs = {k: v.to(self.device) for k, v in processed.items()}
@@ -317,7 +316,7 @@ class ColPaliEmbedder:
 
                 # Embed batch
                 try:
-                    processed = process_images(self._processor, batch_images)
+                    processed = self._processor.process_images(batch_images)
                     inputs = {k: v.to(self.device) for k, v in processed.items()}
 
                     with torch.no_grad():
