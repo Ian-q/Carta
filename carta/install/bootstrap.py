@@ -16,14 +16,16 @@ def run_bootstrap(project_root: Path) -> None:
     print(f"Initialising Carta for project: {project_name}")
 
     qdrant_url = os.environ.get("CARTA_QDRANT_URL", "http://localhost:6333")
-    if not _check_qdrant(qdrant_url):
-        print(f"  Qdrant not reachable at {qdrant_url}.")
-        print("  Start it with: docker run -p 6333:6333 qdrant/qdrant")
-        sys.exit(1)
-    print(f"  Qdrant ready at {qdrant_url}")
+    qdrant_ok = _check_qdrant(qdrant_url)
+    if not qdrant_ok:
+        print(f"  Warning: Qdrant not reachable at {qdrant_url}.")
+        print("  Structural audit (/doc-audit) will work without Qdrant.")
+        print("  For embedding and search: docker run -p 6333:6333 qdrant/qdrant")
+    else:
+        print(f"  Qdrant ready at {qdrant_url}")
 
     modules = {
-        "doc_audit": True, "doc_embed": True, "doc_search": True,
+        "doc_audit": True, "doc_embed": qdrant_ok, "doc_search": qdrant_ok,
         "session_memory": True, "proactive_recall": True,
     }
 
