@@ -195,6 +195,48 @@ def cmd_init(args):
     from carta.install.bootstrap import run_bootstrap
     run_bootstrap(Path.cwd())
 
+def cmd_doctor(args):
+    """Run diagnostic checks and optionally auto-fix issues."""
+    from carta.install.preflight import PreflightChecker, PreflightResult
+    from carta.install.auto_fix import AutoInstaller
+
+    interactive = not args.yes  # --yes flag disables prompts
+    checker = PreflightChecker(interactive=interactive, verbose=args.verbose)
+    result = checker.run()
+
+    # Print report
+    if args.json:
+        print(result.to_json())
+    else:
+        result.print_report(verbose=args.verbose)
+
+    # Attempt auto-fix if requested
+    if args.fix:
+        if result.fixable_failures:
+            print(f"\n🔧 Attempting to fix {len(result.fixable_failures)} issue(s)...")
+            installer = AutoInstaller(interactive=interactive, verbose=args.verbose)
+            fixes = installer.fix_all(result)
+
+            successful = sum(1 for success in fixes.values() if success)
+            print(f"\n✅ Fixed: {successful}/{len(fixes)}")
+
+            # Re-run checks to verify fixes
+            if successful > 0 and not args.json:
+                print("\n🔄 Re-running checks to verify fixes...")
+                result = checker.run()
+                result.print_report(verbose=args.verbose)
+        elif not args.json:
+            print("\n✅ No fixable issues found.")
+
+    # Exit with error code if critical failures remain
+    if not result.can_proceed():
+        if not args.json:
+            installer = AutoInstaller(interactive=False)
+            installer.print_setup_guide(result)
+        sys.exit(1)
+
+    sys.exit(0)
+
 def main():
     parser = argparse.ArgumentParser(prog="carta")
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
@@ -203,12 +245,20 @@ def main():
     sub.add_parser("init")
     sub.add_parser("scan")
     sub.add_parser("embed")
+    
+    # Doctor command with options
+    doctor_p = sub.add_parser("doctor", help="Diagnose Carta installation and environment")
+    doctor_p.add_argument("--fix", action="store_true", help="Attempt to auto-fix issues")
+    doctor_p.add_argument("--yes", "-y", action="store_true", help="Auto-confirm fixes without prompting")
+    doctor_p.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
+    doctor_p.add_argument("--json", action="store_true", help="Output in JSON format")
+    
     search_p = sub.add_parser("search")
     search_p.add_argument("query", nargs="+")
 
     args = parser.parse_args()
 
-    dispatch = {"init": cmd_init, "scan": cmd_scan, "embed": cmd_embed, "search": cmd_search}
+    dispatch = {"init": cmd_init, "scan": cmd_scan, "embed": cmd_embed, "search": cmd_search, "doctor": cmd_doctor}
 
     if args.command not in dispatch:
         parser.print_help()
