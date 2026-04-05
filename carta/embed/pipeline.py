@@ -718,9 +718,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
         Ordered by descending similarity score.
     """
     from carta.search.scoped import get_search_collections
-    from qdrant_client import QdrantClient
     from pathlib import Path
-    
+
     top_n = cfg.get("search", {}).get("top_n", 5)
     repo_root = Path(find_config()).parent
     
@@ -807,9 +806,19 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                         "excerpt": payload.get("text", ""),
                         "type": "text",
                     })
-        except Exception:
-            # Skip collections that fail
-            pass
+        except Exception as e:
+            err_str = str(e).lower()
+            # 404 / collection not found — skip silently (collection may not exist yet)
+            if "404" in err_str or "not found" in err_str or "doesn't exist" in err_str:
+                continue
+            # Connection/transport errors — surface as actionable error
+            if any(kw in err_str for kw in ("connection refused", "connection error", "network", "timeout", "unreachable")):
+                raise RuntimeError(
+                    f"Cannot reach Qdrant — is it running? "
+                    f"Start it with: carta doctor --fix\n(Detail: {e})"
+                ) from e
+            # Other unexpected errors — skip collection, don't break entire search
+            continue
     
     # Sort by score descending and take top_n
     all_results.sort(key=lambda x: x["score"], reverse=True)
