@@ -92,3 +92,91 @@ class TestPlainMode:
         p = make_plain(total=1)
         with p:
             pass  # no active line written — should not crash
+
+
+class TestTTYMode:
+    """TTY-mode methods write ANSI sequences to stdout — verify no exceptions and content."""
+
+    def _make_tty(self, total=3):
+        p = Progress(total=total)
+        p._tty = True
+        p._no_color = False
+        return p
+
+    def test_file_in_tty_does_not_print(self, capsys):
+        p = self._make_tty()
+        p.file(idx=1, name="foo.pdf")
+        captured = capsys.readouterr()
+        # file() is silent in TTY mode (first output comes from step/done)
+        assert captured.out == ""
+
+    def test_step_writes_to_stdout(self, capsys):
+        p = self._make_tty()
+        p.file(idx=1, name="foo.pdf")
+        p.step("extracting 5 pages")
+        captured = capsys.readouterr()
+        assert "foo.pdf" in captured.out
+        assert "extracting 5 pages" in captured.out
+        assert "\r" in captured.out  # in-place rewrite
+
+    def test_done_writes_newline(self, capsys):
+        p = self._make_tty()
+        p.file(idx=1, name="foo.pdf")
+        p.done(chunks=10, elapsed=1.0)
+        captured = capsys.readouterr()
+        assert captured.out.endswith("\n")
+        assert "foo.pdf" in captured.out
+
+    def test_skip_writes_newline(self, capsys):
+        p = self._make_tty()
+        p.file(idx=2, name="bar.pdf")
+        p.skip(reason="LFS pointer")
+        captured = capsys.readouterr()
+        assert captured.out.endswith("\n")
+        assert "LFS pointer" in captured.out
+
+    def test_error_writes_to_stderr(self, capsys):
+        p = self._make_tty()
+        p.file(idx=3, name="baz.pdf")
+        p.error("Qdrant timeout")
+        captured = capsys.readouterr()
+        assert captured.err.endswith("\n")
+        assert "Qdrant timeout" in captured.err
+
+    def test_exit_clears_active_spinner_line(self, capsys):
+        p = self._make_tty()
+        p.file(idx=1, name="foo.pdf")
+        p.step("working...")         # sets _active = True
+        p.__exit__(None, None, None)
+        captured = capsys.readouterr()
+        # Should have written a newline to terminate the spinner line
+        assert "\n" in captured.out
+
+    def test_exit_no_extra_newline_when_not_active(self, capsys):
+        p = self._make_tty()
+        # No step() called — _active is False
+        p.__exit__(None, None, None)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_no_color_suppresses_ansi(self):
+        p = Progress(total=1)
+        p._tty = True
+        p._no_color = True
+        result = p._c("\033[32m", "hello")
+        assert result == "hello"
+        assert "\033" not in result
+
+    def test_scan_step_writes_spinner(self, capsys):
+        p = self._make_tty(total=0)
+        p.scan_step("checking frontmatter")
+        captured = capsys.readouterr()
+        assert "checking frontmatter" in captured.out
+        assert "\r" in captured.out
+
+    def test_scan_done_writes_newline(self, capsys):
+        p = self._make_tty(total=0)
+        p.scan_done(elapsed=0.8, issue_count=3)
+        captured = capsys.readouterr()
+        assert captured.out.endswith("\n")
+        assert "3 issue" in captured.out
