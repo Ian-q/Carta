@@ -564,3 +564,63 @@ class TestVisionIntegration:
                                 # Status remains embedded (not failed)
                                 assert sidecar.get("status") == "embedded"
                                 assert sidecar.get("status") == "embedded"
+
+
+class TestRunSearch:
+    """Tests for run_search error handling."""
+
+    def test_raises_runtime_error_when_qdrant_connection_refused(self):
+        """When Qdrant is down, run_search raises RuntimeError with actionable message."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        cfg = {
+            "project_name": "test-project",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "colpali_enabled": False,
+            },
+            "search": {"top_n": 5},
+            "modules": {"doc_search": True},
+        }
+
+        mock_client = MagicMock()
+        mock_client.query_points.side_effect = Exception("Connection refused")
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            with pytest.raises(RuntimeError, match="Qdrant"):
+                run_search("test query", cfg)
+
+    def test_returns_empty_when_collection_not_found(self):
+        """When collection doesn't exist (404), run_search returns [] without error."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        cfg = {
+            "project_name": "test-project",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "colpali_enabled": False,
+            },
+            "search": {"top_n": 5},
+            "modules": {"doc_search": True},
+        }
+
+        mock_client = MagicMock()
+        # Simulate collection-not-found with a generic exception containing "404" or "Not found"
+        mock_client.query_points.side_effect = Exception("Collection not found: status_code=404")
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("test query", cfg)
+
+        assert results == []
