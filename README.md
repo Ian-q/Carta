@@ -58,38 +58,46 @@ Less useful for: simple single-repo projects with a handful of docs, or projects
 
 **Version history:** [CHANGELOG.md](CHANGELOG.md). **Install (pipx, venv, PATH):** [docs/install.md](docs/install.md).
 
-### Option 1: Claude Code plugin (recommended)
+### Claude Code plugin (recommended)
 
-If you have [Superpowers](https://github.com/obra/superpowers) installed:
+Add the Carta marketplace to your `~/.claude/settings.json`:
 
+```json
+{
+  "extraKnownMarketplaces": {
+    "carta-cc": {
+      "source": {
+        "source": "github",
+        "repo": "Ian-q/Carta"
+      }
+    }
+  }
+}
 ```
-/carta-init
-```
 
-That's it. Carta copies the runtime into `.carta/` in your project, registers Claude Code hooks in `.claude/settings.json` (`UserPromptSubmit` and `Stop`), installs Carta skills into `.claude/skills/`, and generates a config from the template.
+Then install and enable the `carta-cc` plugin via `/plugins` in Claude Code. That's it — hooks and skills are registered automatically. Run `/carta-init` in any project to bootstrap Carta there.
 
-### Option 2: pip / uvx
+### CLI install (pip / uvx / curl)
 
-See **[docs/install.md](docs/install.md)** for pipx vs venv, PATH, PlatformIO conflicts, and `--pip-args` syntax.
+For use without the Claude Code plugin, or if you want the `carta` command available directly:
 
 ```bash
 # One-shot (no install required)
 uvx --from carta-cc carta init
 
-# Or install as a CLI tool (recommended on macOS)
+# Install as a CLI tool (recommended on macOS)
 pipx install carta-cc
 carta init
 
-# Or install directly (may require --user or a venv on macOS/PEP 668 systems)
+# Install directly (may require --user or a venv on macOS/PEP 668 systems)
 python3 -m pip install carta-cc
 carta init
+
+# Or via curl
+curl -fsSL https://raw.githubusercontent.com/Ian-q/Carta/main/carta/install/install.sh | bash
 ```
 
-### Option 3: curl
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/carta-cc/carta-cc/main/carta/install/install.sh | bash
-```
+See **[docs/install.md](docs/install.md)** for pipx vs venv, PATH, PlatformIO conflicts, and `--pip-args` syntax.
 
 ---
 
@@ -126,7 +134,7 @@ last_reviewed: 2026-03-20
 
 | Skill | What it does |
 |-------|-------------|
-| `/carta-init` | Bootstrap Carta in a new project |
+| `/carta-init` | Bootstrap Carta in a new project (generates `.carta/config.yaml`) |
 | `/doc-audit` | Structural + semantic audit, generates `AUDIT_REPORT.md` |
 | `/doc-embed` | Ingest PDFs, manuals, and audio transcripts into Qdrant |
 | `/doc-search` | Natural language search over the embedded knowledge base |

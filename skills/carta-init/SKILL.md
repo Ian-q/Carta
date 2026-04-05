@@ -42,7 +42,7 @@ After the command finishes, verify:
 
 1. `.carta/config.yaml` now exists.
 2. The Qdrant collections listed in the config were created (the CLI reports this in stdout).
-3. Claude Code hooks were registered in `.claude/settings.json` (`UserPromptSubmit` and `Stop`), and hook scripts were copied to `.carta/hooks/` with executable permissions.
+3. Hook scripts were copied to `.carta/hooks/` with executable permissions. (Claude Code hook registration is handled plugin-natively — no `.claude/settings.json` changes are made.)
 4. `CLAUDE.md` was updated with carta context (check that the file contains a `carta` section).
 
 Report each check as passed or failed. If any check failed, surface the error and stop.

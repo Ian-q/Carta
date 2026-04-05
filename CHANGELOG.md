@@ -2,6 +2,19 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.2] — 2026-04-05
+
+### Fixed
+- Synced `plugin.json` and `marketplace.json` versions to match package version (were stuck at `0.3.0`).
+- Replaced `${user_config.*}` template variables in dev `.mcp.json` with hardcoded localhost defaults (substitution syntax only works in plugin manifests, not hand-written project `.mcp.json` files).
+- Removed stale `UserPromptSubmit`/`Stop` hook registrations from `.claude/settings.json` that pointed to missing `.carta/hooks/` scripts; plugin-native `hooks/hooks.json` handles these.
+
+### Changed
+- README: removed Superpowers dependency from plugin install instructions; replaced with direct marketplace install (`extraKnownMarketplaces` → `Ian-q/Carta`).
+- README: reorganised install section — plugin path is primary, pip/uvx/curl unified under "CLI install".
+- README: fixed curl URL (`carta-cc/carta-cc` → `Ian-q/Carta`).
+- `skills/carta-init/SKILL.md`: corrected Step 3 verification — `carta init` copies hook scripts to `.carta/hooks/` but does not write `.claude/settings.json` (plugin-native handles Claude Code hook registration).
+
 ## [0.3.1] — 2026-04-04
 
 ### Fixed
