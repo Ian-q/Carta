@@ -464,7 +464,7 @@ def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
     return healed
 
 
-def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = False) -> dict:
+def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = False, progress=None) -> dict:
     """Embed a single specified file. Returns status dict.
 
     Args:
@@ -572,7 +572,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
 
     count, sidecar_updates = _embed_one_file(
-        file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose
+        file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose, progress
     )
     # Merge lifecycle updates with embedding updates
     sidecar_updates.update(lifecycle_updates)
@@ -580,7 +580,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     return {"status": "ok", "chunks": count}
 
 
-def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
+def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) -> dict:
     """Run the embed pipeline on all pending files under repo_root.
 
     Args:
@@ -642,12 +642,17 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
 
         # LFS guard
         if is_lfs_pointer(file_path):
-            if verbose:
+            if progress:
+                progress.file(idx, file_path.name)
+                progress.skip("LFS pointer")
+            elif verbose:
                 print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
             summary["skipped"] += 1
             continue
 
-        if verbose:
+        if progress:
+            progress.file(idx, file_path.name)
+        elif verbose:
             print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
         t0 = time.monotonic()
 
@@ -655,17 +660,21 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
             future = executor.submit(
                 _embed_one_file,
                 file_path, file_info, cfg, client, repo_root,
-                max_tokens, overlap_fraction, verbose,
+                max_tokens, overlap_fraction, verbose, progress,
             )
             try:
                 count, sidecar_updates = future.result(timeout=FILE_TIMEOUT_S)
                 _update_sidecar(sidecar_path, sidecar_updates)
                 elapsed = time.monotonic() - t0
-                if verbose:
+                if progress:
+                    progress.done(chunks=count, elapsed=elapsed)
+                elif verbose:
                     print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
                 summary["embedded"] += 1
             except concurrent.futures.TimeoutError:
-                if verbose:
+                if progress:
+                    progress.skip(f"timeout after {FILE_TIMEOUT_S}s")
+                elif verbose:
                     print(
                         f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {FILE_TIMEOUT_S}s -- skipping",
                         flush=True,
@@ -677,6 +686,8 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False) -> dict:
                 summary["skipped"] += 1
             except Exception as e:
                 elapsed = time.monotonic() - t0
+                if progress:
+                    progress.error(str(e))
                 print(
                     f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}",
                     file=sys.stderr, flush=True,
