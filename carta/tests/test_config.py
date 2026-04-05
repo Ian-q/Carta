@@ -70,3 +70,21 @@ def test_proactive_recall_defaults(tmp_path):
     assert pr["ollama_model"] == "qwen2.5:0.5b"
     assert "similarity_threshold" not in pr
     assert "ollama_judge" not in pr
+
+
+class TestVisionThresholdDefaults:
+    def test_vision_text_min_chars_default(self):
+        from carta.config import DEFAULTS
+        assert DEFAULTS["embed"]["vision_text_min_chars"] == 150
+
+    def test_vision_text_max_chars_default(self):
+        from carta.config import DEFAULTS
+        assert DEFAULTS["embed"]["vision_text_max_chars"] == 600
+
+    def test_vision_flattened_min_yield_default(self):
+        from carta.config import DEFAULTS
+        assert DEFAULTS["embed"]["vision_flattened_min_yield"] == 50
+
+    def test_vision_max_images_per_page_default(self):
+        from carta.config import DEFAULTS
+        assert DEFAULTS["embed"]["vision_max_images_per_page"] == 4

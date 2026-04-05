@@ -32,6 +32,10 @@ DEFAULTS = {
             "visual_threshold": 0.40,
         },
         "vision_routing": "auto",  # NEW: auto | ocr | vision | both
+        "vision_text_min_chars": 150,      # below → FLATTENED
+        "vision_text_max_chars": 600,      # above → captions are cross-refs, skip
+        "vision_flattened_min_yield": 50,  # GLM-OCR chars below this → LLaVA fallback
+        "vision_max_images_per_page": 4,   # cap LLaVA calls per page (largest first)
         "chunking": {
             "max_tokens": 800,
             "overlap_fraction": 0.15,
