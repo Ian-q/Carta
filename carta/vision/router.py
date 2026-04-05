@@ -168,19 +168,27 @@ class SmartRouter:
             ocr_text = self._call_ollama_vision(
                 png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT
             )
-            if len(ocr_text) >= self.flattened_min_yield:
-                return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
-            # Low yield — page is likely a photo or decorative image, try LLaVA
+        except Exception as exc:
+            print(
+                f"Warning: GLM-OCR failed for flattened page {page_num}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            return []
+        if len(ocr_text) >= self.flattened_min_yield:
+            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
+        # Low yield — page is likely a photo or decorative image, try LLaVA
+        try:
             vision_text = self._call_ollama_vision(
                 png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT
             )
             return [self._make_chunk(page_num, 0, vision_text, "llava", "flattened")]
         except Exception as exc:
             print(
-                f"Warning: vision failed for flattened page {page_num}: {exc}",
+                f"Warning: LLaVA fallback failed for flattened page {page_num}: {exc}",
                 file=sys.stderr, flush=True,
             )
-            return []
+            # Return the low-yield OCR result rather than discarding it
+            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
 
     def _extract_image_crops(self, page: Any, doc: Any) -> list[tuple[int, bytes]]:
         """Return (image_index, png_bytes) for embedded images.
@@ -236,7 +244,6 @@ class SmartRouter:
             "image_index": image_index,
             "text": text,
             "model_used": model_used,
-            "content_type": page_class_str,
             "page_class": page_class_str,
         }
 
@@ -278,7 +285,7 @@ def extract_image_descriptions_intelligent(
 
     Returns:
         List of dicts with keys: doc_type, page_num, image_index, text,
-        model_used, content_type, page_class.
+        model_used, page_class.
     """
     router = SmartRouter(cfg)
     return router.extract_pdf(pdf_path, progress_callback)

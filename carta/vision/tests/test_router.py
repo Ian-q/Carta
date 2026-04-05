@@ -152,6 +152,24 @@ class TestRouteFlattened:
             result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
         assert result == []
 
+    def test_llava_fallback_failure_returns_low_yield_ocr(self):
+        """LLaVA fallback fails after low-yield OCR → return OCR chunk anyway."""
+        router = SmartRouter(_cfg(
+            vision_flattened_min_yield=50,
+            ocr_model="glm-ocr:latest",
+            ollama_vision_model="llava:latest",
+        ))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=["short ocr", RuntimeError("llava down")]
+        ):
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert len(result) == 1
+        assert result[0]["model_used"] == "glm-ocr"
+        assert result[0]["text"] == "short ocr"
+
 
 # ---------------------------------------------------------------------------
 # _extract_image_crops
@@ -201,7 +219,6 @@ class TestChunkOutputFormat:
         assert chunk["text"] == "some text"
         assert chunk["model_used"] == "llava"
         assert chunk["page_class"] == "text_with_images"
-        assert chunk["content_type"] == "text_with_images"
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +251,7 @@ class TestCallOllamaVision:
 class TestPublicAPI:
     def test_pure_text_pdf_produces_no_model_calls(self):
         """3-page text-only PDF → [] with zero requests.post calls."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
+        cfg = _cfg()
 
         def make_page():
             page = MagicMock()
@@ -256,7 +273,7 @@ class TestPublicAPI:
 
     def test_returns_list(self):
         """Always returns a list."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
+        cfg = _cfg()
         with patch("carta.vision.router.fitz") as mock_fitz:
             doc = MagicMock()
             doc.__iter__ = MagicMock(return_value=iter([]))
