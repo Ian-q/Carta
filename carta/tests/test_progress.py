@@ -93,6 +93,17 @@ class TestPlainMode:
         with p:
             pass  # no active line written — should not crash
 
+    def test_summary_callable_after_context_exits(self, capsys):
+        """summary() must work after __exit__ — matches actual cmd_embed usage pattern."""
+        p = make_plain(total=2)
+        with p:
+            p.file(idx=1, name="a.pdf")
+            p.done(chunks=10, elapsed=1.0)
+        p.summary(embedded=1, skipped=1, errors=0)
+        captured = capsys.readouterr()
+        assert "Embedded: 1" in captured.out
+        assert "Skipped: 1" in captured.out
+
 
 class TestTTYMode:
     """TTY-mode methods write ANSI sequences to stdout — verify no exceptions and content."""
