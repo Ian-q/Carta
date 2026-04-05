@@ -1,303 +1,170 @@
-"""Tests for PDF page content classification module."""
+"""Tests for carta.vision.classifier — PageAnalyzer and PageClass."""
 import pytest
-from unittest.mock import MagicMock, patch
-import time
+from unittest.mock import MagicMock
 
-from carta.vision.classifier import ContentClassifier, ContentType, ClassificationResult
-
-
-class TestContentClassifierTextPages:
-    """Pages dominated by text should classify as TEXT."""
-    
-    def test_pure_text_page(self):
-        """Page with only paragraphs → TEXT."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        mock_page.rect.width = 612  # Letter size
-        mock_page.rect.height = 792
-        
-        # Simulate text covering 80% of page (10 blocks of ~80% area each is wrong math,
-        # but get_text returns dicts with bbox info)
-        # Correct: each text block has x0,y0,x1,y1
-        mock_page.get_text.return_value = "text" * 1000  # Lots of text
-        mock_page.get_images.return_value = []
-        
-        # Mock the internal calculation
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.80):
-            result = classifier.classify_page(mock_page)
-            assert result.content_type == ContentType.TEXT
-            assert result.text_coverage == 0.80
-    
-    def test_table_page(self):
-        """Page with structured tables → TEXT."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        
-        # Low text coverage but table patterns detected
-        # Need to patch the methods that classify_page actually calls
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.50):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.0):
-                with patch.object(classifier, '_detect_table_patterns_from_page', return_value=True):
-                    result = classifier.classify_page(mock_page)
-                    assert result.content_type == ContentType.TEXT
-                    assert result.has_tables is True
+from carta.vision.classifier import PageAnalyzer, PageClass, PageProfile, FIGURE_CAPTION_RE
 
 
-class TestContentClassifierVisualPages:
-    """Image-heavy pages should classify as VISUAL."""
-    
-    def test_diagram_page(self):
-        """Page with schematic/diagram → VISUAL."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        
-        # Minimal text, large image
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.10):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.60):
-                result = classifier.classify_page(mock_page)
-                assert result.content_type == ContentType.VISUAL
-                assert result.image_coverage == 0.60
-    
-    def test_plot_graph_page(self):
-        """Page with plot/chart → VISUAL."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        
-        # Some text (axis labels) but mostly plot area
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.15):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.55):
-                result = classifier.classify_page(mock_page)
-                assert result.content_type == ContentType.VISUAL
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_page(text: str = "", images: list = None, blocks: list = None) -> MagicMock:
+    """Build a minimal mock fitz Page for PageAnalyzer.analyze()."""
+    page = MagicMock()
+
+    def _get_text(fmt: str = "text", **kw):
+        if fmt == "blocks":
+            return blocks or []
+        return text
+
+    page.get_text.side_effect = _get_text
+    page.get_images.return_value = images or []
+    return page
 
 
-class TestContentClassifierMixedPages:
-    """Balanced pages should classify as MIXED."""
-    
-    def test_half_text_half_diagram(self):
-        """Page with text section + diagram → MIXED."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        
-        # 50% text, moderate image
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.50):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.30):
-                with patch.object(classifier, '_detect_table_patterns', return_value=False):
-                    result = classifier.classify_page(mock_page)
-                    assert result.content_type == ContentType.MIXED
+def _table_blocks() -> list:
+    """6 blocks in 2 columns (x=10, x=200) — triggers column-alignment table detection."""
+    return [
+        (10,  0, 100, 10, "a", 0, 0),
+        (10, 20, 100, 30, "b", 0, 0),
+        (10, 40, 100, 50, "c", 0, 0),
+        (200,  0, 300, 10, "d", 0, 0),
+        (200, 20, 300, 30, "e", 0, 0),
+        (200, 40, 300, 50, "f", 0, 0),
+    ]
 
 
-class TestContentClassifierThresholds:
-    """Threshold configuration affects classification."""
-    
-    def test_custom_text_threshold(self):
-        """Higher threshold makes classification stricter."""
-        classifier_default = ContentClassifier(text_threshold=0.70)
-        classifier_strict = ContentClassifier(text_threshold=0.80)
-        
-        mock_page = MagicMock()
-        
-        # 65% text coverage
-        with patch.object(classifier_default, '_calculate_text_coverage', return_value=0.65):
-            with patch.object(classifier_default, '_detect_table_patterns', return_value=False):
-                result_default = classifier_default.classify_page(mock_page)
-        
-        with patch.object(classifier_strict, '_calculate_text_coverage', return_value=0.65):
-            with patch.object(classifier_strict, '_detect_table_patterns', return_value=False):
-                result_strict = classifier_strict.classify_page(mock_page)
-        
-        assert result_default.content_type == ContentType.MIXED  # 65% < 70% default
-        assert result_strict.content_type == ContentType.MIXED  # 65% < 80% strict
-    
-    def test_threshold_boundary_text(self):
-        """Exactly at threshold → TEXT."""
-        classifier = ContentClassifier(text_threshold=0.70)
-        mock_page = MagicMock()
-        
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.70):
-            with patch.object(classifier, '_detect_table_patterns', return_value=False):
-                result = classifier.classify_page(mock_page)
-                assert result.content_type == ContentType.TEXT
+# ---------------------------------------------------------------------------
+# PageClass assignment
+# ---------------------------------------------------------------------------
 
+class TestPageClassPureText:
+    def test_long_text_no_images_no_tables(self):
+        """200 chars, no images, no tables, no captions → PURE_TEXT."""
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="x" * 200)
+        assert analyzer.analyze(page).page_class == PageClass.PURE_TEXT
+
+    def test_profile_fields_populated(self):
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="x" * 200)
+        profile = analyzer.analyze(page)
+        assert profile.text_length == 200
+        assert not profile.has_images
+        assert not profile.has_tables
+        assert not profile.has_captions
+
+
+class TestPageClassFlattened:
+    def test_short_text_is_flattened(self):
+        """4 chars < 150 → FLATTENED."""
+        analyzer = PageAnalyzer({})
+        assert analyzer.analyze(_make_page(text="tiny")).page_class == PageClass.FLATTENED
+
+    def test_empty_page_is_flattened(self):
+        analyzer = PageAnalyzer({})
+        assert analyzer.analyze(_make_page(text="")).page_class == PageClass.FLATTENED
+
+    def test_custom_text_min_respected(self):
+        """vision_text_min_chars=50: 60-char page → PURE_TEXT."""
+        analyzer = PageAnalyzer({"embed": {"vision_text_min_chars": 50}})
+        assert analyzer.analyze(_make_page(text="x" * 60)).page_class == PageClass.PURE_TEXT
+
+
+class TestPageClassStructuredText:
+    def test_table_blocks_route_to_structured(self):
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="x" * 200, blocks=_table_blocks())
+        profile = analyzer.analyze(page)
+        assert profile.page_class == PageClass.STRUCTURED_TEXT
+        assert profile.has_tables
+
+    def test_tables_take_priority_over_images(self):
+        """STRUCTURED_TEXT wins when both table and image signals present."""
+        analyzer = PageAnalyzer({})
+        page = _make_page(
+            text="x" * 200,
+            images=[(1, 0, 100, 100, 8, 0, 0)],
+            blocks=_table_blocks(),
+        )
+        assert analyzer.analyze(page).page_class == PageClass.STRUCTURED_TEXT
+
+
+class TestPageClassTextWithImages:
+    def test_embedded_image_triggers(self):
+        """text ≥ MIN + embedded image → TEXT_WITH_IMAGES."""
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="x" * 200, images=[(1, 0, 100, 100, 8, 0, 0)])
+        profile = analyzer.analyze(page)
+        assert profile.page_class == PageClass.TEXT_WITH_IMAGES
+        assert profile.has_images
+
+    def test_caption_below_text_max_triggers(self):
+        """Caption + 300 chars (< 600 MAX) + no images → TEXT_WITH_IMAGES."""
+        analyzer = PageAnalyzer({})
+        text = "See Figure 3 for the timing diagram. " + "x" * 263
+        page = _make_page(text=text)
+        profile = analyzer.analyze(page)
+        assert profile.has_captions
+        assert profile.page_class == PageClass.TEXT_WITH_IMAGES
+
+    def test_caption_above_text_max_ignored(self):
+        """Caption + text > 600 → PURE_TEXT (cross-reference to another page)."""
+        analyzer = PageAnalyzer({})
+        text = "See Figure 12 for details. " + "x" * 600
+        page = _make_page(text=text)
+        profile = analyzer.analyze(page)
+        assert profile.has_captions
+        assert profile.page_class == PageClass.PURE_TEXT
+
+    def test_custom_text_max_respected(self):
+        """vision_text_max_chars=300 config: 350-char + caption → PURE_TEXT."""
+        analyzer = PageAnalyzer({"embed": {"vision_text_max_chars": 300}})
+        text = "See Figure 5. " + "x" * 336
+        assert analyzer.analyze(_make_page(text=text)).page_class == PageClass.PURE_TEXT
+
+
+# ---------------------------------------------------------------------------
+# Figure caption regex
+# ---------------------------------------------------------------------------
+
+class TestFigureCaptionRegex:
+    @pytest.mark.parametrize("text", [
+        "Fig. 3", "Figure 12", "see plot 4", "Chart 1 shows voltage",
+        "diagram 7", "graph 2", "FIG. 1", "FIGURE 3",
+    ])
+    def test_matches(self, text):
+        assert FIGURE_CAPTION_RE.search(text), f"Expected match for: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "configured the system", "figment of imagination", "figure of speech",
+        "reconfigured", "charted course",
+    ])
+    def test_no_false_positives(self, text):
+        assert not FIGURE_CAPTION_RE.search(text), f"Unexpected match for: {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# Table detection
+# ---------------------------------------------------------------------------
 
 class TestTableDetection:
-    """Table pattern detection."""
-    
-    def test_detects_aligned_columns(self):
-        """Aligned x-coordinates across rows → table detected."""
-        classifier = ContentClassifier()
-        
-        # Simulate aligned text columns (table-like)
-        # Each row has text blocks at similar x positions
-        text_blocks = [
-            {'x0': 50, 'x1': 150},   # Col 1
-            {'x0': 200, 'x1': 300},  # Col 2
-            {'x0': 350, 'x1': 450},  # Col 3
-            {'x0': 50, 'x1': 150},   # Next row, Col 1
-            {'x0': 200, 'x1': 300},  # Next row, Col 2
-            {'x0': 350, 'x1': 450},  # Next row, Col 3
-        ]
-        
-        assert classifier._detect_table_patterns(text_blocks) is True
-    
-    def test_ignores_single_column(self):
-        """Single column text not detected as table."""
-        classifier = ContentClassifier()
-        
-        text_blocks = [
-            {'x0': 50, 'x1': 562},  # Full width paragraph
-            {'x0': 50, 'x1': 562},  # Next paragraph
-        ]
-        
-        assert classifier._detect_table_patterns(text_blocks) is False
-    
-    def test_detects_two_column_layout(self):
-        """Two-column layout can be table-like."""
-        classifier = ContentClassifier()
-        
-        text_blocks = [
-            {'x0': 50, 'x1': 280},   # Left col
-            {'x0': 330, 'x1': 562},  # Right col
-            {'x0': 50, 'x1': 280},   # Next row, left
-            {'x0': 330, 'x1': 562},  # Next row, right
-        ]
-        
-        assert classifier._detect_table_patterns(text_blocks) is True
+    def test_two_columns_detected(self):
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="x" * 200, blocks=_table_blocks())
+        assert analyzer.analyze(page).has_tables
 
+    def test_single_column_not_a_table(self):
+        """All blocks at same x → no table."""
+        analyzer = PageAnalyzer({})
+        blocks = [(50, i * 20, 500, i * 20 + 15, f"line {i}", 0, 0) for i in range(6)]
+        page = _make_page(text="x" * 200, blocks=blocks)
+        assert not analyzer.analyze(page).has_tables
 
-class TestCoverageCalculation:
-    """Coverage calculation methods."""
-    
-    def test_calculate_text_coverage(self):
-        """Text coverage calculated from block areas."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        
-        # Mock get_text("blocks") returning bbox info
-        # Format: list of (x0, y0, x1, y1, text, ...)
-        mock_blocks = [
-            (50, 50, 562, 100, "text1", 0, 0),   # 512x50 = 25600
-            (50, 150, 562, 200, "text2", 0, 0),  # 512x50 = 25600
-        ]
-        # Total text area = 51200
-        # Page area = 612*792 = 484704
-        # Coverage = 51200 / 484704 ≈ 0.105
-        
-        mock_page.get_text.return_value = mock_blocks
-        
-        coverage = classifier._calculate_text_coverage(mock_page)
-        assert 0.10 < coverage < 0.11
-    
-    def test_calculate_image_coverage(self):
-        """Image coverage calculated from image list."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        mock_page.rect.width = 612
-        mock_page.rect.height = 792
-        
-        # Mock get_images() returning (xref, smask, width, height, bpc, colorspace, alt. colorspace)
-        mock_images = [
-            (1, 0, 400, 300, 8, 0, 0),  # 400x300 = 120000
-        ]
-        # Image area = 120000
-        # Page area = 484704
-        # Coverage = 120000 / 484704 ≈ 0.247
-        
-        mock_page.get_images.return_value = mock_images
-        
-        coverage = classifier._calculate_image_coverage(mock_page)
-        assert 0.24 < coverage < 0.25
-
-
-class TestClassificationResult:
-    """Classification result data structure."""
-    
-    def test_result_structure(self):
-        """ClassificationResult has all required fields."""
-        result = ClassificationResult(
-            content_type=ContentType.TEXT,
-            text_coverage=0.85,
-            image_coverage=0.10,
-            has_tables=True,
-            confidence=0.95
-        )
-        
-        assert result.content_type == ContentType.TEXT
-        assert result.text_coverage == 0.85
-        assert result.image_coverage == 0.10
-        assert result.has_tables is True
-        assert result.confidence == 0.95
-    
-    def test_content_type_enum(self):
-        """ContentType enum has expected values."""
-        assert ContentType.TEXT.value == "text"
-        assert ContentType.VISUAL.value == "visual"
-        assert ContentType.MIXED.value == "mixed"
-
-
-class TestClassificationPerformance:
-    """Performance requirements."""
-    
-    def test_classification_under_100ms(self):
-        """Classification should complete in <100ms."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        
-        # Set up mocks to avoid actual PDF processing
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.50):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.20):
-                with patch.object(classifier, '_detect_table_patterns', return_value=False):
-                    start = time.time()
-                    result = classifier.classify_page(mock_page)
-                    elapsed = time.time() - start
-        
-        assert elapsed < 0.100  # 100ms
-        assert result.content_type == ContentType.MIXED
-
-
-class TestEdgeCases:
-    """Edge cases and boundary conditions."""
-    
-    def test_empty_page(self):
-        """Empty page with no text or images."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.0):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.0):
-                with patch.object(classifier, '_detect_table_patterns', return_value=False):
-                    result = classifier.classify_page(mock_page)
-                    # Empty page falls through to MIXED (or could be TEXT if we default that way)
-                    assert result.content_type in [ContentType.MIXED, ContentType.TEXT]
-    
-    def test_no_images_method(self):
-        """Page without get_images method (edge case)."""
-        classifier = ContentClassifier()
-        mock_page = MagicMock()
-        del mock_page.get_images  # Remove method
-        
-        with patch.object(classifier, '_calculate_text_coverage', return_value=0.80):
-            with patch.object(classifier, '_calculate_image_coverage', return_value=0.0):
-                result = classifier.classify_page(mock_page)
-                assert result.content_type == ContentType.TEXT
-
-
-class TestImageBytesClassification:
-    """Classification from raw image bytes (alternative path)."""
-    
-    def test_classify_image_basic(self):
-        """Can classify from image bytes."""
-        classifier = ContentClassifier()
-        
-        # Create dummy image bytes (minimal PNG header)
-        image_bytes = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
-        
-        # Mock the image analysis
-        with patch.object(classifier, '_analyze_image_entropy', return_value=(0.6, 0.3)):
-            result = classifier.classify_image(image_bytes)
-            
-            assert isinstance(result, ClassificationResult)
-            assert result.content_type in [ContentType.TEXT, ContentType.MIXED, ContentType.VISUAL]
+    def test_too_few_blocks_not_a_table(self):
+        """< 4 blocks → table detection skipped."""
+        analyzer = PageAnalyzer({})
+        blocks = [(10, 0, 100, 10, "a", 0, 0), (200, 0, 300, 10, "b", 0, 0)]
+        page = _make_page(text="x" * 200, blocks=blocks)
+        assert not analyzer.analyze(page).has_tables
