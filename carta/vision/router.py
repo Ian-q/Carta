@@ -245,6 +245,7 @@ class SmartRouter:
             "text": text,
             "model_used": model_used,
             "page_class": page_class_str,
+            "content_type": page_class_str,  # consumed by pipeline._build_vision_metadata
         }
 
     def _call_ollama_vision(
