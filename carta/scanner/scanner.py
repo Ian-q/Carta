@@ -592,6 +592,7 @@ def run_scan(
     output_path: Optional[Path] = None,
     reference_date: Optional[date] = None,
     verbose: bool = False,
+    progress=None,
 ) -> dict:
     """Run all structural checks and return the results dict.
 
@@ -604,6 +605,8 @@ def run_scan(
     Returns:
         JSON-serialisable dict with keys: scan_time, issues, stats, ...
     """
+    import time
+    t0 = time.monotonic()
     ref_date = reference_date or date.today()
 
     effective_output = output_path if output_path is not None else repo_root / "scan-results.json"
@@ -657,9 +660,13 @@ def run_scan(
 
     # Run all checks
     issues: list[dict] = []
+    if progress:
+        progress.scan_step("checking structure")
     issues.extend(check_homeless_docs(repo_root, cfg))
     issues.extend(check_nested_docs_folders(repo_root, cfg))
 
+    if progress:
+        progress.scan_step(f"checking frontmatter and links ({len(tracked_docs)} docs)")
     threshold = cfg.get("stale_threshold_days", 30)
     for doc_path in tracked_docs:
         rel = str(doc_path.relative_to(repo_root))
@@ -681,12 +688,16 @@ def run_scan(
             issues.append(orphan)
 
     # Embed file type checks
+    if progress:
+        progress.scan_step("checking embeddable files")
     issues.extend(check_embed_induction_needed(repo_root, cfg))
     issues.extend(check_embed_lfs_not_pulled(repo_root, cfg))
     issues.extend(check_embed_transcript_unprocessed(repo_root, cfg))
 
     # Sidecar checks
     sidecar_files = list(_iter_sidecar_files(repo_root, cfg))
+    if progress:
+        progress.scan_step(f"checking sidecars ({len(sidecar_files)} files)")
     for sidecar_path in sidecar_files:
         data = parse_sidecar(sidecar_path)
         if data is None:
@@ -736,4 +747,6 @@ def run_scan(
     effective_output.parent.mkdir(parents=True, exist_ok=True)
     effective_output.write_text(json.dumps(result, indent=2, default=str))
 
+    if progress:
+        progress.scan_done(elapsed=time.monotonic() - t0, issue_count=len(issues))
     return result
