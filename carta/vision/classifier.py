@@ -115,7 +115,7 @@ class PageAnalyzer:
         clusters: list[list[float]] = []
         for x in sorted(x_positions):
             for cluster in clusters:
-                if abs(x - cluster[0]) < tolerance:
+                if abs(x - cluster[-1]) < tolerance:
                     cluster.append(x)
                     break
             else:
