@@ -1,437 +1,266 @@
-"""Tests for dual extraction router."""
+"""Tests for carta.vision.router — SmartRouter and extract_image_descriptions_intelligent."""
 import pytest
-from unittest.mock import MagicMock, patch, call
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from carta.vision.router import (
-    DualExtractionRouter,
-    ExtractionResult,
-    extract_pdf_with_intelligent_routing
-)
-from carta.vision.classifier import ContentType
+from carta.vision.router import SmartRouter, extract_image_descriptions_intelligent
+from carta.vision.classifier import PageClass, PageProfile
 
 
-class TestDualExtractionRouterInitialization:
-    """Router initialization from config."""
-    
-    def test_default_initialization(self):
-        """Router initializes with default config values."""
-        cfg = {
-            "embed": {
-                "ollama_url": "http://localhost:11434",
-                "ollama_model": "nomic-embed-text:latest",
-                "ollama_vision_model": "llava:latest",
-                "ocr_model": "glm-ocr:latest",
-            }
-        }
-        
-        router = DualExtractionRouter(cfg)
-        
-        assert router.ocr_model == "glm-ocr:latest"
-        assert router.vision_model == "llava:latest"
-        assert router.ollama_url == "http://localhost:11434"
-        assert router.vision_routing == "auto"
-        assert router.classifier.text_threshold == 0.70
-        assert router.classifier.visual_threshold == 0.40
-    
-    def test_custom_thresholds_from_config(self):
-        """Router reads custom thresholds from config."""
-        cfg = {
-            "embed": {
-                "ollama_url": "http://localhost:11434",
-                "classification": {
-                    "text_threshold": 0.80,
-                    "visual_threshold": 0.50,
-                },
-                "vision_routing": "ocr",  # Force OCR mode
-            }
-        }
-        
-        router = DualExtractionRouter(cfg)
-        
-        assert router.classifier.text_threshold == 0.80
-        assert router.classifier.visual_threshold == 0.50
-        assert router.vision_routing == "ocr"
-    
-    def test_missing_ocr_model_defaults_to_glm_ocr(self):
-        """If ocr_model not in config, defaults to glm-ocr:latest."""
-        cfg = {
-            "embed": {
-                "ollama_url": "http://localhost:11434",
-            }
-        }
-        
-        router = DualExtractionRouter(cfg)
-        
-        assert router.ocr_model == "glm-ocr:latest"
-        assert router.vision_model == "llava:latest"  # Also default
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _cfg(**embed_overrides) -> dict:
+    base = {"ollama_url": "http://localhost:11434"}
+    base.update(embed_overrides)
+    return {"embed": base}
 
 
-class TestDualExtractionRouterAutoRouting:
-    """Automatic routing based on content classification."""
-    
-    def test_text_page_routes_to_ocr(self):
-        """TEXT pages are routed to GLM-OCR."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        with patch.object(router.classifier, 'classify_page') as mock_classify:
-            mock_classify.return_value = MagicMock(
-                content_type=ContentType.TEXT,
-                has_tables=True,
-                confidence=0.90
-            )
-            
-            with patch.object(router, '_call_ollama_vision') as mock_call:
-                mock_call.return_value = "Extracted text content"
-                
-                result = router.extract_page(mock_page, page_num=1)
-        
-        assert result.model_used == "glm-ocr"
-        assert result.content_type == "text"
-        assert result.has_tables is True
+def _profile(page_class: PageClass, **kw) -> PageProfile:
+    defaults = dict(text_length=300, has_images=False, has_tables=False, has_captions=False)
+    defaults.update(kw)
+    return PageProfile(**defaults, page_class=page_class)
+
+
+def _pixmap(content: bytes = b"fakepng") -> MagicMock:
+    pix = MagicMock()
+    pix.tobytes.return_value = content
+    return pix
+
+
+# ---------------------------------------------------------------------------
+# _route dispatch
+# ---------------------------------------------------------------------------
+
+class TestRoutePureText:
+    def test_returns_empty_list_no_model_calls(self):
+        """PURE_TEXT → [] with zero model calls."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.PURE_TEXT), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+
+class TestRouteStructured:
+    def test_calls_glm_ocr_once(self):
+        """STRUCTURED_TEXT → 1 GLM-OCR call, 1 chunk."""
+        router = SmartRouter(_cfg(ocr_model="glm-ocr:latest"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="OCR text") as mock_call:
+            result = router._route(page, 2, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
         mock_call.assert_called_once()
-        # Verify OCR model was used
-        call_args = mock_call.call_args
-        assert call_args[1]['model'] == "glm-ocr:latest"
-    
-    def test_visual_page_routes_to_vision(self):
-        """VISUAL pages are routed to LLaVA."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        with patch.object(router.classifier, 'classify_page') as mock_classify:
-            mock_classify.return_value = MagicMock(
-                content_type=ContentType.VISUAL,
-                has_tables=False,
-                confidence=0.85
-            )
-            
-            with patch.object(router, '_call_ollama_vision') as mock_call:
-                mock_call.return_value = "Visual description of diagram"
-                
-                result = router.extract_page(mock_page, page_num=2)
-        
-        assert result.model_used == "llava"
-        assert result.content_type == "visual"
-        assert result.has_tables is False
-        # Verify vision model was used
-        call_args = mock_call.call_args
-        assert call_args[1]['model'] == "llava:latest"
-    
-    def test_mixed_page_routes_to_hybrid(self):
-        """MIXED pages use hybrid extraction."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        with patch.object(router.classifier, 'classify_page') as mock_classify:
-            mock_classify.return_value = MagicMock(
-                content_type=ContentType.MIXED,
-                has_tables=False,
-                confidence=0.75
-            )
-            
-            with patch.object(router, '_call_ollama_vision') as mock_call:
-                # Both calls succeed
-                mock_call.side_effect = [
-                    "OCR text content",
-                    "Visual description"
-                ]
-                
-                result = router.extract_page(mock_page, page_num=3)
-        
-        assert result.model_used == "hybrid"
-        assert result.content_type == "mixed"
-        # Both models should have been called
-        assert mock_call.call_count == 2
+        assert mock_call.call_args[1]["model"] == "glm-ocr:latest"
+        assert len(result) == 1
+        assert result[0]["model_used"] == "glm-ocr"
+        assert result[0]["page_class"] == "structured_text"
+        assert result[0]["page_num"] == 2
+
+    def test_glm_failure_returns_empty(self):
+        """GLM-OCR exception → [] (fail-open)."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", side_effect=RuntimeError("timeout")):
+            result = router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert result == []
 
 
-class TestForcedRoutingModes:
-    """Forced routing modes override auto-classification."""
-    
-    def test_force_ocr_mode(self):
-        """force_mode='ocr' always uses GLM-OCR."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        # Classifier would say VISUAL, but we force OCR
-        with patch.object(router.classifier, 'classify_page') as mock_classify:
-            mock_classify.return_value = MagicMock(
-                content_type=ContentType.VISUAL,
-                has_tables=False,
-                confidence=0.90
-            )
-            
-            with patch.object(router, '_call_ollama_vision') as mock_call:
-                mock_call.return_value = "OCR result"
-                
-                result = router.extract_page(mock_page, page_num=1, force_mode="ocr")
-        
-        assert result.model_used == "glm-ocr"
-        # Should have used OCR despite classification saying VISUAL
-        call_args = mock_call.call_args
-        assert call_args[1]['model'] == "glm-ocr:latest"
-    
-    def test_force_vision_mode(self):
-        """force_mode='vision' always uses LLaVA."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        # Classifier would say TEXT, but we force vision
-        with patch.object(router.classifier, 'classify_page') as mock_classify:
-            mock_classify.return_value = MagicMock(
-                content_type=ContentType.TEXT,
-                has_tables=True,
-                confidence=0.90
-            )
-            
-            with patch.object(router, '_call_ollama_vision') as mock_call:
-                mock_call.return_value = "Vision result"
-                
-                result = router.extract_page(mock_page, page_num=1, force_mode="vision")
-        
-        assert result.model_used == "llava"
-        call_args = mock_call.call_args
-        assert call_args[1]['model'] == "llava:latest"
-    
-    def test_force_both_mode(self):
-        """force_mode='both' always uses hybrid extraction."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        with patch.object(router.classifier, 'classify_page') as mock_classify:
-            mock_classify.return_value = MagicMock(
-                content_type=ContentType.TEXT,  # Would normally use OCR only
-                has_tables=True,
-                confidence=0.90
-            )
-            
-            with patch.object(router, '_call_ollama_vision') as mock_call:
-                mock_call.side_effect = ["OCR result", "Vision result"]
-                
-                result = router.extract_page(mock_page, page_num=1, force_mode="both")
-        
-        assert result.model_used == "hybrid"
-        assert result.content_type == "mixed"
-        assert mock_call.call_count == 2
-
-
-class TestHybridExtractionCombinations:
-    """Hybrid extraction handles various success/failure scenarios."""
-    
-    def test_hybrid_both_succeed(self):
-        """When both models succeed, combine their outputs."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        with patch.object(router, '_call_ollama_vision') as mock_call:
-            mock_call.side_effect = [
-                "OCR: Temperature range -40°C to 85°C",
-                "Vision: Graph showing temperature curve with steep drop at cold end"
-            ]
-            
-            result = router._extract_hybrid(mock_page, page_num=1, classification=None)
-        
-        assert result.model_used == "hybrid"
-        assert "Temperature range" in result.text
-        assert "Visual Context" in result.text
-        assert "temperature curve" in result.text
-        assert result.confidence == 0.90
-    
-    def test_hybrid_ocr_fails_fallback_to_vision(self):
-        """When OCR fails but vision succeeds, use vision only."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = mock_pixmap
-        mock_pixmap.tobytes.return_value = b"fake_png"
-        
-        with patch.object(router, '_call_ollama_vision') as mock_call:
-            # First call (OCR) fails, second (vision) succeeds
-            mock_call.side_effect = [
-                Exception("OCR failed"),
-                "Vision description only"
-            ]
-            
-            result = router._extract_hybrid(mock_page, page_num=1, classification=None)
-        
-        assert result.model_used == "llava"  # Falls back to vision
-        assert result.text == "Vision description only"
-        assert result.confidence == 0.75  # Lower confidence
-    
-    def test_hybrid_both_fail(self):
-        """When both models fail, return error message."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_page = MagicMock()
-        mock_pixmap = MagicMock()
-        mock_page.get_pixmap.return_value = b"fake_png"
-        mock_page.get_pixmap.return_value = mock_pixmap
-        
-        with patch.object(router, '_call_ollama_vision') as mock_call:
-            mock_call.side_effect = Exception("Both failed")
-            
-            result = router._extract_hybrid(mock_page, page_num=5, classification=None)
-        
-        assert result.model_used == "hybrid"
-        assert "failed" in result.text.lower()
-        assert result.confidence == 0.0
-
-
-class TestExtractionResultStructure:
-    """ExtractionResult data structure."""
-    
-    def test_result_has_required_fields(self):
-        """ExtractionResult contains all required fields."""
-        result = ExtractionResult(
-            text="Extracted content",
-            model_used="glm-ocr",
-            content_type="text",
-            page_num=1,
-            confidence=0.90,
-            has_tables=True
-        )
-        
-        assert result.text == "Extracted content"
-        assert result.model_used == "glm-ocr"
-        assert result.content_type == "text"
-        assert result.page_num == 1
-        assert result.confidence == 0.90
-        assert result.has_tables is True
-    
-    def test_optional_has_tables_defaults_false(self):
-        """has_tables defaults to False when not specified."""
-        result = ExtractionResult(
-            text="Content",
-            model_used="llava",
-            content_type="visual",
-            page_num=2,
-            confidence=0.85
-        )
-        
-        assert result.has_tables is False
-
-
-class TestPDFExtractionIntegration:
-    """Full PDF extraction integration."""
-    
-    @pytest.mark.skip(reason="Requires actual fitz and file system")
-    def test_extract_pdf_processes_all_pages(self):
-        """extract_pdf processes each page of a PDF."""
-        # This would require mocking fitz.Document extensively
-        pass
-    
-    def test_progress_callback_called(self):
-        """Progress callback is invoked for each page."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        # Mock fitz
-        mock_doc = MagicMock()
-        mock_doc.__len__ = MagicMock(return_value=3)
-        mock_doc.__iter__ = MagicMock(return_value=iter([MagicMock(), MagicMock(), MagicMock()]))
-        
-        progress_calls = []
-        
-        def progress_cb(page_num, total):
-            progress_calls.append((page_num, total))
-        
-        with patch('carta.vision.router.fitz') as mock_fitz:
-            mock_fitz.open.return_value = mock_doc
-            
-            with patch.object(router, 'extract_page') as mock_extract:
-                mock_extract.return_value = ExtractionResult(
-                    text="test", model_used="ocr", content_type="text",
-                    page_num=1, confidence=0.9
+class TestRouteTextWithImages:
+    def test_each_crop_gets_llava_call(self):
+        """2 image crops → 2 LLaVA calls, 2 chunks with correct image_index."""
+        router = SmartRouter(_cfg(ollama_vision_model="llava:latest"))
+        page = MagicMock()
+        with patch.object(router, "_extract_image_crops", return_value=[(0, b"img0"), (1, b"img1")]):
+            with patch.object(router, "_call_ollama_vision", return_value="desc") as mock_call:
+                result = router._route(
+                    page, 3, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock()
                 )
-                
-                router.extract_pdf(Path("test.pdf"), progress_callback=progress_cb)
-        
-        # Should have been called for each of 3 pages
-        assert len(progress_calls) == 3
-        assert progress_calls == [(1, 3), (2, 3), (3, 3)]
-    
-    def test_progress_callback_errors_dont_stop(self):
-        """Errors in progress callback don't stop extraction."""
-        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        router = DualExtractionRouter(cfg)
-        
-        mock_doc = MagicMock()
-        mock_doc.__len__ = MagicMock(return_value=2)
-        mock_doc.__iter__ = MagicMock(return_value=iter([MagicMock(), MagicMock()]))
-        
-        def failing_cb(page_num, total):
-            raise Exception("Callback failed")
-        
-        with patch('carta.vision.router.fitz') as mock_fitz:
-            mock_fitz.open.return_value = mock_doc
-            
-            with patch.object(router, 'extract_page') as mock_extract:
-                mock_extract.return_value = ExtractionResult(
-                    text="test", model_used="ocr", content_type="text",
-                    page_num=1, confidence=0.9
+        assert mock_call.call_count == 2
+        assert all(c["model_used"] == "llava" for c in result)
+        assert [c["image_index"] for c in result] == [0, 1]
+
+    def test_no_crops_falls_back_to_full_page_render(self):
+        """No get_images() results (vector graphic) → full-page render + LLaVA."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vector desc") as mock_call:
+                result = router._route(
+                    page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_captions=True), MagicMock()
                 )
-                
-                # Should not raise despite callback error
-                results = router.extract_pdf(Path("test.pdf"), progress_callback=failing_cb)
-        
-        assert len(results) == 2  # Both pages still processed
+        page.get_pixmap.assert_called_once()
+        assert len(result) == 1
+        assert result[0]["text"] == "vector desc"
+
+    def test_llava_failure_per_crop_is_skipped(self):
+        """LLaVA failure on one crop is skipped; others still processed."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        with patch.object(router, "_extract_image_crops", return_value=[(0, b"img0"), (1, b"img1")]):
+            with patch.object(
+                router, "_call_ollama_vision",
+                side_effect=[RuntimeError("timeout"), "second desc"]
+            ):
+                result = router._route(
+                    page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock()
+                )
+        assert len(result) == 1
+        assert result[0]["text"] == "second desc"
 
 
-class TestConvenienceFunction:
-    """Convenience function extract_pdf_with_intelligent_routing."""
-    
-    def test_convenience_function_creates_router(self):
-        """Convenience function creates router and extracts."""
+class TestRouteFlattened:
+    def test_high_ocr_yield_returns_glm_ocr_chunk(self):
+        """GLM-OCR yield ≥ 50 chars → 1 call, model_used=glm-ocr."""
+        router = SmartRouter(_cfg(vision_flattened_min_yield=50))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60) as mock_call:
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        mock_call.assert_called_once()
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_low_ocr_yield_falls_back_to_llava(self):
+        """GLM-OCR yield < 50 → second call with LLaVA model."""
+        router = SmartRouter(_cfg(
+            vision_flattened_min_yield=50,
+            ocr_model="glm-ocr:latest",
+            ollama_vision_model="llava:latest",
+        ))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=["short", "full image description"]
+        ) as mock_call:
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert mock_call.call_count == 2
+        assert "glm" in mock_call.call_args_list[0][1]["model"]
+        assert "llava" in mock_call.call_args_list[1][1]["model"]
+        assert result[0]["model_used"] == "llava"
+
+    def test_vision_failure_returns_empty(self):
+        """Exception on both calls → [] (fail-open)."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", side_effect=RuntimeError("down")):
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_image_crops
+# ---------------------------------------------------------------------------
+
+class TestExtractImageCrops:
+    def test_caps_at_max_images_per_page(self):
+        """5 images on page, max=2 → 2 crops returned."""
+        router = SmartRouter(_cfg(vision_max_images_per_page=2))
+        images = [(i, 0, 100, 100, 8, 0, 0) for i in range(1, 6)]
+        page = MagicMock()
+        page.get_images.return_value = images
+        mock_rect = MagicMock()
+        mock_rect.width = 100
+        mock_rect.height = 100
+        page.get_image_rects.return_value = [mock_rect]
+        mock_pix = MagicMock()
+        mock_pix.tobytes.return_value = b"fakepng"
+        with patch("carta.vision.router.fitz") as mock_fitz:
+            mock_fitz.csRGB = "RGB"
+            mock_fitz.csGRAY = "GRAY"
+            mock_pix.colorspace = "RGB"
+            mock_fitz.Pixmap.return_value = mock_pix
+            crops = router._extract_image_crops(page, MagicMock())
+        assert len(crops) == 2
+
+    def test_no_images_returns_empty(self):
+        """Page with no images → []."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_images.return_value = []
+        assert router._extract_image_crops(page, MagicMock()) == []
+
+
+# ---------------------------------------------------------------------------
+# Chunk output format
+# ---------------------------------------------------------------------------
+
+class TestChunkOutputFormat:
+    def test_required_fields_present(self):
+        """All required chunk fields present and correct."""
+        router = SmartRouter(_cfg())
+        chunk = router._make_chunk(5, 2, "some text", "llava", "text_with_images")
+        assert chunk["doc_type"] == "image_description"
+        assert chunk["page_num"] == 5
+        assert chunk["image_index"] == 2
+        assert chunk["text"] == "some text"
+        assert chunk["model_used"] == "llava"
+        assert chunk["page_class"] == "text_with_images"
+        assert chunk["content_type"] == "text_with_images"
+
+
+# ---------------------------------------------------------------------------
+# _call_ollama_vision
+# ---------------------------------------------------------------------------
+
+class TestCallOllamaVision:
+    def test_returns_stripped_response(self):
+        router = SmartRouter(_cfg())
+        with patch("carta.vision.router.requests") as mock_requests:
+            mock_requests.post.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={"response": "  description  "})
+            )
+            result = router._call_ollama_vision(b"fakepng", model="llava", prompt="describe")
+        assert result == "description"
+
+    def test_raises_on_non_200(self):
+        router = SmartRouter(_cfg())
+        with patch("carta.vision.router.requests") as mock_requests:
+            mock_requests.post.return_value = MagicMock(status_code=503, text="unavailable")
+            with pytest.raises(RuntimeError, match="503"):
+                router._call_ollama_vision(b"fakepng", model="llava", prompt="describe")
+
+
+# ---------------------------------------------------------------------------
+# extract_image_descriptions_intelligent (public API)
+# ---------------------------------------------------------------------------
+
+class TestPublicAPI:
+    def test_pure_text_pdf_produces_no_model_calls(self):
+        """3-page text-only PDF → [] with zero requests.post calls."""
         cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
-        
-        with patch('carta.vision.router.DualExtractionRouter') as mock_router_cls:
-            mock_router = MagicMock()
-            mock_router.extract_pdf.return_value = [
-                ExtractionResult(text="p1", model_used="ocr", content_type="text", page_num=1, confidence=0.9)
-            ]
-            mock_router_cls.return_value = mock_router
-            
-            results = extract_pdf_with_intelligent_routing(Path("test.pdf"), cfg)
-        
-        mock_router_cls.assert_called_once_with(cfg)
-        mock_router.extract_pdf.assert_called_once()
-        assert len(results) == 1
+
+        def make_page():
+            page = MagicMock()
+            page.get_text.side_effect = lambda fmt="text", **kw: (
+                [] if fmt == "blocks" else "x" * 300
+            )
+            page.get_images.return_value = []
+            return page
+
+        with patch("carta.vision.router.fitz") as mock_fitz:
+            doc = MagicMock()
+            doc.__iter__ = MagicMock(return_value=iter([make_page() for _ in range(3)]))
+            doc.__len__ = MagicMock(return_value=3)
+            mock_fitz.open.return_value = doc
+            with patch("carta.vision.router.requests") as mock_requests:
+                result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
+        assert result == []
+        mock_requests.post.assert_not_called()
+
+    def test_returns_list(self):
+        """Always returns a list."""
+        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
+        with patch("carta.vision.router.fitz") as mock_fitz:
+            doc = MagicMock()
+            doc.__iter__ = MagicMock(return_value=iter([]))
+            doc.__len__ = MagicMock(return_value=0)
+            mock_fitz.open.return_value = doc
+            result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
+        assert isinstance(result, list)
