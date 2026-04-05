@@ -13,27 +13,51 @@ CARTA_RUNTIME_SRC = Path(__file__).parent.parent
 VECTOR_DIMENSIONS = {"doc": 768, "session": 768, "quirk": 768}
 
 
+def _is_interactive() -> bool:
+    """Check if running in an interactive terminal (not in tests/CI)."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_user(message: str, default: bool = True) -> bool:
+    """Prompt user for Y/n input, handling non-interactive environments."""
+    if not _is_interactive():
+        return default
+
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    try:
+        response = input(message + suffix).strip().lower()
+    except (EOFError, OSError):
+        # Non-interactive environment (tests, CI)
+        return default
+
+    if default:
+        return response not in ("n", "no", "false")
+    else:
+        return response in ("y", "yes", "true")
+
+
 def run_bootstrap(project_root: Path) -> None:
     """Bootstrap Carta in a project with comprehensive preflight checks."""
     # Phase 0: Run comprehensive preflight checks
     from carta.install.preflight import PreflightChecker
     from carta.install.auto_fix import AutoInstaller
 
+    interactive = _is_interactive()
+
     print("🔍 Running preflight checks...")
-    checker = PreflightChecker(interactive=True, verbose=False)
+    checker = PreflightChecker(interactive=interactive, verbose=False)
     result = checker.run()
 
     # Print report
     result.print_report(verbose=False)
 
     # Handle fixable failures
-    if result.fixable_failures:
+    if result.fixable_failures and interactive:
         print(f"\n🔧 {len(result.fixable_failures)} issue(s) can be auto-fixed.")
 
         # Prompt user for auto-fix
-        response = input("\nAttempt to auto-fix issues? [Y/n]: ").strip().lower()
-        if response not in ("n", "no", "false"):
-            installer = AutoInstaller(interactive=True, verbose=False)
+        if _prompt_user("Attempt to auto-fix issues?", default=True):
+            installer = AutoInstaller(interactive=interactive, verbose=False)
             fixes = installer.fix_all(result)
 
             successful = sum(1 for success in fixes.values() if success)
@@ -44,6 +68,10 @@ def run_bootstrap(project_root: Path) -> None:
                 print("\n🔄 Re-running checks to verify...")
                 result = checker.run()
                 result.print_report(verbose=False)
+    elif result.fixable_failures and not interactive:
+        # In non-interactive mode, print instructions but don't auto-fix
+        print(f"\n🔧 {len(result.fixable_failures)} issue(s) can be auto-fixed.")
+        print("   Run 'carta doctor --fix' to fix automatically.")
 
     # Handle critical failures (block initialization)
     if not result.can_proceed():
