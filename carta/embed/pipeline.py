@@ -111,6 +111,7 @@ def _embed_one_file(
     max_tokens: int,
     overlap_fraction: float,
     verbose: bool = False,
+    progress=None,
 ) -> tuple[int, dict]:
     """Extract, chunk, embed, and upsert a single file.
 
@@ -127,17 +128,23 @@ def _embed_one_file(
     Returns:
         Tuple of (chunk_count: int, sidecar_updates: dict).
     """
-    if verbose:
+    if progress:
+        progress.step(f"extracting {file_path.suffix} text")
+    elif verbose:
         print(f"    extracting {file_path.suffix} text...", flush=True)
     if file_path.suffix == ".md":
         pages, frontmatter_meta = extract_markdown_text(file_path)
     else:
         pages = extract_pdf_text(file_path)
         frontmatter_meta = {}
-    if verbose:
+    if progress:
+        progress.step(f"chunking {len(pages)} page(s)")
+    elif verbose:
         print(f"    extracted {len(pages)} page(s); chunking...", flush=True)
     raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
-    if verbose:
+    if progress:
+        progress.step(f"embedding {len(raw_chunks)} chunks → Qdrant")
+    elif verbose:
         print(f"    built {len(raw_chunks)} chunk(s); embedding + upserting...", flush=True)
 
     slug = file_info.get("slug", file_path.stem)
@@ -164,6 +171,8 @@ def _embed_one_file(
 
         # NEW: ColPali multimodal path for visual pages
         if colpali_enabled:
+            if progress:
+                progress.step("ColPali: embedding visual pages")
             try:
                 visual_pages_count = _embed_visual_pages_colpali(
                     file_path, file_info, cfg, client, repo_root, verbose
@@ -177,6 +186,8 @@ def _embed_one_file(
                 )
 
         # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
+        if progress:
+            progress.step("extracting image descriptions")
         try:
             from carta.vision.router import extract_image_descriptions_intelligent
             img_descs = extract_image_descriptions_intelligent(file_path, cfg)
