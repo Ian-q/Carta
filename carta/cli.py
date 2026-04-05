@@ -77,19 +77,27 @@ def _acquire_embed_lock(lock_path: Path) -> None:
 def cmd_scan(args):
     from carta.config import load_config
     from carta.scanner.scanner import run_scan
+    from carta.ui import Progress
     cfg_path = find_config()
     cfg = load_config(cfg_path)
     if not cfg["modules"].get("doc_audit"):
         print("doc_audit module is disabled in config.", file=sys.stderr)
         sys.exit(1)
     output_path = cfg_path.parent / "scan-results.json"
-    results = run_scan(cfg_path.parent.parent, cfg, output_path=output_path, verbose=True)
+    with Progress() as progress:
+        results = run_scan(
+            cfg_path.parent.parent, cfg,
+            output_path=output_path,
+            verbose=False,
+            progress=progress,
+        )
     issue_count = len(results["issues"])
-    print(f"Scan complete: {issue_count} issue(s). Results at {output_path}")
+    print(f"Results at {output_path}")
 
 def cmd_embed(args):
     from carta.config import load_config
-    from carta.embed.pipeline import run_embed
+    from carta.embed.pipeline import run_embed, discover_pending_files
+    from carta.ui import Progress
 
     cfg_path = find_config()
     cfg = load_config(cfg_path)
@@ -116,8 +124,19 @@ def cmd_embed(args):
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, _signal_handler)
 
-    summary = run_embed(Path.cwd(), cfg, verbose=True)
-    print(f"Embedded: {summary['embedded']}, Skipped: {summary['skipped']}")
+    # Discover pending count upfront so Progress knows the total.
+    # run_embed will also call discover_pending_files internally — that's fine,
+    # it's a cheap filesystem scan.
+    repo_root = cfg_path.parent.parent
+    pending = discover_pending_files(repo_root)
+
+    with Progress(total=len(pending)) as progress:
+        summary = run_embed(repo_root, cfg, verbose=False, progress=progress)
+    progress.summary(
+        embedded=summary["embedded"],
+        skipped=summary["skipped"],
+        errors=len(summary["errors"]),
+    )
     if summary["errors"]:
         sys.exit(1)
 
