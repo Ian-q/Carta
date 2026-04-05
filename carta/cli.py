@@ -218,8 +218,7 @@ def cmd_doctor(args):
     """Run diagnostic checks and optionally auto-fix issues."""
     from carta.install.preflight import PreflightChecker, PreflightResult
     from carta.install.auto_fix import AutoInstaller
-
-    interactive = not args.yes  # --yes flag disables prompts
+    interactive = not (args.yes or args.fix)  # --yes or --fix disables prompts
     checker = PreflightChecker(interactive=interactive, verbose=args.verbose)
     result = checker.run()
 
@@ -229,23 +228,24 @@ def cmd_doctor(args):
     else:
         result.print_report(verbose=args.verbose)
 
-    # Attempt auto-fix if requested
-    if args.fix:
-        if result.fixable_failures:
+    # Offer to fix fixable failures (always interactive, --fix just auto-confirms)
+    if result.fixable_failures:
+        if not args.json:
             print(f"\n🔧 Attempting to fix {len(result.fixable_failures)} issue(s)...")
-            installer = AutoInstaller(interactive=interactive, verbose=args.verbose)
-            fixes = installer.fix_all(result)
+        installer = AutoInstaller(interactive=interactive, verbose=args.verbose)
+        fixes = installer.fix_all(result)
 
-            successful = sum(1 for success in fixes.values() if success)
+        successful = sum(1 for success in fixes.values() if success)
+        if not args.json:
             print(f"\n✅ Fixed: {successful}/{len(fixes)}")
 
-            # Re-run checks to verify fixes
-            if successful > 0 and not args.json:
-                print("\n🔄 Re-running checks to verify fixes...")
-                result = checker.run()
-                result.print_report(verbose=args.verbose)
-        elif not args.json:
-            print("\n✅ No fixable issues found.")
+        # Re-run checks to verify fixes
+        if successful > 0 and not args.json:
+            print("\n🔄 Re-running checks to verify fixes...")
+            result = checker.run()
+            result.print_report(verbose=args.verbose)
+    elif args.fix and not args.json:
+        print("\n✅ No fixable issues found.")
 
     # Exit with error code if critical failures remain
     if not result.can_proceed():
