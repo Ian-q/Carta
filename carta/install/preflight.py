@@ -456,7 +456,7 @@ class PreflightChecker:
                     message="Docker installed but daemon not running",
                     category="infrastructure",
                     fixable=False,
-                    suggestion="Start Docker Desktop (macOS/Windows) or run 'sudo systemctl start docker' (Linux)",
+                    suggestion=self._docker_running_instructions(),
                 )
         except Exception as e:
             return PreflightCheck(
@@ -465,6 +465,20 @@ class PreflightChecker:
                 message=f"Could not check Docker status: {e}",
                 category="infrastructure",
             )
+
+    def _docker_running_instructions(self) -> str:
+        """Return OS-specific instructions for starting Docker daemon."""
+        if self.os_type == "macos":
+            return (
+                "Open the Docker Desktop app first "
+                "(look for the whale icon in your menu bar). "
+                "On macOS, Docker requires the Desktop app to be running."
+            )
+        elif self.os_type == "linux":
+            return "Run: sudo systemctl start docker"
+        elif self.os_type == "windows":
+            return "Start Docker Desktop from the Start menu"
+        return "Start Docker Desktop (macOS/Windows) or run 'sudo systemctl start docker' (Linux)"
 
     def _check_qdrant_running(self, url: str = "http://localhost:6333") -> PreflightCheck:
         """Check Qdrant is running."""
