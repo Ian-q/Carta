@@ -8,6 +8,7 @@ and tests).
 import os
 import sys
 import time
+from typing import Optional
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -41,7 +42,7 @@ class Progress:
         self._idx = 0
         self._name = ""
         self._frame = 0
-        self._start: float = 0.0
+        self._start: Optional[float] = None
         self._tty = sys.stdout.isatty()
         self._no_color = "NO_COLOR" in os.environ
         self._active = False  # True while a \r spinner line is "open"
@@ -75,7 +76,7 @@ class Progress:
         return ch
 
     def _elapsed(self) -> float:
-        return time.monotonic() - self._start if self._start else 0.0
+        return time.monotonic() - self._start if self._start is not None else 0.0
 
     # ------------------------------------------------------------------
     # Embed progress API
@@ -144,8 +145,8 @@ class Progress:
             idx    = self._c(_DIM,  f"{self._idx}/{self._total}")
             name   = self._c(_BOLD, self._name)
             err    = self._c(_RED,  f"ERROR: {msg}")
-            sys.stdout.write(f"{_CLR}{x}  {idx}  {name}  {err}\n")
-            sys.stdout.flush()
+            sys.stderr.write(f"{_CLR}{x}  {idx}  {name}  {err}\n")
+            sys.stderr.flush()
             self._active = False
         else:
             print(
