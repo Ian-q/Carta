@@ -554,7 +554,7 @@ def test_run_embed_qdrant_unreachable(mock_qdrant_cls, tmp_path):
 
 @patch("carta.embed.pipeline.find_config")
 @patch("carta.embed.pipeline.get_embedding")
-@patch("qdrant_client.QdrantClient")
+@patch("carta.embed.pipeline.QdrantClient")
 def test_run_search_returns_hits(mock_qdrant_cls, mock_embed, mock_find_config):
     mock_find_config.return_value = Path("/mock/.carta/config.yaml")
     mock_embed.return_value = [0.1] * 768
@@ -578,7 +578,7 @@ def test_run_search_returns_hits(mock_qdrant_cls, mock_embed, mock_find_config):
 
 @patch("carta.embed.pipeline.find_config")
 @patch("carta.embed.pipeline.get_embedding")
-@patch("qdrant_client.QdrantClient")
+@patch("carta.embed.pipeline.QdrantClient")
 def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed, mock_find_config):
     mock_find_config.return_value = Path("/mock/.carta/config.yaml")
     mock_embed.return_value = [0.0] * 768
@@ -601,7 +601,7 @@ def test_run_search_uses_cfg_collection(mock_qdrant_cls, mock_embed, mock_find_c
 
 @patch("carta.embed.pipeline.find_config")
 @patch("carta.embed.pipeline.get_embedding")
-@patch("qdrant_client.QdrantClient")
+@patch("carta.embed.pipeline.QdrantClient")
 def test_run_search_query_failure_raises(mock_qdrant_cls, mock_embed, mock_find_config):
     """Individual collection failures are swallowed; connection failures raise."""
     mock_find_config.return_value = Path("/mock/.carta/config.yaml")
