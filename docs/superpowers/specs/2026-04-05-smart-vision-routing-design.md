@@ -123,6 +123,16 @@ Existing keys (`ocr_model`, `ollama_vision_model`, `ollama_url`) unchanged. The 
 
 For `TEXT_WITH_IMAGES`, the PyMuPDF text chunk is created by the existing pipeline — vision returns only the image description chunks.
 
+## Known Limitations / Backlog
+
+### Cross-chunk association (TEXT_WITH_IMAGES pages)
+
+For `TEXT_WITH_IMAGES` pages, the pipeline produces two separate chunk types: a PyMuPDF text chunk and one LLaVA image description chunk per crop. Both share `page_num` and `slug` as metadata, so they're associated at query time by filtering — but a semantic search may return one without the other.
+
+Example: a datasheet page has "maximum operating voltage: 3.6V" in the text and a plot showing that limit. A search for "operating voltage" might score the text chunk but not the image description chunk (or vice versa), depending on embedding similarity.
+
+**Fix:** a page-level chunk that concatenates PyMuPDF text + all LLaVA descriptions from the same page into a single embedding. This is a meaningful chunking strategy change and out of scope for this spec. Current behaviour is already a large improvement over running LLaVA on every page. Track as v2.
+
 ## Testing
 
 - Unit tests for `PageAnalyzer.analyze()` covering all four page classes using mock PyMuPDF pages
