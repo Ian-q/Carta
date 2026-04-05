@@ -6,10 +6,54 @@ import stat
 import os
 import yaml
 
+
+def _mock_passing_preflight():
+    """Return a context manager that mocks PreflightChecker with all passing results."""
+    from carta.install.preflight import PreflightResult, PreflightCheck
+
+    def create_passing_result():
+        """Create a PreflightResult with all critical checks passing."""
+        checks = [
+            PreflightCheck("python_version", "pass", "Python 3.11.0 (supported)", "environment"),
+            PreflightCheck("pip_availability", "pass", "pip available", "environment"),
+            PreflightCheck("virtual_environment", "pass", "Running in virtual environment", "environment"),
+            PreflightCheck("network_connectivity", "pass", "Network connectivity OK", "environment"),
+            PreflightCheck("docker_installed", "pass", "Docker installed", "infrastructure"),
+            PreflightCheck("docker_running", "pass", "Docker daemon running", "infrastructure"),
+            PreflightCheck("qdrant_running", "pass", "Qdrant ready at http://localhost:6333", "infrastructure"),
+            PreflightCheck("ollama_installed", "pass", "Ollama installed", "infrastructure"),
+            PreflightCheck("ollama_running", "pass", "Ollama server running", "infrastructure"),
+            PreflightCheck("ports_available", "pass", "Required ports available", "infrastructure"),
+        ]
+        return PreflightResult(checks)
+
+    return patch("carta.install.preflight.PreflightChecker.run", return_value=create_passing_result())
+
+
+def _mock_unavailable_qdrant_preflight():
+    """Return a context manager that mocks PreflightChecker with Qdrant unavailable (warning, not blocking)."""
+    from carta.install.preflight import PreflightResult, PreflightCheck
+
+    def create_warning_result():
+        """Create a PreflightResult with Qdrant unavailable as warning (not critical failure)."""
+        checks = [
+            PreflightCheck("python_version", "pass", "Python 3.11.0 (supported)", "environment"),
+            PreflightCheck("pip_availability", "pass", "pip available", "environment"),
+            PreflightCheck("virtual_environment", "pass", "Running in virtual environment", "environment"),
+            PreflightCheck("network_connectivity", "pass", "Network connectivity OK", "environment"),
+            PreflightCheck("docker_installed", "warn", "Docker not installed (optional but recommended)", "infrastructure", fixable=False),
+            PreflightCheck("qdrant_running", "warn", "Qdrant not running", "infrastructure", fixable=False),
+            PreflightCheck("ollama_installed", "warn", "Ollama not found (optional)", "infrastructure", fixable=False),
+            PreflightCheck("ports_available", "pass", "Required ports available", "infrastructure"),
+        ]
+        return PreflightResult(checks)
+
+    return patch("carta.install.preflight.PreflightChecker.run", return_value=create_warning_result())
+
+
 def test_bootstrap_creates_carta_dir(tmp_path):
     from carta.install.bootstrap import run_bootstrap
-    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+    with _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._create_qdrant_collections"):
         run_bootstrap(tmp_path)
@@ -18,8 +62,7 @@ def test_bootstrap_creates_carta_dir(tmp_path):
 
 def test_bootstrap_config_has_all_fields(tmp_path):
     from carta.install.bootstrap import run_bootstrap
-    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+    with _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._create_qdrant_collections"):
         run_bootstrap(tmp_path)
@@ -32,33 +75,33 @@ def test_bootstrap_config_has_all_fields(tmp_path):
     assert "cross_project_recall" in cfg, "cross_project_recall block missing"
     assert "contradiction_types" in cfg, "contradiction_types missing"
 
+
 def test_bootstrap_updates_gitignore(tmp_path):
     (tmp_path / ".gitignore").write_text("node_modules/\n")
     from carta.install.bootstrap import run_bootstrap
-    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+    with _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._create_qdrant_collections"):
         run_bootstrap(tmp_path)
     content = (tmp_path / ".gitignore").read_text()
     assert ".carta/scan-results.json" in content
 
+
 def test_bootstrap_appends_claude_md(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# My Project\n")
     from carta.install.bootstrap import run_bootstrap
-    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+    with _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._create_qdrant_collections"):
         run_bootstrap(tmp_path)
     content = (tmp_path / "CLAUDE.md").read_text()
     assert "Carta is active" in content
 
+
 def test_bootstrap_creates_namespaced_collections(tmp_path):
     from carta.install.bootstrap import run_bootstrap
     mock_create = MagicMock()
-    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+    with _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._create_qdrant_collections", mock_create):
         run_bootstrap(tmp_path)
@@ -76,14 +119,13 @@ def test_create_qdrant_collections_uses_namespaced_names():
     assert any("my-project_quirk" in url for url in called_urls)
 
 def test_bootstrap_continues_if_qdrant_unavailable(tmp_path):
-    """bootstrap should warn and continue (not exit) when Qdrant is unreachable."""
+    """bootstrap should warn and continue (not exit) when Qdrant is unreachable but not critically failing."""
     from carta.install.bootstrap import run_bootstrap
-    with patch("carta.install.bootstrap._check_qdrant", return_value=False), \
+    with _mock_unavailable_qdrant_preflight(), \
          patch("carta.install.bootstrap._remove_plugin_cache", return_value=True), \
          patch("carta.install.bootstrap._create_qdrant_collections", return_value=True), \
          patch("carta.install.bootstrap._update_gitignore"), \
-         patch("carta.install.bootstrap._create_mcp_configs"), \
-         patch("carta.install.bootstrap._write_config"):
+         patch("carta.install.bootstrap._create_mcp_configs"):
         try:
             run_bootstrap(tmp_path)
         except SystemExit as e:
@@ -95,8 +137,7 @@ def test_bootstrap_uses_qdrant_url_from_env(tmp_path):
 
     custom_url = "http://qdrant.example:7000"
     with patch.dict(os.environ, {"CARTA_QDRANT_URL": custom_url}, clear=False), \
-         patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+         _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._update_gitignore"), \
          patch("carta.install.bootstrap._append_claude_md"), \
@@ -115,8 +156,7 @@ def test_bootstrap_uses_qdrant_url_from_env(tmp_path):
 def test_bootstrap_copytree_ignores_non_runtime_artifacts(tmp_path):
     from carta.install.bootstrap import run_bootstrap
 
-    with patch("carta.install.bootstrap._check_qdrant", return_value=True), \
-         patch("carta.install.bootstrap._check_ollama", return_value=True), \
+    with _mock_passing_preflight(), \
          patch("carta.install.bootstrap._register_hooks"), \
          patch("carta.install.bootstrap._create_qdrant_collections"), \
          patch("carta.install.bootstrap._update_gitignore"), \
