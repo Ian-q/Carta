@@ -69,7 +69,7 @@ class TestPlainMode:
         p = make_plain(total=3)
         p.summary(embedded=1, skipped=0, errors=2)
         captured = capsys.readouterr()
-        assert "2" in captured.out  # errors count
+        assert "Errors: 2" in captured.out
 
     def test_scan_step_prints_message(self, capsys):
         p = make_plain(total=0)
@@ -81,7 +81,7 @@ class TestPlainMode:
         p = make_plain(total=0)
         p.scan_done(elapsed=0.8, issue_count=5)
         captured = capsys.readouterr()
-        assert "5" in captured.out
+        assert "5 issue" in captured.out
 
     def test_context_manager_enters_and_exits(self):
         p = make_plain(total=1)
