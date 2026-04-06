@@ -57,7 +57,7 @@ def _is_cache_stale(cache: dict) -> bool:
         return True
     try:
         return datetime.now(timezone.utc).replace(tzinfo=None) - datetime.fromisoformat(checked_at) > timedelta(hours=CHECK_INTERVAL_HOURS)
-    except ValueError:
+    except (ValueError, TypeError):
         return True
 
 
