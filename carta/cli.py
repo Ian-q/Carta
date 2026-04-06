@@ -182,7 +182,7 @@ def cmd_update(args):
     from carta.update.updater import run_update, print_check
     if args.check:
         print_check()
-        return
+        sys.exit(0)
     code = run_update(yes=args.yes)
     sys.exit(code)
 
