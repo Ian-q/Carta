@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -32,13 +32,13 @@ def test_is_cache_stale_true_when_empty():
 
 def test_is_cache_stale_true_when_old(tmp_path):
     from carta.update.checker import _is_cache_stale
-    old_dt = (datetime.utcnow() - timedelta(hours=25)).isoformat()
+    old_dt = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=25)).isoformat()
     assert _is_cache_stale({"checked_at": old_dt}) is True
 
 
 def test_is_cache_stale_false_when_fresh():
     from carta.update.checker import _is_cache_stale
-    fresh_dt = datetime.utcnow().isoformat()
+    fresh_dt = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     assert _is_cache_stale({"checked_at": fresh_dt}) is False
 
 
@@ -68,7 +68,7 @@ def test_check_for_update_returns_none_when_already_notified(tmp_path):
     carta_dir = tmp_path / ".carta"
     carta_dir.mkdir()
     cache = {
-        "checked_at": datetime.utcnow().isoformat(),
+        "checked_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         "latest": "0.4.0",
         "notified": "0.4.0",
     }
@@ -83,7 +83,7 @@ def test_check_for_update_uses_fresh_cache(tmp_path):
     carta_dir = tmp_path / ".carta"
     carta_dir.mkdir()
     cache = {
-        "checked_at": datetime.utcnow().isoformat(),
+        "checked_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         "latest": "0.4.0",
         "notified": "",
     }
