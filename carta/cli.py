@@ -20,6 +20,16 @@ from carta import __version__
 from carta.config import find_config
 
 
+def _notify_if_update(cfg_path=None, cfg=None):
+    """Call maybe_notify if we have a config context. Silently skips on error."""
+    try:
+        from carta.update.checker import maybe_notify
+        carta_dir = cfg_path.parent if cfg_path else None
+        maybe_notify(carta_dir, cfg or {})
+    except Exception:
+        pass
+
+
 def _embed_lock_read_pid(lock_path: Path):
     try:
         return int(lock_path.read_text().strip())
@@ -93,6 +103,7 @@ def cmd_scan(args):
         )
     issue_count = len(results["issues"])
     print(f"Results at {output_path}")
+    _notify_if_update(cfg_path, cfg)
 
 def cmd_embed(args):
     from carta.config import load_config
@@ -137,12 +148,14 @@ def cmd_embed(args):
         skipped=summary["skipped"],
         errors=len(summary["errors"]),
     )
+    _notify_if_update(cfg_path, cfg)
     if summary["errors"]:
         sys.exit(1)
 
 def cmd_search(args):
     from carta.config import load_config
-    cfg = load_config(find_config())
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
     if not cfg["modules"].get("doc_search"):
         print("doc_search module is disabled in config.", file=sys.stderr)
         sys.exit(1)
@@ -158,9 +171,11 @@ def cmd_search(args):
             "No results found. If nothing is embedded yet, run `carta embed` first; "
             "otherwise try different wording."
         )
+        _notify_if_update(cfg_path, cfg)
         return
     for r in results:
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
+    _notify_if_update(cfg_path, cfg)
 
 def _platformio_carta_paths_on_path() -> list[Path]:
     found: list[Path] = []
@@ -213,6 +228,7 @@ def cmd_init(args):
     _check_path_conflict()
     from carta.install.bootstrap import run_bootstrap
     run_bootstrap(Path.cwd())
+    _notify_if_update()
 
 def cmd_doctor(args):
     """Run diagnostic checks and optionally auto-fix issues."""
@@ -252,8 +268,10 @@ def cmd_doctor(args):
         if not args.json:
             installer = AutoInstaller(interactive=False)
             installer.print_setup_guide(result)
+        _notify_if_update()
         sys.exit(1)
 
+    _notify_if_update()
     sys.exit(0)
 
 def main():
