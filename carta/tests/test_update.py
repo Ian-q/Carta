@@ -216,3 +216,38 @@ def test_print_check_shows_up_to_date(capsys):
          patch("carta.update.updater._installed_version", return_value="0.3.5"):
         print_check()
     assert "up to date" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# cmd_update CLI integration tests
+# ---------------------------------------------------------------------------
+import subprocess as _subprocess
+import sys as _sys
+import os as _os
+from pathlib import Path as _Path
+
+
+def _run_carta(args, cwd=None):
+    repo_root = _Path(__file__).resolve().parents[2]
+    env = _os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(repo_root) if not existing else f"{repo_root}{_os.pathsep}{existing}"
+    return _subprocess.run(
+        [_sys.executable, "-m", "carta.cli"] + args,
+        capture_output=True, text=True,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+    )
+
+
+def test_update_subcommand_exists():
+    result = _run_carta(["update", "--help"])
+    assert result.returncode == 0
+    assert "--check" in result.stdout or "check" in result.stdout
+
+
+def test_update_check_flag_exits_zero_and_prints_version():
+    result = _run_carta(["update", "--check"])
+    assert result.returncode == 0
+    # Should print either "up to date" or an available version string
+    assert result.stdout.strip() != ""

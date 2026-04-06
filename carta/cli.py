@@ -177,6 +177,16 @@ def cmd_search(args):
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
     _notify_if_update(cfg_path, cfg)
 
+def cmd_update(args):
+    """Check for and apply carta updates."""
+    from carta.update.updater import run_update, print_check
+    if args.check:
+        print_check()
+        return
+    code = run_update(yes=args.yes)
+    sys.exit(code)
+
+
 def _platformio_carta_paths_on_path() -> list[Path]:
     found: list[Path] = []
     for d in os.environ.get("PATH", "").split(os.pathsep):
@@ -293,9 +303,20 @@ def main():
     search_p = sub.add_parser("search")
     search_p.add_argument("query", nargs="+")
 
+    update_p = sub.add_parser("update", help="Update carta to the latest version")
+    update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")
+    update_p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+
     args = parser.parse_args()
 
-    dispatch = {"init": cmd_init, "scan": cmd_scan, "embed": cmd_embed, "search": cmd_search, "doctor": cmd_doctor}
+    dispatch = {
+        "init": cmd_init,
+        "scan": cmd_scan,
+        "embed": cmd_embed,
+        "search": cmd_search,
+        "doctor": cmd_doctor,
+        "update": cmd_update,
+    }
 
     if args.command not in dispatch:
         parser.print_help()
