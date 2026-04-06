@@ -77,6 +77,7 @@ DEFAULTS = {
         "session_memory": True,
         "proactive_recall": True,
     },
+    "update_check": True,
 }
 
 

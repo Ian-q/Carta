@@ -88,3 +88,18 @@ class TestVisionThresholdDefaults:
     def test_vision_max_images_per_page_default(self):
         from carta.config import DEFAULTS
         assert DEFAULTS["embed"]["vision_max_images_per_page"] == 4
+
+
+def test_update_check_defaults_to_true(tmp_path):
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump(MINIMAL_CONFIG))
+    cfg = load_config(cfg_path)
+    assert cfg["update_check"] is True
+
+
+def test_update_check_can_be_disabled(tmp_path):
+    config = {**MINIMAL_CONFIG, "update_check": False}
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump(config))
+    cfg = load_config(cfg_path)
+    assert cfg["update_check"] is False
