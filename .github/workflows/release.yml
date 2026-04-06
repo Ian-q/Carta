@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    name: Sync versions, build, and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Parse tag version
+        id: tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG  →  Version: $VERSION"
+
+      - name: Update version numbers
+        id: bump
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import re, os, sys
+
+          version = os.environ["VERSION"]
+          changed = []
+
+          # carta/__init__.py
+          path = "carta/__init__.py"
+          with open(path) as f:
+              old = f.read()
+          new = re.sub(r'__version__ = "[^"]*"', f'__version__ = "{version}"', old)
+          if new != old:
+              with open(path, "w") as f:
+                  f.write(new)
+              changed.append(path)
+
+          # .claude-plugin/plugin.json
+          path = ".claude-plugin/plugin.json"
+          with open(path) as f:
+              old = f.read()
+          new = re.sub(r'"version":\s*"[^"]*"', f'"version": "{version}"', old)
+          if new != old:
+              with open(path, "w") as f:
+                  f.write(new)
+              changed.append(path)
+
+          # .claude-plugin/marketplace.json
+          path = ".claude-plugin/marketplace.json"
+          with open(path) as f:
+              old = f.read()
+          new = re.sub(r'"version":\s*"[^"]*"', f'"version": "{version}"', old)
+          if new != old:
+              with open(path, "w") as f:
+                  f.write(new)
+              changed.append(path)
+
+          if changed:
+              print(f"Updated: {', '.join(changed)}")
+          else:
+              print("Versions already in sync.")
+          EOF
+
+      - name: Commit and push version bumps
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add carta/__init__.py .claude-plugin/plugin.json .claude-plugin/marketplace.json
+          if git diff --staged --quiet; then
+            echo "Versions already in sync — no commit needed."
+          else
+            git commit -m "chore: sync version to ${VERSION}"
+            git push origin HEAD:main
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build distribution
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          pip install twine
+          twine upload dist/*
