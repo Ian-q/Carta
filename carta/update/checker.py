@@ -1,5 +1,7 @@
 import json
-from datetime import datetime, timedelta
+import re
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -29,13 +31,17 @@ def _fetch_latest(timeout: float = 2.0) -> Optional[str]:
 def _read_cache(carta_dir: Path) -> dict:
     try:
         return json.loads((carta_dir / CACHE_FILENAME).read_text())
-    except Exception:
+    except OSError:
+        return {}
+    except json.JSONDecodeError:
+        print(f"Warning: corrupt update cache at {carta_dir / CACHE_FILENAME}, ignoring.", file=sys.stderr)
         return {}
 
 
 def _write_cache(carta_dir: Path, latest: str, notified: str) -> None:
+    """Write update check result to cache file. Silently ignores OSError (e.g. read-only fs)."""
     data = {
-        "checked_at": datetime.utcnow().isoformat(),
+        "checked_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         "latest": latest,
         "notified": notified,
     }
@@ -50,14 +56,14 @@ def _is_cache_stale(cache: dict) -> bool:
     if not checked_at:
         return True
     try:
-        return datetime.utcnow() - datetime.fromisoformat(checked_at) > timedelta(hours=CHECK_INTERVAL_HOURS)
+        return datetime.now(timezone.utc).replace(tzinfo=None) - datetime.fromisoformat(checked_at) > timedelta(hours=CHECK_INTERVAL_HOURS)
     except ValueError:
         return True
 
 
 def _version_tuple(v: str) -> tuple:
     try:
-        return tuple(int(x) for x in v.split("."))
+        return tuple(int(re.match(r"(\d+)", part).group(1)) for part in v.split(".") if re.match(r"\d", part))
     except (ValueError, AttributeError):
         return (0,)
 
@@ -67,6 +73,12 @@ def check_for_update(carta_dir: Optional[Path]) -> Optional[str]:
 
     Reads cache from carta_dir if provided. Re-fetches PyPI if cache is stale (>24h).
     Returns None if already up-to-date, PyPI unreachable, or this version was already notified.
+
+    When carta_dir is None there is no project directory available, so no cache is read or
+    written. This means the "already notified" guard cannot persist between calls — every
+    call with carta_dir=None that finds a newer version will return a notification string.
+    This is intentional: the caller has no project dir, so persistent suppression is not
+    possible.
     """
     installed = _installed_version()
     cache = _read_cache(carta_dir) if carta_dir else {}
