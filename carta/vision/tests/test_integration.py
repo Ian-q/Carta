@@ -51,11 +51,13 @@ class TestSmartRoutingIntegration:
             mock_fitz.open.return_value = doc
 
             with patch("carta.vision.router.requests") as mock_requests:
-                # GLM-OCR returns enough text on flattened page
-                mock_requests.post.return_value = MagicMock(
-                    status_code=200,
-                    json=MagicMock(return_value={"response": "x" * 60})
-                )
+                # GLM-OCR returns enough text on flattened page (streaming format)
+                mock_resp = MagicMock(status_code=200)
+                mock_resp.iter_lines.return_value = iter([
+                    b'{"response": "' + b'x' * 60 + b'", "done": false}',
+                    b'{"response": "", "done": true}',
+                ])
+                mock_requests.post.return_value = mock_resp
                 result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
 
         # 2 pure-text pages → 0 calls; 1 flattened → 1 GLM-OCR call
@@ -86,10 +88,12 @@ class TestSmartRoutingIntegration:
             mock_fitz.open.return_value = doc
 
             with patch("carta.vision.router.requests") as mock_requests:
-                mock_requests.post.return_value = MagicMock(
-                    status_code=200,
-                    json=MagicMock(return_value={"response": "x" * 60})
-                )
+                mock_resp = MagicMock(status_code=200)
+                mock_resp.iter_lines.return_value = iter([
+                    b'{"response": "' + b'x' * 60 + b'", "done": false}',
+                    b'{"response": "", "done": true}',
+                ])
+                mock_requests.post.return_value = mock_resp
                 result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
 
         assert len(result) == 1
