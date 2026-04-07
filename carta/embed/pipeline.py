@@ -3,6 +3,7 @@
 import concurrent.futures
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Filter
 
 from carta.config import collection_name, find_config
-from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text
+from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding, upsert_visual_pages
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
@@ -102,6 +103,27 @@ def discover_stale_files(repo_root: Path) -> list[Path]:
     return results
 
 
+def _split_vision_text(text: str, max_tokens: int) -> list[str]:
+    """Split oversized vision chunk text into word-window parts.
+
+    GLM-OCR can produce very large extractions from dense table pages. Rather
+    than truncating (losing data) or sending the full blob to Ollama (triggering
+    retry loops), split into multiple chunks of <= max_tokens each.
+
+    Args:
+        text: The extracted vision text.
+        max_tokens: Target max tokens per chunk (uses same estimate as chunk_text).
+
+    Returns:
+        List of text parts; length 1 if text fits in one chunk.
+    """
+    if _estimate_tokens(text) <= max_tokens:
+        return [text]
+    word_limit = max(1, int(max_tokens / 1.3))
+    words = text.split()
+    return [" ".join(words[i:i + word_limit]) for i in range(0, len(words), word_limit)]
+
+
 def _embed_one_file(
     file_path: Path,
     file_info: dict,
@@ -112,6 +134,7 @@ def _embed_one_file(
     overlap_fraction: float,
     verbose: bool = False,
     progress=None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> tuple[int, dict]:
     """Extract, chunk, embed, and upsert a single file.
 
@@ -214,25 +237,27 @@ def _embed_one_file(
         try:
             from carta.vision.router import extract_image_descriptions_intelligent
             img_descs = extract_image_descriptions_intelligent(
-                file_path, cfg, progress_callback=_vision_callback
+                file_path, cfg, progress_callback=_vision_callback,
+                cancel_event=cancel_event,
             )
             image_count = len(img_descs)
 
             if img_descs:
                 image_chunks = []
                 for desc in img_descs:
-                    image_chunks.append({
-                        "slug": slug,
-                        "file_path": str(file_path.relative_to(repo_root)),
-                        "doc_type": "image_description",
-                        "page_num": desc["page_num"],
-                        "image_index": desc["image_index"],
-                        "chunk_index": len(raw_chunks) + len(image_chunks),
-                        "text": desc["text"],
-                        # Phase 999.4: extraction provenance
-                        "model_used": desc.get("model_used", "llava"),
-                        "content_type": desc.get("content_type", "visual"),
-                    })
+                    for part_text in _split_vision_text(desc["text"], max_tokens):
+                        image_chunks.append({
+                            "slug": slug,
+                            "file_path": str(file_path.relative_to(repo_root)),
+                            "doc_type": "image_description",
+                            "page_num": desc["page_num"],
+                            "image_index": desc["image_index"],
+                            "chunk_index": len(raw_chunks) + len(image_chunks),
+                            "text": part_text,
+                            # Phase 999.4: extraction provenance
+                            "model_used": desc.get("model_used", "llava"),
+                            "content_type": desc.get("content_type", "visual"),
+                        })
                 image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                 if verbose:
                     print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
@@ -684,50 +709,57 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
         t0 = time.monotonic()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _embed_one_file,
-                file_path, file_info, cfg, client, repo_root,
-                max_tokens, overlap_fraction, verbose, progress,
+        cancel_event = threading.Event()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(
+            _embed_one_file,
+            file_path, file_info, cfg, client, repo_root,
+            max_tokens, overlap_fraction, verbose, progress,
+            cancel_event,
+        )
+        try:
+            count, sidecar_updates = future.result(timeout=file_timeout_s)
+            executor.shutdown(wait=False)
+            vision_events = sidecar_updates.pop("_vision_events", [])
+            _update_sidecar(sidecar_path, sidecar_updates)
+            elapsed = time.monotonic() - t0
+            if progress:
+                progress.done(chunks=count, elapsed=elapsed)
+                if vision_events:
+                    progress.vision_done(vision_events)
+            elif verbose:
+                print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
+            summary["embedded"] += 1
+        except concurrent.futures.TimeoutError:
+            cancel_event.set()
+            executor.shutdown(wait=False)
+            if progress:
+                progress.skip(f"timeout after {file_timeout_s}s")
+            elif verbose:
+                print(
+                    f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {file_timeout_s}s -- skipping",
+                    flush=True,
+                )
+            print(
+                f"  TIMEOUT: {file_path.name} exceeded {file_timeout_s}s",
+                file=sys.stderr, flush=True,
             )
-            try:
-                count, sidecar_updates = future.result(timeout=file_timeout_s)
-                vision_events = sidecar_updates.pop("_vision_events", [])
-                _update_sidecar(sidecar_path, sidecar_updates)
-                elapsed = time.monotonic() - t0
-                if progress:
-                    progress.done(chunks=count, elapsed=elapsed)
-                    if vision_events:
-                        progress.vision_done(vision_events)
-                elif verbose:
-                    print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-                summary["embedded"] += 1
-            except concurrent.futures.TimeoutError:
-                if progress:
-                    progress.skip(f"timeout after {file_timeout_s}s")
-                elif verbose:
-                    print(
-                        f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {file_timeout_s}s -- skipping",
-                        flush=True,
-                    )
-                print(
-                    f"  TIMEOUT: {file_path.name} exceeded {file_timeout_s}s",
-                    file=sys.stderr, flush=True,
-                )
-                summary["skipped"] += 1
-            except Exception as e:
-                elapsed = time.monotonic() - t0
-                if progress:
-                    progress.error(str(e))
-                print(
-                    f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}",
-                    file=sys.stderr, flush=True,
-                )
-                summary["errors"].append(f"Error processing {file_path.name}: {e}")
+            summary["skipped"] += 1
+        except Exception as e:
+            cancel_event.set()
+            executor.shutdown(wait=False)
+            elapsed = time.monotonic() - t0
+            if progress:
+                progress.error(str(e))
+            print(
+                f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}",
+                file=sys.stderr, flush=True,
+            )
+            summary["errors"].append(f"Error processing {file_path.name}: {e}")
 
     # Emit stale alert after embed loop
-    stale_count = summary["embedded"]  # Files with status="stale" are those that had content changes
-    total_count = summary["embedded"] + summary["skipped"]
+    stale_count = len(discover_stale_files(repo_root))
+    total_count = summary["embedded"] + summary["skipped"] + stale_count
     threshold = cfg.get("embed", {}).get("stale_alert_threshold", 0.30)
     alert_msg = check_stale_alert(stale_count, total_count, threshold)
     if alert_msg:

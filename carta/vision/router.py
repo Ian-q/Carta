@@ -6,6 +6,7 @@ PageAnalyzer classification. PURE_TEXT pages produce zero model calls.
 import base64
 import json
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -64,6 +65,7 @@ class SmartRouter:
         self,
         pdf_path: Path,
         progress_callback: Optional[Any] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> list[dict]:
         """Extract vision chunks from all pages of a PDF.
 
@@ -91,6 +93,8 @@ class SmartRouter:
         results = []
         total_pages = len(doc)
         for page_num, page in enumerate(doc, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                break
             profile = self.analyzer.analyze(page)
             chunks = self._route(page, page_num, profile, doc)
             results.extend(chunks)
@@ -293,6 +297,7 @@ def extract_image_descriptions_intelligent(
     pdf_path: Path,
     cfg: dict,
     progress_callback: Optional[Any] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> list[dict]:
     """Extract image descriptions from PDF using smart page routing.
 
@@ -306,10 +311,11 @@ def extract_image_descriptions_intelligent(
                            page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
                            model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                            char_count: total chars extracted for this page; 0 for skipped pages.
+        cancel_event: Optional threading.Event; if set, stops page iteration early.
 
     Returns:
         List of dicts with keys: doc_type, page_num, image_index, text,
         model_used, page_class.
     """
     router = SmartRouter(cfg)
-    return router.extract_pdf(pdf_path, progress_callback)
+    return router.extract_pdf(pdf_path, progress_callback, cancel_event)
