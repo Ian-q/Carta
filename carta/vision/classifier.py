@@ -53,6 +53,7 @@ class PageAnalyzer:
         embed = cfg.get("embed", {})
         self.text_min: int = embed.get("vision_text_min_chars", 150)
         self.text_max: int = embed.get("vision_text_max_chars", 600)
+        self.image_min_area_fraction: float = embed.get("vision_image_min_area_fraction", 0.05)
 
     def analyze(self, page: Any) -> PageProfile:
         """Return a PageProfile for *page*.
@@ -65,7 +66,7 @@ class PageAnalyzer:
         """
         text = page.get_text().strip()
         text_length = len(text)
-        has_images = bool(page.get_images())
+        has_images = self._has_significant_images(page)
         has_tables = self._detect_tables(page)
         has_captions = bool(FIGURE_CAPTION_RE.search(text))
         page_class = self._classify(text_length, has_images, has_tables, has_captions)
@@ -91,6 +92,41 @@ class PageAnalyzer:
         if has_images or (has_captions and text_length < self.text_max):
             return PageClass.TEXT_WITH_IMAGES
         return PageClass.PURE_TEXT
+
+    def _has_significant_images(self, page: Any) -> bool:
+        """Return True if the page has at least one image above the minimum area threshold.
+
+        Tiny decorative images (logos, watermarks, icons) are excluded.
+        Falls back to True if page geometry is unavailable, so real diagrams are never missed.
+
+        Args:
+            page: PyMuPDF fitz.Page object.
+
+        Returns:
+            bool.
+        """
+        images = page.get_images()
+        if not images:
+            return False
+        try:
+            r = page.rect
+            page_area = abs(r.width * r.height)
+        except Exception:
+            return True  # Can't measure page size — treat all images as significant
+        if page_area == 0:
+            return bool(images)
+        min_area = page_area * self.image_min_area_fraction
+        for img in images:
+            xref = img[0]
+            try:
+                rects = page.get_image_rects(xref)
+                if rects:
+                    ir = rects[0]
+                    if abs(ir.width * ir.height) >= min_area:
+                        return True
+            except Exception:
+                return True  # Can't measure image size — treat as significant
+        return False
 
     def _detect_tables(self, page: Any) -> bool:
         """Detect table structures via column-alignment heuristic."""
