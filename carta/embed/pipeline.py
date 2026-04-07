@@ -602,6 +602,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     )
     # Merge lifecycle updates with embedding updates
     sidecar_updates.update(lifecycle_updates)
+    sidecar_updates.pop("_vision_events", None)  # temp key — never written to sidecar
     _update_sidecar(sidecar_path, sidecar_updates)
     return {"status": "ok", "chunks": count}
 

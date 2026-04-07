@@ -738,7 +738,7 @@ class TestVisionProgressWiring:
         mock_progress.vision_done.assert_called_once_with(vision_events)
 
     def test_vision_done_not_called_when_events_empty(self, tmp_path):
-        """progress.vision_done() is NOT called when no _vision_events key present."""
+        """progress.vision_done() is NOT called when events list is empty or absent."""
         from carta.embed.pipeline import run_embed
         from unittest.mock import patch, Mock, MagicMock
 
@@ -783,3 +783,55 @@ class TestVisionProgressWiring:
             run_embed(repo_root, cfg, progress=mock_progress)
 
         mock_progress.vision_done.assert_not_called()
+
+    def test_run_embed_file_does_not_write_vision_events_to_sidecar(self, tmp_path):
+        """_vision_events must not appear in sidecar when using run_embed_file()."""
+        from carta.embed.pipeline import run_embed_file
+        from unittest.mock import patch, Mock
+        import yaml
+
+        repo_root = tmp_path
+        carta_dir = repo_root / ".carta"
+        carta_dir.mkdir()
+
+        cfg = {
+            "project_name": "test-proj",
+            "docs_root": "docs",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "chunking": {"max_tokens": 400, "overlap_fraction": 0.15},
+                "stale_alert_threshold": 0.30,
+                "max_generations": 2,
+            },
+        }
+
+        pdf = self._make_pdf(tmp_path)
+        sidecar_path = pdf.parent / (pdf.stem + ".embed-meta.yaml")
+
+        with open(sidecar_path, "w") as f:
+            yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
+                       "file_type": "pdf", "current_path": "docs/test.pdf",
+                       "generation": 0, "version_history": []}, f)
+
+        written_data = {}
+
+        def fake_update_sidecar(path, updates):
+            written_data.update(updates)
+
+        mock_client = Mock()
+
+        with patch("carta.embed.pipeline.find_config", return_value=repo_root / ".carta" / "config.yaml"), \
+             patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline._update_sidecar", side_effect=fake_update_sidecar), \
+             patch("carta.embed.pipeline._embed_one_file", return_value=(
+                 3,
+                 {"status": "embedded", "chunk_count": 3, "_vision_events": [
+                     {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0}
+                 ]},
+             )):
+            run_embed_file(pdf, cfg, force=True)
+
+        assert "_vision_events" not in written_data
