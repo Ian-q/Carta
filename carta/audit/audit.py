@@ -138,15 +138,42 @@ def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: di
     """Detect chunks in Qdrant with no matching sidecar on disk.
 
     Args:
-        client: Connected Qdrant client
-        cfg: Carta config dict
+        client: Qdrant client (for fetching chunk text if needed)
+        cfg: Config dict
         sidecar_registry: Registry of sidecars from _build_sidecar_registry
         qdrant_index: Chunk index from _build_qdrant_chunk_index
 
     Returns:
         List of issue dicts with category="orphaned_chunks"
     """
-    pass
+    issues = []
+
+    for sidecar_id, chunks in qdrant_index.items():
+        if sidecar_id not in sidecar_registry:
+            # Orphaned: chunks exist but no sidecar
+            chunk_ids = [c["id"] for c in chunks]
+
+            # Get first chunk's text for preview
+            first_text = ""
+            if chunks and chunks[0].get("payload", {}).get("text"):
+                first_text = chunks[0]["payload"]["text"][:100]
+
+            issue = {
+                "id": f"orphaned_{sidecar_id[:8]}",
+                "category": "orphaned_chunks",
+                "severity": "warning",
+                "sidecar_id": sidecar_id,
+                "chunk_ids": chunk_ids,
+                "chunk_count": len(chunks),
+                "first_chunk_text": first_text,
+                "metadata": {
+                    "doc_type": chunks[0].get("payload", {}).get("doc_type", "unknown") if chunks else "unknown",
+                    "collection": f"{cfg.get('project_name', 'unknown')}_doc"
+                }
+            }
+            issues.append(issue)
+
+    return issues
 
 
 def detect_missing_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
