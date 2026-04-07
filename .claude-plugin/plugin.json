@@ -1,6 +1,6 @@
 {
   "name": "carta-cc",
-  "version": "0.3.2",
+  "version": "0.3.7",
   "description": "Maps, connects, and remembers your documentation. Structural scanning, LLM semantic audit, Qdrant embedding, and semantic search.",
   "author": {
     "name": "Ian",
