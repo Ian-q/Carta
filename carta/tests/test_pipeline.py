@@ -624,3 +624,162 @@ class TestRunSearch:
             results = run_search("test query", cfg)
 
         assert results == []
+
+
+class TestVisionProgressWiring:
+    """Verify _vision_callback is passed and _vision_events are handled correctly."""
+
+    def _make_pdf(self, tmp_path: Path) -> Path:
+        """Create a minimal PDF-like file (just needs .pdf extension for pipeline routing)."""
+        p = tmp_path / "docs" / "test.pdf"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"%PDF-1.4 fake")
+        return p
+
+    def test_vision_events_not_written_to_sidecar(self, tmp_path):
+        """_vision_events must be popped from sidecar_updates before _update_sidecar."""
+        from carta.embed.pipeline import run_embed
+        from unittest.mock import patch, Mock
+
+        repo_root = tmp_path
+        carta_dir = repo_root / ".carta"
+        carta_dir.mkdir()
+        cfg = {
+            "project_name": "test-proj",
+            "docs_root": "docs",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "chunking": {"max_tokens": 400, "overlap_fraction": 0.15},
+                "stale_alert_threshold": 0.30,
+                "max_generations": 2,
+            },
+        }
+
+        pdf = self._make_pdf(tmp_path)
+        sidecar_path = pdf.parent / (pdf.stem + ".embed-meta.yaml")
+
+        import yaml
+        with open(sidecar_path, "w") as f:
+            yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
+                       "file_type": "pdf", "current_path": "docs/test.pdf"}, f)
+
+        written_data = {}
+
+        def fake_update_sidecar(path, updates):
+            written_data.update(updates)
+
+        mock_client = Mock()
+        mock_client.get_collections.return_value = Mock()
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline._heal_sidecar_current_paths"), \
+             patch("carta.embed.pipeline._update_sidecar", side_effect=fake_update_sidecar), \
+             patch("carta.embed.pipeline._embed_one_file", return_value=(
+                 5,
+                 {"status": "embedded", "chunk_count": 5, "_vision_events": [
+                     {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0}
+                 ]},
+             )):
+            run_embed(repo_root, cfg, progress=None)
+
+        assert "_vision_events" not in written_data
+
+    def test_vision_done_called_with_events(self, tmp_path):
+        """progress.vision_done() is called when _vision_events is non-empty."""
+        from carta.embed.pipeline import run_embed
+        from unittest.mock import patch, Mock, MagicMock
+
+        repo_root = tmp_path
+        carta_dir = repo_root / ".carta"
+        carta_dir.mkdir()
+        cfg = {
+            "project_name": "test-proj",
+            "docs_root": "docs",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "chunking": {"max_tokens": 400, "overlap_fraction": 0.15},
+                "stale_alert_threshold": 0.30,
+                "max_generations": 2,
+            },
+        }
+
+        pdf = self._make_pdf(tmp_path)
+        sidecar_path = pdf.parent / (pdf.stem + ".embed-meta.yaml")
+
+        import yaml
+        with open(sidecar_path, "w") as f:
+            yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
+                       "file_type": "pdf", "current_path": "docs/test.pdf"}, f)
+
+        vision_events = [
+            {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+            {"page": 2, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 300},
+        ]
+
+        mock_progress = MagicMock()
+        mock_client = Mock()
+        mock_client.get_collections.return_value = Mock()
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline._heal_sidecar_current_paths"), \
+             patch("carta.embed.pipeline._update_sidecar"), \
+             patch("carta.embed.pipeline._embed_one_file", return_value=(
+                 5,
+                 {"status": "embedded", "chunk_count": 5, "_vision_events": vision_events},
+             )):
+            run_embed(repo_root, cfg, progress=mock_progress)
+
+        mock_progress.vision_done.assert_called_once_with(vision_events)
+
+    def test_vision_done_not_called_when_events_empty(self, tmp_path):
+        """progress.vision_done() is NOT called when no _vision_events key present."""
+        from carta.embed.pipeline import run_embed
+        from unittest.mock import patch, Mock, MagicMock
+
+        repo_root = tmp_path
+        carta_dir = repo_root / ".carta"
+        carta_dir.mkdir()
+        cfg = {
+            "project_name": "test-proj",
+            "docs_root": "docs",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "chunking": {"max_tokens": 400, "overlap_fraction": 0.15},
+                "stale_alert_threshold": 0.30,
+                "max_generations": 2,
+            },
+        }
+
+        md = tmp_path / "docs" / "test.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("# Hello\n\nworld")
+        sidecar_path = md.parent / (md.stem + ".embed-meta.yaml")
+
+        import yaml
+        with open(sidecar_path, "w") as f:
+            yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
+                       "file_type": "markdown", "current_path": "docs/test.md"}, f)
+
+        mock_progress = MagicMock()
+        mock_client = Mock()
+        mock_client.get_collections.return_value = Mock()
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline._heal_sidecar_current_paths"), \
+             patch("carta.embed.pipeline._update_sidecar"), \
+             patch("carta.embed.pipeline._embed_one_file", return_value=(
+                 3,
+                 {"status": "embedded", "chunk_count": 3},  # no _vision_events key
+             )):
+            run_embed(repo_root, cfg, progress=mock_progress)
+
+        mock_progress.vision_done.assert_not_called()
