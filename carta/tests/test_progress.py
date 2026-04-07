@@ -192,6 +192,18 @@ class TestTTYMode:
         assert captured.out.endswith("\n")
         assert "3 issue" in captured.out
 
+    def test_vision_done_tty_contains_labels(self, capsys):
+        """vision_done() in TTY mode still outputs strategy labels (ANSI codes don't obscure them)."""
+        p = self._make_tty()
+        events = [
+            {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+            {"page": 2, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 200},
+        ]
+        p.vision_done(events)
+        captured = capsys.readouterr()
+        assert "pure-text" in captured.out
+        assert "structured" in captured.out
+
 
 class TestFormatPageRanges:
     def test_empty_list_returns_empty_string(self):

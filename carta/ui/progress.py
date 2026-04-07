@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+from collections import defaultdict
 from typing import Optional
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -23,6 +24,12 @@ _CYAN   = "\033[36m"
 _CLR    = "\r\033[K"   # move to line start + clear to end
 
 _TICK_INTERVAL = 0.1  # seconds between spinner redraws
+
+_VISION_STRATEGY_LABELS = {
+    "skip":    ("pure-text",   ""),
+    "glm-ocr": ("structured",  "  (GLM-OCR)"),
+    "llava":   ("image",       "  (LLaVA)"),
+}
 
 
 def _format_page_ranges(pages: list[int]) -> str:
@@ -259,30 +266,23 @@ class Progress:
         if not events:
             return
 
-        from collections import defaultdict
         groups: dict[str, list[int]] = defaultdict(list)
         for e in events:
             groups[e["model_used"]].append(e["page"])
-
-        _LABELS = {
-            "skip":    ("pure-text",   ""),
-            "glm-ocr": ("structured",  "  (GLM-OCR)"),
-            "llava":   ("image",       "  (LLaVA)"),
-        }
 
         lines = []
         for model_used in ["skip", "glm-ocr", "llava"]:
             if model_used not in groups:
                 continue
             pages = groups[model_used]
-            label, suffix = _LABELS[model_used]
+            label, suffix = _VISION_STRATEGY_LABELS[model_used]
             count = len(pages)
             noun = "page" if count == 1 else "pages"
             ranges = _format_page_ranges(pages)
             lines.append(f"  {label}: {count} {noun} — {ranges}{suffix}")
 
         for model_used, pages in groups.items():
-            if model_used in _LABELS:
+            if model_used in _VISION_STRATEGY_LABELS:
                 continue
             count = len(pages)
             noun = "page" if count == 1 else "pages"
