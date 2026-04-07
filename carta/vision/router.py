@@ -68,7 +68,10 @@ class SmartRouter:
 
         Args:
             pdf_path: Path to PDF file.
-            progress_callback: Optional callback(page_num, total_pages).
+            progress_callback: Optional callback(page_num, total_pages, page_class, model_used, char_count).
+                               page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
+                               model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
+                               char_count: total chars extracted for this page; 0 for skipped pages.
 
         Returns:
             List of chunk dicts compatible with pipeline.py expectations.
@@ -285,7 +288,10 @@ def extract_image_descriptions_intelligent(
     Args:
         pdf_path: Path to PDF file.
         cfg: Carta config dict.
-        progress_callback: Optional callback(page_num, total_pages).
+        progress_callback: Optional callback(page_num, total_pages, page_class, model_used, char_count).
+                           page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
+                           model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
+                           char_count: total chars extracted for this page; 0 for skipped pages.
 
     Returns:
         List of dicts with keys: doc_type, page_num, image_index, text,
