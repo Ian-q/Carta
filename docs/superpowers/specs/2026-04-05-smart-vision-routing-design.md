@@ -19,14 +19,17 @@ Most pages on a datasheet should cost zero vision model calls. Vision should onl
 
 Four page classes replace the old TEXT/MIXED/VISUAL taxonomy:
 
-| Class | Signals | Action |
-|---|---|---|
-| `PURE_TEXT` | text ≥ MIN, no images, no tables, no captions | PyMuPDF only — 0 model calls |
-| `STRUCTURED_TEXT` | text ≥ MIN, table patterns detected *(takes priority over images)* | GLM-OCR full page — 1 call |
+
+| Class              | Signals                                                                              | Action                                                        |
+| ------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| `PURE_TEXT`        | text ≥ MIN, no images, no tables, no captions                                        | PyMuPDF only — 0 model calls                                  |
+| `STRUCTURED_TEXT`  | text ≥ MIN, table patterns detected *(takes priority over images)*                   | GLM-OCR full page — 1 call                                    |
 | `TEXT_WITH_IMAGES` | text ≥ MIN, no tables, embedded images present OR (captions detected AND text < MAX) | LLaVA per image crop — pipeline keeps PyMuPDF text separately |
-| `FLATTENED` | text < MIN | GLM-OCR full page; if yield < 50 chars → LLaVA full page |
+| `FLATTENED`        | text < MIN                                                                           | GLM-OCR full page; if yield < 50 chars → LLaVA full page      |
+
 
 **Thresholds (all config-tunable):**
+
 - `TEXT_MIN = 150` chars — below this, PyMuPDF extracted nothing useful
 - `TEXT_MAX = 600` chars — above this, figure captions are cross-references to other pages, not signals that an image is present on this page
 - `FLATTENED_MIN_YIELD = 50` chars — GLM-OCR output below this triggers LLaVA fallback
@@ -82,6 +85,7 @@ class PageAnalyzer:
 - `_route_flattened(page, page_num)` → GLM-OCR; if yield < `FLATTENED_MIN_YIELD` → LLaVA full page
 
 **New helper:**
+
 ```python
 def _extract_image_crops(self, page: Any) -> list[tuple[int, bytes]]:
     """Returns (image_index, png_bytes) for each embedded image,
@@ -114,24 +118,16 @@ Existing keys (`ocr_model`, `ollama_vision_model`, `ollama_url`) unchanged. The 
 
 `doc_type: "image_description"` preserved on all chunks for Qdrant backward compatibility. New additive field `page_class` available for future filtering.
 
-| Page class | Chunks returned | `model_used` | `image_index` |
-|---|---|---|---|
-| `PURE_TEXT` | 0 | — | — |
-| `STRUCTURED_TEXT` | 1 (full page) | `"glm-ocr"` | 0 |
-| `TEXT_WITH_IMAGES` | 1 per image crop | `"llava"` | 0, 1, 2… |
-| `FLATTENED` | 1 (full page) | `"glm-ocr"` or `"llava"` | 0 |
+
+| Page class         | Chunks returned  | `model_used`             | `image_index` |
+| ------------------ | ---------------- | ------------------------ | ------------- |
+| `PURE_TEXT`        | 0                | —                        | —             |
+| `STRUCTURED_TEXT`  | 1 (full page)    | `"glm-ocr"`              | 0             |
+| `TEXT_WITH_IMAGES` | 1 per image crop | `"llava"`                | 0, 1, 2…      |
+| `FLATTENED`        | 1 (full page)    | `"glm-ocr"` or `"llava"` | 0             |
+
 
 For `TEXT_WITH_IMAGES`, the PyMuPDF text chunk is created by the existing pipeline — vision returns only the image description chunks.
-
-## Known Limitations / Backlog
-
-### Cross-chunk association (TEXT_WITH_IMAGES pages)
-
-For `TEXT_WITH_IMAGES` pages, the pipeline produces two separate chunk types: a PyMuPDF text chunk and one LLaVA image description chunk per crop. Both share `page_num` and `slug` as metadata, so they're associated at query time by filtering — but a semantic search may return one without the other.
-
-Example: a datasheet page has "maximum operating voltage: 3.6V" in the text and a plot showing that limit. A search for "operating voltage" might score the text chunk but not the image description chunk (or vice versa), depending on embedding similarity.
-
-**Fix:** a page-level chunk that concatenates PyMuPDF text + all LLaVA descriptions from the same page into a single embedding. This is a meaningful chunking strategy change and out of scope for this spec. Current behaviour is already a large improvement over running LLaVA on every page. Track as v2.
 
 ## Testing
 
@@ -141,3 +137,4 @@ Example: a datasheet page has "maximum operating voltage: 3.6V" in the text and 
 - Unit test for `_extract_image_crops()`: respects area sort and `MAX_IMAGES_PER_PAGE` cap
 - Integration test: mock Ollama, embed a multi-page PDF, assert PURE_TEXT pages produce zero Ollama calls
 - Regression: existing sidecar `.embed-meta.yaml` format unaffected
+

@@ -134,13 +134,13 @@ def test_detect_install_method_returns_pipx_when_available():
     mock_result.stdout = "carta-cc 0.3.5\n"
     with patch("carta.update.updater.shutil.which", return_value="/usr/bin/pipx"), \
          patch("carta.update.updater.subprocess.run", return_value=mock_result):
-        assert _detect_install_method() == "pipx"
+        assert _detect_install_method() == ("pipx", "0.3.5")
 
 
 def test_detect_install_method_returns_pip_when_no_pipx():
     from carta.update.updater import _detect_install_method
     with patch("carta.update.updater.shutil.which", return_value=None):
-        assert _detect_install_method() == "pip"
+        assert _detect_install_method() == ("pip", None)
 
 
 def test_detect_install_method_returns_pip_when_carta_not_in_pipx():
@@ -149,13 +149,13 @@ def test_detect_install_method_returns_pip_when_carta_not_in_pipx():
     mock_result.stdout = "some-other-package 1.0\n"
     with patch("carta.update.updater.shutil.which", return_value="/usr/bin/pipx"), \
          patch("carta.update.updater.subprocess.run", return_value=mock_result):
-        assert _detect_install_method() == "pip"
+        assert _detect_install_method() == ("pip", None)
 
 
 def test_run_update_returns_0_when_already_current(capsys):
     from carta.update.updater import run_update
     with patch("carta.update.updater._fetch_latest", return_value="0.3.5"), \
-         patch("carta.update.updater._installed_version", return_value="0.3.5"):
+         patch("carta.update.updater._detect_install_method", return_value=("pipx", "0.3.5")):
         code = run_update(yes=True)
     assert code == 0
     assert "up to date" in capsys.readouterr().out
@@ -163,7 +163,8 @@ def test_run_update_returns_0_when_already_current(capsys):
 
 def test_run_update_returns_1_when_pypi_unreachable(capsys):
     from carta.update.updater import run_update
-    with patch("carta.update.updater._fetch_latest", return_value=None):
+    with patch("carta.update.updater._fetch_latest", return_value=None), \
+         patch("carta.update.updater._detect_install_method", return_value=("pipx", "0.3.5")):
         code = run_update(yes=True)
     assert code == 1
     assert "PyPI" in capsys.readouterr().err
@@ -173,10 +174,10 @@ def test_run_update_yes_runs_pipx_upgrade():
     from carta.update.updater import run_update
     mock_result = MagicMock()
     mock_result.returncode = 0
-    mock_result.stdout = "carta-cc 0.3.6\n"
+    mock_result.stdout = "upgraded package carta-cc from 0.3.5 to 0.3.6 (location: /home/user/.local/pipx/venvs/carta-cc)\n"
+    mock_result.stderr = ""
     with patch("carta.update.updater._fetch_latest", return_value="0.3.6"), \
-         patch("carta.update.updater._installed_version", return_value="0.3.5"), \
-         patch("carta.update.updater._detect_install_method", return_value="pipx"), \
+         patch("carta.update.updater._detect_install_method", return_value=("pipx", "0.3.5")), \
          patch("carta.update.updater.subprocess.run", return_value=mock_result) as mock_run:
         code = run_update(yes=True)
     assert code == 0
@@ -189,9 +190,11 @@ def test_run_update_yes_runs_pip_upgrade():
     import sys
     mock_result = MagicMock()
     mock_result.returncode = 0
+    mock_result.stdout = ""
+    mock_result.stderr = ""
     with patch("carta.update.updater._fetch_latest", return_value="0.3.6"), \
+         patch("carta.update.updater._detect_install_method", return_value=("pip", None)), \
          patch("carta.update.updater._installed_version", return_value="0.3.5"), \
-         patch("carta.update.updater._detect_install_method", return_value="pip"), \
          patch("carta.update.updater.subprocess.run", return_value=mock_result) as mock_run:
         code = run_update(yes=True)
     assert code == 0
@@ -202,7 +205,7 @@ def test_run_update_yes_runs_pip_upgrade():
 def test_print_check_shows_available(capsys):
     from carta.update.updater import print_check
     with patch("carta.update.updater._fetch_latest", return_value="0.4.0"), \
-         patch("carta.update.updater._installed_version", return_value="0.3.5"):
+         patch("carta.update.updater._detect_install_method", return_value=("pipx", "0.3.5")):
         print_check()
     out = capsys.readouterr().out
     assert "0.3.5" in out
@@ -213,9 +216,40 @@ def test_print_check_shows_available(capsys):
 def test_print_check_shows_up_to_date(capsys):
     from carta.update.updater import print_check
     with patch("carta.update.updater._fetch_latest", return_value="0.3.5"), \
-         patch("carta.update.updater._installed_version", return_value="0.3.5"):
+         patch("carta.update.updater._detect_install_method", return_value=("pipx", "0.3.5")):
         print_check()
     assert "up to date" in capsys.readouterr().out
+
+
+def test_parse_pipx_upgraded_version_extracts_version():
+    from carta.update.updater import _parse_pipx_upgraded_version
+    output = "upgraded package carta-cc from 0.3.9 to 0.3.10 (location: /home/user/.local/pipx/venvs/carta-cc)\n"
+    assert _parse_pipx_upgraded_version(output) == "0.3.10"
+
+
+def test_parse_pipx_upgraded_version_returns_none_when_not_found():
+    from carta.update.updater import _parse_pipx_upgraded_version
+    assert _parse_pipx_upgraded_version("carta-cc is already at latest version 0.3.10\n") is None
+    assert _parse_pipx_upgraded_version("") is None
+
+
+def test_run_update_warns_on_cdn_lag(capsys):
+    """When pipx installs an older version than PyPI reported, print a retry notice."""
+    from carta.update.updater import run_update
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    # pipx only reached 0.3.9, but PyPI said 0.3.10 was available
+    mock_result.stdout = "upgraded package carta-cc from 0.3.8 to 0.3.9 (location: /home/user/.local/pipx/venvs/carta-cc)\n"
+    mock_result.stderr = ""
+    with patch("carta.update.updater._fetch_latest", return_value="0.3.10"), \
+         patch("carta.update.updater._detect_install_method", return_value=("pipx", "0.3.8")), \
+         patch("carta.update.updater.subprocess.run", return_value=mock_result):
+        code = run_update(yes=True)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "carta updated to 0.3.9" in out
+    assert "0.3.10" in out
+    assert "carta update" in out  # retry hint present
 
 
 # ---------------------------------------------------------------------------
