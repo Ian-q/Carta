@@ -281,3 +281,125 @@ class TestPublicAPI:
             mock_fitz.open.return_value = doc
             result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# progress_callback — 5-arg post-routing
+# ---------------------------------------------------------------------------
+
+class TestExtractPdfProgressCallback:
+    """Verify extract_pdf fires callback AFTER routing with 5-arg signature."""
+
+    def _make_router(self):
+        cfg = {"embed": {"ollama_url": "http://localhost:11434"}}
+        return SmartRouter(cfg)
+
+    def test_callback_not_fired_before_routing(self):
+        """Callback must fire after _route(), so page_class is known."""
+        router = self._make_router()
+        call_order = []
+
+        def cb(page_num, total_pages, page_class, model_used, char_count):
+            call_order.append(("cb", page_num))
+
+        page = MagicMock()
+        profile = _profile(PageClass.PURE_TEXT)
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route") as mock_route:
+            mock_analyzer.analyze.side_effect = lambda p: (call_order.append(("analyze",)) or profile)
+            mock_route.side_effect = lambda *a, **kw: (call_order.append(("route",)) or [])
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter([page]))
+                doc.__len__ = MagicMock(return_value=1)
+                mock_fitz.open.return_value = doc
+                router.extract_pdf(MagicMock(), progress_callback=cb)
+
+        # callback must come after route
+        route_idx = call_order.index(("route",))
+        cb_idx = call_order.index(("cb", 1))
+        assert cb_idx > route_idx
+
+    def test_callback_pure_text_args(self):
+        """PURE_TEXT page: model_used='skip', char_count=0."""
+        router = self._make_router()
+        received = []
+
+        def cb(page_num, total_pages, page_class, model_used, char_count):
+            received.append((page_num, total_pages, page_class, model_used, char_count))
+
+        page = MagicMock()
+        profile = _profile(PageClass.PURE_TEXT)
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", return_value=[]):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter([page]))
+                doc.__len__ = MagicMock(return_value=3)
+                mock_fitz.open.return_value = doc
+                router.extract_pdf(MagicMock(), progress_callback=cb)
+
+        assert len(received) == 1
+        page_num, total_pages, page_class, model_used, char_count = received[0]
+        assert page_num == 1
+        assert total_pages == 3
+        assert page_class == "pure_text"
+        assert model_used == "skip"
+        assert char_count == 0
+
+    def test_callback_structured_text_args(self):
+        """STRUCTURED_TEXT page: model_used='glm-ocr', char_count=len of extracted text."""
+        router = self._make_router()
+        received = []
+
+        def cb(page_num, total_pages, page_class, model_used, char_count):
+            received.append((page_num, total_pages, page_class, model_used, char_count))
+
+        chunk = {
+            "doc_type": "image_description",
+            "page_num": 1,
+            "image_index": 0,
+            "text": "extracted text here",
+            "model_used": "glm-ocr",
+            "page_class": "structured_text",
+            "content_type": "structured_text",
+        }
+        page = MagicMock()
+        profile = _profile(PageClass.STRUCTURED_TEXT)
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", return_value=[chunk]):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter([page]))
+                doc.__len__ = MagicMock(return_value=1)
+                mock_fitz.open.return_value = doc
+                router.extract_pdf(MagicMock(), progress_callback=cb)
+
+        assert len(received) == 1
+        _, _, page_class, model_used, char_count = received[0]
+        assert page_class == "structured_text"
+        assert model_used == "glm-ocr"
+        assert char_count == len("extracted text here")
+
+    def test_callback_exception_does_not_abort_extraction(self):
+        """Exception inside callback must not propagate or stop processing."""
+        router = self._make_router()
+
+        def bad_cb(*args):
+            raise ValueError("oops")
+
+        page1, page2 = MagicMock(), MagicMock()
+        profile = _profile(PageClass.PURE_TEXT)
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", return_value=[]):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter([page1, page2]))
+                doc.__len__ = MagicMock(return_value=2)
+                mock_fitz.open.return_value = doc
+                # Must not raise
+                result = router.extract_pdf(MagicMock(), progress_callback=bad_cb)
+        assert result == []

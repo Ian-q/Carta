@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from carta.ui.progress import Progress
+from carta.ui.progress import Progress, _format_page_ranges
 
 
 def make_plain(total=3):
@@ -191,3 +191,110 @@ class TestTTYMode:
         captured = capsys.readouterr()
         assert captured.out.endswith("\n")
         assert "3 issue" in captured.out
+
+    def test_vision_done_tty_contains_labels(self, capsys):
+        """vision_done() in TTY mode still outputs strategy labels (ANSI codes don't obscure them)."""
+        p = self._make_tty()
+        events = [
+            {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+            {"page": 2, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 200},
+        ]
+        p.vision_done(events)
+        captured = capsys.readouterr()
+        assert "pure-text" in captured.out
+        assert "structured" in captured.out
+
+
+class TestFormatPageRanges:
+    def test_empty_list_returns_empty_string(self):
+        assert _format_page_ranges([]) == ""
+
+    def test_single_page(self):
+        assert _format_page_ranges([5]) == "5"
+
+    def test_two_consecutive(self):
+        assert _format_page_ranges([3, 4]) == "3-4"
+
+    def test_non_consecutive(self):
+        assert _format_page_ranges([1, 3, 5]) == "1, 3, 5"
+
+    def test_mixed_ranges(self):
+        # pages 1-3, gap, 5-6, gap, 8
+        assert _format_page_ranges([1, 2, 3, 5, 6, 8]) == "1-3, 5-6, 8"
+
+    def test_unsorted_input_is_sorted(self):
+        assert _format_page_ranges([10, 1, 2]) == "1-2, 10"
+
+
+class TestVisionDonePlainMode:
+    def _make_plain(self):
+        p = Progress(total=3)
+        p._tty = False
+        return p
+
+    def test_empty_events_prints_nothing(self, capsys):
+        p = self._make_plain()
+        p.vision_done([])
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_pure_text_pages_label(self, capsys):
+        p = self._make_plain()
+        events = [
+            {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+            {"page": 2, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+        ]
+        p.vision_done(events)
+        captured = capsys.readouterr()
+        assert "pure-text" in captured.out
+        assert "2 pages" in captured.out
+        assert "1-2" in captured.out
+
+    def test_glm_ocr_label_and_suffix(self, capsys):
+        p = self._make_plain()
+        events = [
+            {"page": 5, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 400},
+        ]
+        p.vision_done(events)
+        captured = capsys.readouterr()
+        assert "structured" in captured.out
+        assert "1 page" in captured.out
+        assert "5" in captured.out
+        assert "GLM-OCR" in captured.out
+
+    def test_llava_label_and_suffix(self, capsys):
+        p = self._make_plain()
+        events = [
+            {"page": 3, "page_class": "text_with_images", "model_used": "llava", "char_count": 250},
+        ]
+        p.vision_done(events)
+        captured = capsys.readouterr()
+        assert "image" in captured.out
+        assert "LLaVA" in captured.out
+
+    def test_mixed_strategies_all_present(self, capsys):
+        p = self._make_plain()
+        events = [
+            {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+            {"page": 2, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 300},
+            {"page": 3, "page_class": "text_with_images", "model_used": "llava", "char_count": 200},
+        ]
+        p.vision_done(events)
+        captured = capsys.readouterr()
+        assert "pure-text" in captured.out
+        assert "structured" in captured.out
+        assert "image" in captured.out
+
+    def test_display_order_skip_before_glm_before_llava(self, capsys):
+        p = self._make_plain()
+        events = [
+            {"page": 3, "page_class": "text_with_images", "model_used": "llava", "char_count": 200},
+            {"page": 1, "page_class": "pure_text", "model_used": "skip", "char_count": 0},
+            {"page": 2, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 300},
+        ]
+        p.vision_done(events)
+        out = capsys.readouterr().out
+        skip_pos = out.index("pure-text")
+        glm_pos = out.index("structured")
+        llava_pos = out.index("image")
+        assert skip_pos < glm_pos < llava_pos
