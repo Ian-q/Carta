@@ -25,6 +25,29 @@ _CLR    = "\r\033[K"   # move to line start + clear to end
 _TICK_INTERVAL = 0.1  # seconds between spinner redraws
 
 
+def _format_page_ranges(pages: list[int]) -> str:
+    """Format a sorted list of page numbers as compact ranges.
+
+    Examples:
+        [1, 2, 3, 5, 6, 8] → "1-3, 5-6, 8"
+        [5]                 → "5"
+        []                  → ""
+    """
+    if not pages:
+        return ""
+    pages = sorted(pages)
+    ranges = []
+    start = end = pages[0]
+    for p in pages[1:]:
+        if p == end + 1:
+            end = p
+        else:
+            ranges.append(f"{start}-{end}" if end > start else str(start))
+            start = end = p
+    ranges.append(f"{start}-{end}" if end > start else str(start))
+    return ", ".join(ranges)
+
+
 class Progress:
     """Context manager for progress reporting during embed and scan.
 
@@ -225,6 +248,50 @@ class Progress:
                 f"Embedded: {embedded}, Skipped: {skipped}, Errors: {errors}",
                 flush=True,
             )
+
+    def vision_done(self, events: list[dict]) -> None:
+        """Print per-strategy page summary after a PDF file completes.
+
+        Args:
+            events: list of dicts with keys: page (int), page_class (str),
+                    model_used (str), char_count (int).
+        """
+        if not events:
+            return
+
+        from collections import defaultdict
+        groups: dict[str, list[int]] = defaultdict(list)
+        for e in events:
+            groups[e["model_used"]].append(e["page"])
+
+        _LABELS = {
+            "skip":    ("pure-text",   ""),
+            "glm-ocr": ("structured",  "  (GLM-OCR)"),
+            "llava":   ("image",       "  (LLaVA)"),
+        }
+
+        lines = []
+        for model_used in ["skip", "glm-ocr", "llava"]:
+            if model_used not in groups:
+                continue
+            pages = groups[model_used]
+            label, suffix = _LABELS[model_used]
+            count = len(pages)
+            noun = "page" if count == 1 else "pages"
+            ranges = _format_page_ranges(pages)
+            lines.append(f"  {label}: {count} {noun} — {ranges}{suffix}")
+
+        for model_used, pages in groups.items():
+            if model_used in _LABELS:
+                continue
+            count = len(pages)
+            noun = "page" if count == 1 else "pages"
+            ranges = _format_page_ranges(pages)
+            lines.append(f"  {model_used}: {count} {noun} — {ranges}")
+
+        output = "\n".join(lines) + "\n"
+        sys.stdout.write(self._c(_DIM, output))
+        sys.stdout.flush()
 
     # ------------------------------------------------------------------
     # Scan progress API
