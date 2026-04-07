@@ -87,14 +87,17 @@ class SmartRouter:
         results = []
         total_pages = len(doc)
         for page_num, page in enumerate(doc, start=1):
-            if progress_callback:
-                try:
-                    progress_callback(page_num, total_pages)
-                except Exception:
-                    pass
             profile = self.analyzer.analyze(page)
             chunks = self._route(page, page_num, profile, doc)
             results.extend(chunks)
+            if progress_callback:
+                try:
+                    char_count = sum(len(c.get("text", "")) for c in chunks)
+                    model_used = chunks[0]["model_used"] if chunks else "skip"
+                    page_class = profile.page_class.name.lower()
+                    progress_callback(page_num, total_pages, page_class, model_used, char_count)
+                except Exception:
+                    pass
         doc.close()
         return results
 
