@@ -11,7 +11,6 @@ This module provides structured detection of six issue categories:
 
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
 from qdrant_client import QdrantClient
 
 
@@ -41,36 +40,103 @@ def _build_qdrant_chunk_index(client: QdrantClient, collection_name: str) -> dic
     pass
 
 
-def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: dict) -> list[dict]:
-    """Detect chunks in Qdrant with no matching sidecar on disk."""
+def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
+    """Detect chunks in Qdrant with no matching sidecar on disk.
+
+    Args:
+        client: Connected Qdrant client
+        cfg: Carta config dict
+        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+        qdrant_index: Chunk index from _build_qdrant_chunk_index
+
+    Returns:
+        List of issue dicts with category="orphaned_chunks"
+    """
     pass
 
 
 def detect_missing_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
-    """Detect files with chunks in Qdrant but no sidecar."""
+    """Detect files with chunks in Qdrant but no sidecar.
+
+    Args:
+        repo_root: Repository root path
+        cfg: Carta config dict
+        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+        qdrant_index: Chunk index from _build_qdrant_chunk_index
+
+    Returns:
+        List of issue dicts with category="missing_sidecars"
+    """
     pass
 
 
 def detect_stale_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict) -> list[dict]:
-    """Detect sidecars where file mtime is newer than last embed."""
+    """Detect sidecars where file mtime is newer than last embed.
+
+    Args:
+        repo_root: Repository root path
+        cfg: Carta config dict
+        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+
+    Returns:
+        List of issue dicts with category="stale_sidecars"
+    """
     pass
 
 
 def detect_hash_mismatches(repo_root: Path, cfg: dict, sidecar_registry: dict) -> list[dict]:
-    """Detect files where computed hash differs from sidecar record."""
+    """Detect files where computed hash differs from sidecar record.
+
+    Args:
+        repo_root: Repository root path
+        cfg: Carta config dict
+        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+
+    Returns:
+        List of issue dicts with category="hash_mismatches"
+    """
     pass
 
 
 def detect_disconnected_files(repo_root: Path, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
-    """Detect discoverable files with no sidecar and no chunks."""
+    """Detect discoverable files with no sidecar and no chunks.
+
+    Args:
+        repo_root: Repository root path
+        cfg: Carta config dict
+        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+        qdrant_index: Chunk index from _build_qdrant_chunk_index
+
+    Returns:
+        List of issue dicts with category="disconnected_files"
+    """
     pass
 
 
 def detect_qdrant_sidecar_mismatches(client: QdrantClient, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
-    """Detect chunks in Qdrant that don't match sidecar metadata."""
+    """Detect chunks in Qdrant that don't match sidecar metadata.
+
+    Args:
+        client: Connected Qdrant client
+        cfg: Carta config dict
+        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+        qdrant_index: Chunk index from _build_qdrant_chunk_index
+
+    Returns:
+        List of issue dicts with category="qdrant_sidecar_mismatches"
+    """
     pass
 
 
 def run_audit(cfg: dict, repo_root: Path, verbose: bool = False) -> dict:
-    """Run full audit and return results dict matching JSON schema."""
+    """Run full audit and return results dict matching JSON schema.
+
+    Args:
+        cfg: Carta config dict
+        repo_root: Repository root path
+        verbose: If True, print detailed progress messages
+
+    Returns:
+        Audit results dict with keys: issues, summary, timestamp
+    """
     pass
