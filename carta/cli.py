@@ -284,6 +284,47 @@ def cmd_doctor(args):
     _notify_if_update()
     sys.exit(0)
 
+def cmd_audit(args):
+    """Run audit to detect inconsistencies in the embed pipeline.
+
+    Usage:
+        carta audit [--output REPORT.json]
+
+    Detects orphaned chunks, missing sidecars, stale files, and more.
+    Reports to JSON for agent-assisted repair or manual review.
+    """
+    from carta.audit.audit import run_audit
+    from carta.config import load_config
+    import json
+
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
+    repo_root = cfg_path.parent.parent
+
+    output_path = args.output if hasattr(args, 'output') and args.output else "audit-report.json"
+
+    try:
+        result = run_audit(cfg, repo_root, verbose=True)
+
+        # Write report to JSON
+        output_file = repo_root / output_path
+        output_file.write_text(json.dumps(result, indent=2))
+
+        # Print summary
+        summary = result["summary"]
+        print(f"\nAudit complete: {summary['total_issues']} issues found")
+        if summary["total_issues"] > 0:
+            for cat, count in summary["by_category"].items():
+                print(f"  {cat}: {count}")
+
+        print(f"Report saved to: {output_path}")
+
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"Error: Audit failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser(prog="carta")
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
@@ -292,7 +333,18 @@ def main():
     sub.add_parser("init")
     sub.add_parser("scan")
     sub.add_parser("embed")
-    
+
+    audit_p = sub.add_parser(
+        "audit",
+        help="Detect inconsistencies in embed pipeline and write JSON report"
+    )
+    audit_p.add_argument(
+        "--output",
+        default="audit-report.json",
+        help="Output path for JSON report (default: audit-report.json)"
+    )
+    audit_p.set_defaults(func=cmd_audit)
+
     # Doctor command with options
     doctor_p = sub.add_parser("doctor", help="Diagnose Carta installation and environment")
     doctor_p.add_argument("--fix", action="store_true", help="Attempt to auto-fix issues")
@@ -314,6 +366,7 @@ def main():
         "scan": cmd_scan,
         "embed": cmd_embed,
         "search": cmd_search,
+        "audit": cmd_audit,
         "doctor": cmd_doctor,
         "update": cmd_update,
     }
