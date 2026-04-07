@@ -9,8 +9,32 @@ from carta.vision.classifier import PageAnalyzer, PageClass, PageProfile, FIGURE
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_page(text: str = "", images: list = None, blocks: list = None) -> MagicMock:
-    """Build a minimal mock fitz Page for PageAnalyzer.analyze()."""
+def _mock_rect(x0: float, y0: float, x1: float, y1: float):
+    """Return a minimal rect-like object with width and height."""
+    r = MagicMock()
+    r.width = x1 - x0
+    r.height = y1 - y0
+    return r
+
+
+def _make_page(
+    text: str = "",
+    images: list = None,
+    blocks: list = None,
+    page_rect=None,
+    image_rects: dict = None,
+) -> MagicMock:
+    """Build a minimal mock fitz Page for PageAnalyzer.analyze().
+
+    Args:
+        text: text returned by page.get_text().
+        images: list of image tuples (first element is xref int).
+        blocks: list of block tuples for "blocks" fmt.
+        page_rect: mock rect with .width/.height; defaults to A4 (595×842).
+        image_rects: dict mapping xref → rect-like object for get_image_rects().
+                     Missing xrefs return []. Provide large rects for "real" images,
+                     small rects for logos/decorative images.
+    """
     page = MagicMock()
 
     def _get_text(fmt: str = "text", **kw):
@@ -20,6 +44,20 @@ def _make_page(text: str = "", images: list = None, blocks: list = None) -> Magi
 
     page.get_text.side_effect = _get_text
     page.get_images.return_value = images or []
+
+    # Default A4 page rect (595 × 842 points)
+    if page_rect is None:
+        page_rect = _mock_rect(0, 0, 595, 842)
+    page.rect = page_rect
+
+    # Image rect lookup
+    _image_rects = image_rects or {}
+
+    def _get_image_rects(xref):
+        return [_image_rects[xref]] if xref in _image_rects else []
+
+    page.get_image_rects.side_effect = _get_image_rects
+
     return page
 
 
@@ -81,24 +119,43 @@ class TestPageClassStructuredText:
         assert profile.has_tables
 
     def test_tables_take_priority_over_images(self):
-        """STRUCTURED_TEXT wins when both table and image signals present."""
+        """STRUCTURED_TEXT wins when both table and significant image signals present."""
         analyzer = PageAnalyzer({})
         page = _make_page(
             text="x" * 200,
             images=[(1, 0, 100, 100, 8, 0, 0)],
             blocks=_table_blocks(),
+            image_rects={1: _mock_rect(0, 0, 200, 200)},
         )
         assert analyzer.analyze(page).page_class == PageClass.STRUCTURED_TEXT
 
 
 class TestPageClassTextWithImages:
     def test_embedded_image_triggers(self):
-        """text ≥ MIN + embedded image → TEXT_WITH_IMAGES."""
+        """text ≥ MIN + significant embedded image → TEXT_WITH_IMAGES."""
         analyzer = PageAnalyzer({})
-        page = _make_page(text="x" * 200, images=[(1, 0, 100, 100, 8, 0, 0)])
+        # Image covers 200×200 pts = 40,000 sq pts; 5% of A4 = 25,065 sq pts → significant
+        page = _make_page(
+            text="x" * 200,
+            images=[(1, 0, 100, 100, 8, 0, 0)],
+            image_rects={1: _mock_rect(0, 0, 200, 200)},
+        )
         profile = analyzer.analyze(page)
         assert profile.page_class == PageClass.TEXT_WITH_IMAGES
         assert profile.has_images
+
+    def test_tiny_logo_with_long_text_is_pure_text(self):
+        """Company logo (tiny image) + long text → PURE_TEXT, not TEXT_WITH_IMAGES."""
+        analyzer = PageAnalyzer({})
+        # Logo covers 72×36 pts = 2,592 sq pts; well below 5% threshold of ~25,065
+        page = _make_page(
+            text="x" * 200,
+            images=[(1, 0, 100, 100, 8, 0, 0)],
+            image_rects={1: _mock_rect(0, 0, 72, 36)},
+        )
+        profile = analyzer.analyze(page)
+        assert not profile.has_images
+        assert profile.page_class == PageClass.PURE_TEXT
 
     def test_caption_below_text_max_triggers(self):
         """Caption + 300 chars (< 600 MAX) + no images → TEXT_WITH_IMAGES."""

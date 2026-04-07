@@ -36,6 +36,7 @@ DEFAULTS = {
         "vision_text_max_chars": 600,      # above → captions are cross-refs, skip
         "vision_flattened_min_yield": 50,  # GLM-OCR chars below this → LLaVA fallback
         "vision_max_images_per_page": 4,   # cap LLaVA calls per page (largest first)
+        "vision_image_min_area_fraction": 0.05,  # images smaller than 5% of page area are decorative
         "chunking": {
             "max_tokens": 800,
             "overlap_fraction": 0.15,
