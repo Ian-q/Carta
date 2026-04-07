@@ -15,9 +15,9 @@ Add `carta update` command, daily background version checks with notifications, 
 
 Three new pieces:
 
-1. **`carta/update/checker.py`** — reads PyPI JSON API, compares to installed version, caches result in `.carta/update-check.json`. Called at the end of any carta command when cache is stale.
-2. **`carta/update/updater.py`** — detects install method (pipx vs pip), runs the appropriate upgrade subprocess, re-syncs the runtime copy in `.carta/carta/`.
-3. **`.github/workflows/release.yml`** — replaces the existing `publish.yml`; fires on `release: published`, auto-bumps version numbers across all files, builds, and publishes to PyPI.
+1. `**carta/update/checker.py`** — reads PyPI JSON API, compares to installed version, caches result in `.carta/update-check.json`. Called at the end of any carta command when cache is stale.
+2. `**carta/update/updater.py**` — detects install method (pipx vs pip), runs the appropriate upgrade subprocess, re-syncs the runtime copy in `.carta/carta/`.
+3. `**.github/workflows/release.yml**` — replaces the existing `publish.yml`; fires on `release: published`, auto-bumps version numbers across all files, builds, and publishes to PyPI.
 
 The checker and updater are intentionally separate — the background check never triggers an upgrade.
 
@@ -27,19 +27,21 @@ The checker and updater are intentionally separate — the background check neve
 
 ### Flags
 
-| Flag | Behaviour |
-|------|-----------|
-| `carta update` | Check, prompt confirmation, upgrade |
+
+| Flag                   | Behaviour                                  |
+| ---------------------- | ------------------------------------------ |
+| `carta update`         | Check, prompt confirmation, upgrade        |
 | `carta update --check` | Print current vs latest, exit (no upgrade) |
-| `carta update --yes` | Skip confirmation prompt |
+| `carta update --yes`   | Skip confirmation prompt                   |
+
 
 ### Upgrade flow
 
 1. Fetch latest version from PyPI (or use cache if <24h old)
 2. Compare to installed version — exit early with "already up to date" if same
 3. Detect install method:
-   - If `pipx` is on PATH and `carta-cc` appears in `pipx list` → `pipx upgrade carta-cc`
-   - Otherwise → `pip install --upgrade carta-cc`
+  - If `pipx` is on PATH and `carta-cc` appears in `pipx list` → `pipx upgrade carta-cc`
+  - Otherwise → `pip install --upgrade carta-cc`
 4. After successful upgrade, re-sync runtime copy in `.carta/carta/`
 5. Print new version
 
@@ -74,6 +76,7 @@ If no `.carta/` directory is found (e.g. `carta update` run outside a project), 
 ### Check trigger
 
 At the end of any `carta` command (scan, embed, search, init, doctor, update), if:
+
 - `update_check` is not `false` in config
 - Cache is missing or `checked_at` is >24h ago
 
@@ -120,13 +123,13 @@ Replaces the existing `publish.yml`. Triggered on `release: published`.
 
 1. **Parse tag** — strip `v` prefix to get bare version (e.g. `0.3.8`)
 2. **Version audit** — compare tag version against:
-   - `carta/__init__.py` → `__version__`
-   - `.claude-plugin/plugin.json` → `version`
-   - `.claude-plugin/marketplace.json` → `metadata.version` and `plugins[0].version`
+  - `carta/__init__.py` → `__version__`
+  - `.claude-plugin/plugin.json` → `version`
+  - `.claude-plugin/marketplace.json` → `metadata.version` and `plugins[0].version`
 3. **Auto-bump** — update any file that is behind the tag version
 4. **Commit & push** — if any files changed, commit `chore: sync version to X.Y.Z` to `main`; requires `permissions: contents: write`
 5. **Build** — `python -m build` (picks up updated `__version__` from `carta/__init__.py`)
-6. **Publish** — `twine upload dist/*` to PyPI using `PYPI_API_TOKEN` secret
+6. **Publish** — `twine upload dist/`* to PyPI using `PYPI_API_TOKEN` secret
 
 **Note:** `pyproject.toml` uses `version = {attr = "carta.__version__"}`, so updating `__init__.py` before building is sufficient — no `pyproject.toml` changes needed.
 
@@ -136,35 +139,41 @@ Replaces the existing `publish.yml`. Triggered on `release: published`.
 
 ### `carta update` / background check
 
-| Scenario | Behaviour |
-|----------|-----------|
-| PyPI unreachable (background) | Silently skip — no error shown |
-| PyPI unreachable (`--check`) | Print "Could not reach PyPI", exit 0 |
-| Unknown install method | Print "Could not detect install method. Run manually: `pip install --upgrade carta-cc`", exit 1 |
-| Upgrade subprocess fails | Print stderr from pipx/pip, exit non-zero |
-| Background thread timeout (2s) | Thread abandoned silently, no impact on command |
+
+| Scenario                       | Behaviour                                                                                       |
+| ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| PyPI unreachable (background)  | Silently skip — no error shown                                                                  |
+| PyPI unreachable (`--check`)   | Print "Could not reach PyPI", exit 0                                                            |
+| Unknown install method         | Print "Could not detect install method. Run manually: `pip install --upgrade carta-cc`", exit 1 |
+| Upgrade subprocess fails       | Print stderr from pipx/pip, exit non-zero                                                       |
+| Background thread timeout (2s) | Thread abandoned silently, no impact on command                                                 |
+
 
 ### Release workflow
 
-| Scenario | Behaviour |
-|----------|-----------|
-| Tag version ≤ existing versions | Skip all updates, log "versions already in sync", still build and publish |
-| Commit/push fails (e.g. branch protection) | Fail workflow before publish step — no version mismatch |
-| Build or publish fails | Standard workflow failure, no partial state |
+
+| Scenario                                   | Behaviour                                                                 |
+| ------------------------------------------ | ------------------------------------------------------------------------- |
+| Tag version ≤ existing versions            | Skip all updates, log "versions already in sync", still build and publish |
+| Commit/push fails (e.g. branch protection) | Fail workflow before publish step — no version mismatch                   |
+| Build or publish fails                     | Standard workflow failure, no partial state                               |
+
 
 ---
 
 ## Files Created / Modified
 
-| File | Change |
-|------|--------|
-| `carta/update/__init__.py` | New module |
-| `carta/update/checker.py` | New — PyPI fetch, cache read/write, notification logic |
-| `carta/update/updater.py` | New — install method detection, upgrade subprocess |
-| `carta/cli.py` | Add `cmd_update`, register subcommand, wire background check into all commands |
-| `carta/config.py` | Add `update_check` config key with default `true` |
-| `.github/workflows/release.yml` | New — replaces `publish.yml` |
-| `.github/workflows/publish.yml` | Deleted |
+
+| File                            | Change                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `carta/update/__init__.py`      | New module                                                                     |
+| `carta/update/checker.py`       | New — PyPI fetch, cache read/write, notification logic                         |
+| `carta/update/updater.py`       | New — install method detection, upgrade subprocess                             |
+| `carta/cli.py`                  | Add `cmd_update`, register subcommand, wire background check into all commands |
+| `carta/config.py`               | Add `update_check` config key with default `true`                              |
+| `.github/workflows/release.yml` | New — replaces `publish.yml`                                                   |
+| `.github/workflows/publish.yml` | Deleted                                                                        |
+
 
 ---
 
@@ -174,3 +183,4 @@ Replaces the existing `publish.yml`. Triggered on `release: published`.
 - `updater.py`: mock `shutil.which` and subprocess; test pipx/pip detection paths; test "already up to date" short-circuit
 - `cmd_update`: test `--check`, `--yes`, and interactive prompt paths
 - Release workflow: manual smoke test on next release
+
