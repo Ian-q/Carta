@@ -470,7 +470,7 @@ class TestAuditIntegration:
                 "file_hash": compute_file_hash(stale_file),
                 "file_mtime": 1000000000.0,  # Very old
                 "chunk_count": 1,
-                "last_embedded": "2026-01-01T00:00:00Z"
+                "last_embedded": "2026-01-01T00:00:00"
             }))
 
             # 3. Create a hash-mismatched file
