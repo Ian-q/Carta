@@ -226,13 +226,36 @@ class TestChunkOutputFormat:
 # ---------------------------------------------------------------------------
 
 class TestCallOllamaVision:
+    def _mock_stream(self, lines: list[bytes]):
+        """Return a mock requests.Response that streams the given NDJSON lines."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.iter_lines.return_value = iter(lines)
+        return mock_resp
+
+    def test_accumulates_streamed_tokens_into_response(self):
+        """Streaming chunks are joined; stream=True sent to Ollama."""
+        router = SmartRouter(_cfg())
+        lines = [
+            b'{"response": "Hello", "done": false}',
+            b'{"response": " world", "done": false}',
+            b'{"response": "", "done": true}',
+        ]
+        with patch("carta.vision.router.requests") as mock_requests:
+            mock_requests.post.return_value = self._mock_stream(lines)
+            result = router._call_ollama_vision(b"fakepng", model="glm-ocr:latest", prompt="extract")
+        assert result == "Hello world"
+        assert mock_requests.post.call_args[1]["json"]["stream"] is True
+        assert mock_requests.post.call_args[1]["stream"] is True
+
     def test_returns_stripped_response(self):
         router = SmartRouter(_cfg())
+        lines = [
+            b'{"response": "  description  ", "done": false}',
+            b'{"response": "", "done": true}',
+        ]
         with patch("carta.vision.router.requests") as mock_requests:
-            mock_requests.post.return_value = MagicMock(
-                status_code=200,
-                json=MagicMock(return_value={"response": "  description  "})
-            )
+            mock_requests.post.return_value = self._mock_stream(lines)
             result = router._call_ollama_vision(b"fakepng", model="llava", prompt="describe")
         assert result == "description"
 

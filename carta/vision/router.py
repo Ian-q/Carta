@@ -4,6 +4,7 @@ Routes each PDF page to the appropriate extraction strategy based on
 PageAnalyzer classification. PURE_TEXT pages produce zero model calls.
 """
 import base64
+import json
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -261,18 +262,31 @@ class SmartRouter:
         prompt: str,
         timeout: int = 120,
     ) -> str:
-        """Call Ollama vision API. Raises RuntimeError on non-200 response."""
+        """Call Ollama vision API using streaming to avoid response-length timeouts.
+
+        With stream=True, the timeout applies per-read rather than per-complete-response,
+        so dense tables that generate thousands of tokens don't hit the 120s wall.
+        """
         b64 = base64.b64encode(image_png_bytes).decode("utf-8")
         resp = requests.post(
             f"{self.ollama_url}/api/generate",
-            json={"model": model, "prompt": prompt, "images": [b64], "stream": False},
+            json={"model": model, "prompt": prompt, "images": [b64], "stream": True},
             timeout=timeout,
+            stream=True,
         )
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Ollama returned {resp.status_code}: {resp.text[:200]}"
             )
-        return resp.json()["response"].strip()
+        parts: list[str] = []
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            chunk = json.loads(line)
+            parts.append(chunk.get("response", ""))
+            if chunk.get("done"):
+                break
+        return "".join(parts).strip()
 
 
 def extract_image_descriptions_intelligent(
