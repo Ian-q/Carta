@@ -84,14 +84,54 @@ def _build_sidecar_registry(repo_root: Path, cfg: dict) -> dict:
 def _build_qdrant_chunk_index(client: QdrantClient, collection_name: str) -> dict:
     """Index all chunks in Qdrant by sidecar_id.
 
+    Scrolls the collection and groups chunks by sidecar_id.
+    Skips chunks without sidecar_id (pre-999.1 migration boundary).
+
     Args:
         client: Connected Qdrant client
         collection_name: Collection to scan
 
     Returns:
-        Dict mapping sidecar_id -> [chunk_records]
+        Dict mapping sidecar_id -> [chunk_records with id, payload]
     """
-    pass
+    index = {}
+
+    try:
+        # Scroll through all chunks
+        points, _ = client.scroll(
+            collection_name=collection_name,
+            limit=1000,  # Qdrant scroll batch size
+        )
+
+        while points:
+            for point in points:
+                sidecar_id = point.payload.get("sidecar_id")
+                if not sidecar_id:
+                    continue  # Skip pre-999.1 chunks
+
+                if sidecar_id not in index:
+                    index[sidecar_id] = []
+
+                index[sidecar_id].append({
+                    "id": point.id,
+                    "payload": point.payload,
+                    "chunk_index": point.payload.get("chunk_index")
+                })
+
+            # Continue scrolling if more points
+            if len(points) < 1000:
+                break
+
+            points, _ = client.scroll(
+                collection_name=collection_name,
+                limit=1000,
+                offset=len(points),
+            )
+    except Exception:
+        # Collection doesn't exist or is unreachable; return empty index
+        pass
+
+    return index
 
 
 def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
