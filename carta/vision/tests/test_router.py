@@ -308,11 +308,11 @@ class TestExtractPdfProgressCallback:
              patch.object(router, "_route") as mock_route:
             mock_analyzer.analyze.side_effect = lambda p: (call_order.append(("analyze",)) or profile)
             mock_route.side_effect = lambda *a, **kw: (call_order.append(("route",)) or [])
-            with patch("fitz.open") as mock_open:
+            with patch("carta.vision.router.fitz") as mock_fitz:
                 doc = MagicMock()
                 doc.__iter__ = MagicMock(return_value=iter([page]))
                 doc.__len__ = MagicMock(return_value=1)
-                mock_open.return_value = doc
+                mock_fitz.open.return_value = doc
                 router.extract_pdf(MagicMock(), progress_callback=cb)
 
         # callback must come after route
@@ -333,11 +333,11 @@ class TestExtractPdfProgressCallback:
         with patch.object(router, "analyzer") as mock_analyzer, \
              patch.object(router, "_route", return_value=[]):
             mock_analyzer.analyze.return_value = profile
-            with patch("fitz.open") as mock_open:
+            with patch("carta.vision.router.fitz") as mock_fitz:
                 doc = MagicMock()
                 doc.__iter__ = MagicMock(return_value=iter([page]))
                 doc.__len__ = MagicMock(return_value=3)
-                mock_open.return_value = doc
+                mock_fitz.open.return_value = doc
                 router.extract_pdf(MagicMock(), progress_callback=cb)
 
         assert len(received) == 1
@@ -370,11 +370,11 @@ class TestExtractPdfProgressCallback:
         with patch.object(router, "analyzer") as mock_analyzer, \
              patch.object(router, "_route", return_value=[chunk]):
             mock_analyzer.analyze.return_value = profile
-            with patch("fitz.open") as mock_open:
+            with patch("carta.vision.router.fitz") as mock_fitz:
                 doc = MagicMock()
                 doc.__iter__ = MagicMock(return_value=iter([page]))
                 doc.__len__ = MagicMock(return_value=1)
-                mock_open.return_value = doc
+                mock_fitz.open.return_value = doc
                 router.extract_pdf(MagicMock(), progress_callback=cb)
 
         assert len(received) == 1
@@ -395,11 +395,11 @@ class TestExtractPdfProgressCallback:
         with patch.object(router, "analyzer") as mock_analyzer, \
              patch.object(router, "_route", return_value=[]):
             mock_analyzer.analyze.return_value = profile
-            with patch("fitz.open") as mock_open:
+            with patch("carta.vision.router.fitz") as mock_fitz:
                 doc = MagicMock()
                 doc.__iter__ = MagicMock(return_value=iter([page1, page2]))
                 doc.__len__ = MagicMock(return_value=2)
-                mock_open.return_value = doc
+                mock_fitz.open.return_value = doc
                 # Must not raise
                 result = router.extract_pdf(MagicMock(), progress_callback=bad_cb)
         assert result == []
