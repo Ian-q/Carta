@@ -177,18 +177,40 @@ def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: di
 
 
 def detect_missing_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
-    """Detect files with chunks in Qdrant but no sidecar.
+    """Detect files with chunks in Qdrant but no sidecar on disk.
+
+    This indicates a partial failure or manual deletion of sidecar.
 
     Args:
-        repo_root: Repository root path
-        cfg: Carta config dict
-        sidecar_registry: Registry of sidecars from _build_sidecar_registry
-        qdrant_index: Chunk index from _build_qdrant_chunk_index
+        repo_root: Repository root
+        cfg: Config dict
+        sidecar_registry: Sidecars from _build_sidecar_registry
+        qdrant_index: Chunks from _build_qdrant_chunk_index
 
     Returns:
         List of issue dicts with category="missing_sidecars"
     """
-    pass
+    issues = []
+
+    for sidecar_id, chunks in qdrant_index.items():
+        if sidecar_id not in sidecar_registry and chunks:
+            # Find file_path from chunk payload if available
+            file_path = None
+            if chunks and chunks[0].get("payload", {}).get("file_path"):
+                file_path = chunks[0]["payload"]["file_path"]
+
+            issue = {
+                "id": f"missing_sidecar_{sidecar_id[:8]}",
+                "category": "missing_sidecars",
+                "severity": "warning",
+                "sidecar_id": sidecar_id,
+                "file_path": file_path,
+                "chunk_count": len(chunks),
+                "expected_sidecar_path": f"{file_path}.embed-meta.yaml" if file_path else "unknown"
+            }
+            issues.append(issue)
+
+    return issues
 
 
 def detect_stale_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict) -> list[dict]:
