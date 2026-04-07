@@ -1,8 +1,9 @@
 """Tests for audit module."""
 
+import os
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import yaml
@@ -12,7 +13,12 @@ from carta.audit.audit import (
     _build_qdrant_chunk_index,
     detect_orphaned_chunks,
     detect_missing_sidecars,
+    detect_stale_sidecars,
+    detect_hash_mismatches,
+    detect_disconnected_files,
+    detect_qdrant_sidecar_mismatches,
 )
+from carta.embed.lifecycle import compute_file_hash
 
 
 class TestBuildSidecarRegistry:
@@ -190,3 +196,183 @@ class TestDetectMissingSidecars:
 
         assert len(issues) == 1
         assert issues[0]["category"] == "missing_sidecars"
+
+
+class TestDetectStaleSidecars:
+    """Test detection of stale sidecars."""
+
+    def test_no_stale_when_mtime_matches(self):
+        """No issues when file mtime matches sidecar."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            docs_root = repo_root / "docs"
+            docs_root.mkdir()
+
+            test_file = docs_root / "test.md"
+            test_file.write_text("content")
+            mtime = os.path.getmtime(test_file)
+
+            sidecar_registry = {
+                "sidecar_1": {
+                    "file_path": test_file,
+                    "data": {"file_mtime": mtime, "last_embedded": "2026-04-07T10:00:00"}
+                }
+            }
+
+            issues = detect_stale_sidecars(repo_root, {}, sidecar_registry)
+
+            assert issues == []
+
+    def test_detects_stale_sidecars(self):
+        """File newer than sidecar is detected as stale."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            docs_root = repo_root / "docs"
+            docs_root.mkdir()
+
+            test_file = docs_root / "test.md"
+            test_file.write_text("content")
+
+            sidecar_registry = {
+                "sidecar_1": {
+                    "path": docs_root / "test.md.embed-meta.yaml",
+                    "file_path": test_file,
+                    "data": {"file_mtime": 1000000000.0, "last_embedded": "2026-01-01T00:00:00"}
+                }
+            }
+
+            issues = detect_stale_sidecars(repo_root, {}, sidecar_registry)
+
+            assert len(issues) == 1
+            assert issues[0]["category"] == "stale_sidecars"
+
+
+class TestDetectHashMismatches:
+    """Test detection of hash mismatches."""
+
+    def test_no_mismatch_when_hashes_match(self):
+        """No issues when file hash matches sidecar."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            docs_root = repo_root / "docs"
+            docs_root.mkdir()
+
+            test_file = docs_root / "test.md"
+            test_file.write_text("# Header\n")
+
+            # Compute actual hash
+            actual_hash = compute_file_hash(test_file)
+
+            sidecar_registry = {
+                "sidecar_1": {
+                    "file_path": test_file,
+                    "data": {"file_hash": actual_hash}
+                }
+            }
+
+            issues = detect_hash_mismatches(repo_root, {}, sidecar_registry)
+
+            assert issues == []
+
+    def test_detects_hash_mismatches(self):
+        """File with different hash than sidecar is detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            docs_root = repo_root / "docs"
+            docs_root.mkdir()
+
+            test_file = docs_root / "test.md"
+            test_file.write_text("# Header\n")
+
+            sidecar_registry = {
+                "sidecar_1": {
+                    "path": docs_root / "test.md.embed-meta.yaml",
+                    "file_path": test_file,
+                    "data": {"file_hash": "wrong_hash_value"}
+                }
+            }
+
+            issues = detect_hash_mismatches(repo_root, {}, sidecar_registry)
+
+            assert len(issues) == 1
+            assert issues[0]["category"] == "hash_mismatches"
+
+
+class TestDetectDisconnectedFiles:
+    """Test detection of disconnected files."""
+
+    def test_no_disconnected_when_all_embedded(self):
+        """No issues when all discoverable files have sidecars or chunks."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            docs_root = repo_root / "docs"
+            docs_root.mkdir()
+
+            test_file = docs_root / "test.md"
+            test_file.write_text("# Test")
+
+            sidecar_registry = {
+                "sidecar_1": {"file_path": test_file, "data": {}}
+            }
+            qdrant_index = {}
+
+            issues = detect_disconnected_files(repo_root, {"docs_root": "docs"}, sidecar_registry, qdrant_index)
+
+            assert issues == []
+
+    def test_detects_disconnected_files(self):
+        """Files with no sidecar and no chunks are detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            docs_root = repo_root / "docs"
+            docs_root.mkdir()
+
+            # Create discoverable file with no sidecar
+            orphaned_file = docs_root / "orphaned.md"
+            orphaned_file.write_text("# Orphaned")
+
+            sidecar_registry = {}
+            qdrant_index = {}
+
+            issues = detect_disconnected_files(repo_root, {"docs_root": "docs", "excluded_paths": []}, sidecar_registry, qdrant_index)
+
+            assert len(issues) == 1
+            assert issues[0]["category"] == "disconnected_files"
+            assert "orphaned.md" in issues[0]["file_path"]
+
+
+class TestDetectQdrantSidecarMismatches:
+    """Test detection of Qdrant/sidecar metadata mismatches."""
+
+    def test_no_mismatch_when_aligned(self):
+        """No issues when chunk count and indices align."""
+        sidecar_registry = {
+            "sidecar_1": {"data": {"chunk_count": 2, "chunk_indices": [0, 1]}}
+        }
+        qdrant_index = {
+            "sidecar_1": [
+                {"id": 1, "payload": {"chunk_index": 0}},
+                {"id": 2, "payload": {"chunk_index": 1}}
+            ]
+        }
+
+        issues = detect_qdrant_sidecar_mismatches(None, {}, sidecar_registry, qdrant_index)
+
+        assert issues == []
+
+    def test_detects_count_mismatch(self):
+        """Chunk count mismatch is detected."""
+        sidecar_registry = {
+            "sidecar_1": {"data": {"chunk_count": 5}}
+        }
+        qdrant_index = {
+            "sidecar_1": [
+                {"id": 1, "payload": {"chunk_index": 0}},
+                {"id": 2, "payload": {"chunk_index": 1}}
+            ]
+        }
+
+        issues = detect_qdrant_sidecar_mismatches(None, {}, sidecar_registry, qdrant_index)
+
+        assert len(issues) == 1
+        assert issues[0]["category"] == "qdrant_sidecar_mismatches"
