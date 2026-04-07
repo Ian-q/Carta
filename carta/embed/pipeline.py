@@ -657,6 +657,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     chunking = cfg.get("embed", {}).get("chunking", {})
     max_tokens = chunking.get("max_tokens", 400)
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
+    file_timeout_s = cfg.get("embed", {}).get("file_timeout_s", FILE_TIMEOUT_S)
 
     pending = discover_pending_files(repo_root)
     total = len(pending)
@@ -690,7 +691,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 max_tokens, overlap_fraction, verbose, progress,
             )
             try:
-                count, sidecar_updates = future.result(timeout=FILE_TIMEOUT_S)
+                count, sidecar_updates = future.result(timeout=file_timeout_s)
                 vision_events = sidecar_updates.pop("_vision_events", [])
                 _update_sidecar(sidecar_path, sidecar_updates)
                 elapsed = time.monotonic() - t0
@@ -703,14 +704,14 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 summary["embedded"] += 1
             except concurrent.futures.TimeoutError:
                 if progress:
-                    progress.skip(f"timeout after {FILE_TIMEOUT_S}s")
+                    progress.skip(f"timeout after {file_timeout_s}s")
                 elif verbose:
                     print(
-                        f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {FILE_TIMEOUT_S}s -- skipping",
+                        f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {file_timeout_s}s -- skipping",
                         flush=True,
                     )
                 print(
-                    f"  TIMEOUT: {file_path.name} exceeded {FILE_TIMEOUT_S}s",
+                    f"  TIMEOUT: {file_path.name} exceeded {file_timeout_s}s",
                     file=sys.stderr, flush=True,
                 )
                 summary["skipped"] += 1
