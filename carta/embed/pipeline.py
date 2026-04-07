@@ -159,6 +159,29 @@ def _embed_one_file(
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     count = upsert_chunks(enriched, cfg, client=client)
 
+    # Vision progress tracking — events collected by callback, passed to caller via sidecar_updates
+    _page_events: list[dict] = []
+
+    def _vision_callback(
+        page_num: int,
+        total_pages: int,
+        page_class: str,
+        model_used: str,
+        char_count: int,
+    ) -> None:
+        _page_events.append({
+            "page": page_num,
+            "page_class": page_class,
+            "model_used": model_used,
+            "char_count": char_count,
+        })
+        if progress:
+            if model_used == "skip":
+                msg = f"vision: page {page_num}/{total_pages} → pure-text (skip)"
+            else:
+                msg = f"vision: page {page_num}/{total_pages} → {model_used} → {char_count} chars"
+            progress.step(msg)
+
     # Vision: extract image descriptions for PDF files (fail-open per D-11, D-12)
     image_count = 0
     image_chunk_count = 0
@@ -190,7 +213,9 @@ def _embed_one_file(
             progress.step("extracting image descriptions")
         try:
             from carta.vision.router import extract_image_descriptions_intelligent
-            img_descs = extract_image_descriptions_intelligent(file_path, cfg)
+            img_descs = extract_image_descriptions_intelligent(
+                file_path, cfg, progress_callback=_vision_callback
+            )
             image_count = len(img_descs)
 
             if img_descs:
@@ -270,6 +295,7 @@ def _embed_one_file(
             "visual_pages_embedded": visual_pages_count,
         }
     
+    sidecar_updates["_vision_events"] = _page_events
     return count + image_chunk_count, sidecar_updates
 
 
@@ -664,10 +690,13 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             )
             try:
                 count, sidecar_updates = future.result(timeout=FILE_TIMEOUT_S)
+                vision_events = sidecar_updates.pop("_vision_events", [])
                 _update_sidecar(sidecar_path, sidecar_updates)
                 elapsed = time.monotonic() - t0
                 if progress:
                     progress.done(chunks=count, elapsed=elapsed)
+                    if vision_events:
+                        progress.vision_done(vision_events)
                 elif verbose:
                     print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
                 summary["embedded"] += 1
