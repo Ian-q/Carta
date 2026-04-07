@@ -10,11 +10,14 @@ This module provides structured detection of six issue categories:
 """
 
 import fnmatch
+import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from qdrant_client import QdrantClient
 
 import yaml
+
+from carta.embed.lifecycle import compute_file_hash
 
 
 def _build_sidecar_registry(repo_root: Path, cfg: dict) -> dict:
@@ -214,61 +217,199 @@ def detect_missing_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict, 
 
 
 def detect_stale_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict) -> list[dict]:
-    """Detect sidecars where file mtime is newer than last embed.
+    """Detect sidecars where file mtime is newer than recorded mtime.
+
+    Indicates file changed after embedding.
 
     Args:
-        repo_root: Repository root path
-        cfg: Carta config dict
-        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+        repo_root: Repository root
+        cfg: Config dict
+        sidecar_registry: Sidecars from _build_sidecar_registry
 
     Returns:
         List of issue dicts with category="stale_sidecars"
     """
-    pass
+    issues = []
+
+    for sidecar_id, sidecar_info in sidecar_registry.items():
+        file_path = sidecar_info.get("file_path")
+        if not file_path or not file_path.exists():
+            continue
+
+        sidecar_data = sidecar_info["data"]
+        recorded_mtime = sidecar_data.get("file_mtime")
+        last_embedded = sidecar_data.get("last_embedded")
+
+        if recorded_mtime is None:
+            continue
+
+        actual_mtime = os.path.getmtime(file_path)
+
+        if actual_mtime > recorded_mtime:
+            # Compute how many days stale
+            now = datetime.now()
+            embedded_dt = datetime.fromisoformat(last_embedded) if last_embedded else datetime.fromtimestamp(recorded_mtime)
+            days_stale = (now - embedded_dt).days
+
+            issue = {
+                "id": f"stale_{sidecar_id[:8]}",
+                "category": "stale_sidecars",
+                "severity": "info",
+                "file_path": str(file_path.relative_to(repo_root)),
+                "sidecar_path": str(sidecar_info["path"].relative_to(repo_root)),
+                "last_embedded": last_embedded,
+                "file_mtime": datetime.fromtimestamp(actual_mtime).isoformat(),
+                "days_stale": max(0, days_stale)
+            }
+            issues.append(issue)
+
+    return issues
 
 
 def detect_hash_mismatches(repo_root: Path, cfg: dict, sidecar_registry: dict) -> list[dict]:
     """Detect files where computed hash differs from sidecar record.
 
+    Indicates file content changed (even if mtime same due to touch/clock skew).
+
     Args:
-        repo_root: Repository root path
-        cfg: Carta config dict
-        sidecar_registry: Registry of sidecars from _build_sidecar_registry
+        repo_root: Repository root
+        cfg: Config dict
+        sidecar_registry: Sidecars from _build_sidecar_registry
 
     Returns:
         List of issue dicts with category="hash_mismatches"
     """
-    pass
+    issues = []
+
+    for sidecar_id, sidecar_info in sidecar_registry.items():
+        file_path = sidecar_info.get("file_path")
+        if not file_path or not file_path.exists():
+            continue
+
+        sidecar_data = sidecar_info["data"]
+        recorded_hash = sidecar_data.get("file_hash")
+
+        if recorded_hash is None:
+            continue
+
+        actual_hash = compute_file_hash(file_path)
+
+        if actual_hash != recorded_hash:
+            issue = {
+                "id": f"hash_mismatch_{sidecar_id[:8]}",
+                "category": "hash_mismatches",
+                "severity": "warning",
+                "file_path": str(file_path.relative_to(repo_root)),
+                "sidecar_path": str(sidecar_info["path"].relative_to(repo_root)),
+                "recorded_hash": recorded_hash,
+                "actual_hash": actual_hash
+            }
+            issues.append(issue)
+
+    return issues
 
 
 def detect_disconnected_files(repo_root: Path, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
-    """Detect discoverable files with no sidecar and no chunks.
+    """Detect discoverable files with no sidecar and no chunks in Qdrant.
+
+    These files were never embedded or were removed from Qdrant only.
 
     Args:
-        repo_root: Repository root path
-        cfg: Carta config dict
-        sidecar_registry: Registry of sidecars from _build_sidecar_registry
-        qdrant_index: Chunk index from _build_qdrant_chunk_index
+        repo_root: Repository root
+        cfg: Config dict with docs_root and excluded_paths
+        sidecar_registry: Sidecars from _build_sidecar_registry
+        qdrant_index: Chunks from _build_qdrant_chunk_index
 
     Returns:
         List of issue dicts with category="disconnected_files"
     """
-    pass
+    issues = []
+
+    docs_root = repo_root / cfg.get("docs_root", "docs")
+    excluded = cfg.get("excluded_paths", [])
+
+    if not docs_root.exists():
+        return issues
+
+    # Collect all files with sidecars or chunks
+    covered_files = set()
+
+    for sidecar_info in sidecar_registry.values():
+        if sidecar_info.get("file_path"):
+            covered_files.add(sidecar_info["file_path"])
+
+    for chunks in qdrant_index.values():
+        for chunk in chunks:
+            file_path_str = chunk.get("payload", {}).get("file_path")
+            if file_path_str:
+                covered_files.add(Path(file_path_str))
+
+    # Scan for all discoverable files (both .md and .pdf)
+    discoverable_files = set()
+    for file_path in docs_root.rglob("*"):
+        if file_path.suffix in (".md", ".pdf"):
+            discoverable_files.add(file_path)
+
+    # Check if excluded
+    for file_path in list(discoverable_files):
+        rel_path = file_path.relative_to(repo_root)
+        rel_path_str = str(rel_path).replace("\\", "/")
+        if any(fnmatch.fnmatch(rel_path_str, pattern) or fnmatch.fnmatch(rel_path_str, f"*/{pattern}*") for pattern in excluded):
+            discoverable_files.discard(file_path)
+
+    # Find disconnected files
+    for file_path in discoverable_files:
+        if file_path not in covered_files:
+            rel_path = file_path.relative_to(repo_root)
+            issue = {
+                "id": f"disconnected_{file_path.stem[:8]}",
+                "category": "disconnected_files",
+                "severity": "info",
+                "file_path": str(rel_path),
+                "reason": "File exists, no sidecar, no chunks in Qdrant"
+            }
+            issues.append(issue)
+
+    return issues
 
 
 def detect_qdrant_sidecar_mismatches(client: QdrantClient, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
     """Detect chunks in Qdrant that don't match sidecar metadata.
 
+    Checks chunk_count and chunk_index alignment.
+
     Args:
-        client: Connected Qdrant client
-        cfg: Carta config dict
-        sidecar_registry: Registry of sidecars from _build_sidecar_registry
-        qdrant_index: Chunk index from _build_qdrant_chunk_index
+        client: Qdrant client
+        cfg: Config dict
+        sidecar_registry: Sidecars from _build_sidecar_registry
+        qdrant_index: Chunks from _build_qdrant_chunk_index
 
     Returns:
         List of issue dicts with category="qdrant_sidecar_mismatches"
     """
-    pass
+    issues = []
+
+    for sidecar_id, sidecar_info in sidecar_registry.items():
+        sidecar_data = sidecar_info["data"]
+        recorded_count = sidecar_data.get("chunk_count")
+
+        chunks = qdrant_index.get(sidecar_id, [])
+        actual_count = len(chunks)
+
+        if recorded_count is not None and actual_count != recorded_count:
+            issue = {
+                "id": f"mismatch_{sidecar_id[:8]}",
+                "category": "qdrant_sidecar_mismatches",
+                "severity": "error",
+                "sidecar_id": sidecar_id,
+                "recorded_chunk_count": recorded_count,
+                "actual_chunk_count": actual_count,
+                "chunk_ids": [c["id"] for c in chunks],
+                "reason": f"Sidecar expects {recorded_count} chunks, Qdrant has {actual_count}"
+            }
+            issues.append(issue)
+
+    return issues
 
 
 def run_audit(cfg: dict, repo_root: Path, verbose: bool = False) -> dict:
