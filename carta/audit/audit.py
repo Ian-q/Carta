@@ -418,9 +418,73 @@ def run_audit(cfg: dict, repo_root: Path, verbose: bool = False) -> dict:
     Args:
         cfg: Carta config dict
         repo_root: Repository root path
-        verbose: If True, print detailed progress messages
+        verbose: Print progress to stdout
 
     Returns:
-        Audit results dict with keys: issues, summary, timestamp
+        Dict with summary and issues list matching JSON schema
     """
-    pass
+    start_time = datetime.now()
+
+    if verbose:
+        print("Audit: building sidecar registry...", flush=True)
+
+    sidecar_registry = _build_sidecar_registry(repo_root, cfg)
+
+    if verbose:
+        print(f"Audit: found {len(sidecar_registry)} sidecars", flush=True)
+
+    # Connect to Qdrant
+    try:
+        client = QdrantClient(url=cfg.get("qdrant_url", "http://localhost:6333"), timeout=5)
+        client.get_collections()
+    except Exception as e:
+        return {
+            "summary": {
+                "total_issues": -1,
+                "error": f"Qdrant unreachable: {e}",
+                "scanned_at": start_time.isoformat(),
+                "repo_root": str(repo_root)
+            },
+            "issues": []
+        }
+
+    if verbose:
+        print("Audit: building qdrant chunk index...", flush=True)
+
+    collection_name = f"{cfg.get('project_name', 'unknown')}_doc"
+    qdrant_index = _build_qdrant_chunk_index(client, collection_name)
+
+    if verbose:
+        print(f"Audit: scanning for issues...", flush=True)
+
+    # Run all detection functions
+    all_issues = []
+    all_issues.extend(detect_orphaned_chunks(client, cfg, sidecar_registry, qdrant_index))
+    all_issues.extend(detect_missing_sidecars(repo_root, cfg, sidecar_registry, qdrant_index))
+    all_issues.extend(detect_stale_sidecars(repo_root, cfg, sidecar_registry))
+    all_issues.extend(detect_hash_mismatches(repo_root, cfg, sidecar_registry))
+    all_issues.extend(detect_disconnected_files(repo_root, cfg, sidecar_registry, qdrant_index))
+    all_issues.extend(detect_qdrant_sidecar_mismatches(client, cfg, sidecar_registry, qdrant_index))
+
+    # Tally by category
+    by_category = {}
+    for issue in all_issues:
+        cat = issue["category"]
+        by_category[cat] = by_category.get(cat, 0) + 1
+
+    result = {
+        "summary": {
+            "total_issues": len(all_issues),
+            "by_category": by_category,
+            "scanned_at": start_time.isoformat(),
+            "repo_root": str(repo_root),
+            "project_name": cfg.get("project_name", "unknown"),
+            "collection_scanned": collection_name
+        },
+        "issues": all_issues
+    }
+
+    if verbose:
+        print(f"Audit complete: {len(all_issues)} issues found", flush=True)
+
+    return result
