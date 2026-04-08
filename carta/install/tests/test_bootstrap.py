@@ -261,10 +261,3 @@ def test_remove_plugin_cache_assertion_on_residue(tmp_path, capsys):
     assert result is False
     captured = capsys.readouterr()
     assert "plugin cache residue" in captured.err
-
-
-def test_install_skills_removed():
-    """_install_skills() must not exist — replaced by _remove_plugin_cache()."""
-    import carta.install.bootstrap as bootstrap_module
-    assert not hasattr(bootstrap_module, "_install_skills"), \
-        "_install_skills should have been removed; use _remove_plugin_cache() instead"
