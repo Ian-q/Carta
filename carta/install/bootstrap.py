@@ -113,7 +113,7 @@ def _install_skills(choice: str, project_root: Path) -> tuple[int, int, str]:
     return (copied, already, display)
 
 
-def run_bootstrap(project_root: Path) -> None:
+def run_bootstrap(project_root: Path, *, skip_skills: bool = False) -> None:
     """Bootstrap Carta in a project with comprehensive preflight checks."""
     # Phase 0: Run comprehensive preflight checks
     from carta.install.preflight import PreflightChecker
@@ -213,6 +213,30 @@ def run_bootstrap(project_root: Path) -> None:
 
     _append_claude_md(project_root, project_name)
     _create_agents_md(project_root, project_name)
+
+    if not skip_skills:
+        if _is_interactive():
+            sk_choice = _prompt_skills_choice()
+            if sk_choice != "S":
+                copied, already, display = _install_skills(sk_choice, project_root)
+                if display and (copied > 0 or already > 0):
+                    msg_parts = []
+                    if copied:
+                        msg_parts.append(f"{copied} installed")
+                    if already:
+                        msg_parts.append(f"{already} already present")
+                    print(f"\n✓ Carta skills at {display}: {', '.join(msg_parts)}")
+                    print("  (Reload Claude Code to activate)")
+        else:
+            copied, already, display = _install_skills("G", project_root)
+            if display and (copied > 0 or already > 0):
+                msg_parts = []
+                if copied:
+                    msg_parts.append(f"{copied} installed")
+                if already:
+                    msg_parts.append(f"{already} already present")
+                print(f"\n✓ Carta skills at {display}: {', '.join(msg_parts)}")
+                print("  (Reload Claude Code to activate)")
 
     colls = f"{project_name}_doc, {project_name}_session, {project_name}_quirk"
     if collections_ok:
