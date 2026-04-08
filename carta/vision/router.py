@@ -17,6 +17,7 @@ try:
 except ImportError:
     fitz = None  # type: ignore
 
+from carta.mupdf_util import mupdf_quiet
 from carta.vision.classifier import PageAnalyzer, PageClass, PageProfile
 
 
@@ -81,33 +82,34 @@ class SmartRouter:
         """
         if fitz is None:
             raise RuntimeError("PyMuPDF (fitz) not available")
-        try:
-            doc = fitz.open(str(pdf_path))
-        except Exception as exc:
-            print(
-                f"Warning: could not open PDF {pdf_path}: {exc}",
-                file=sys.stderr, flush=True,
-            )
-            return []
+        with mupdf_quiet():
+            try:
+                doc = fitz.open(str(pdf_path))
+            except Exception as exc:
+                print(
+                    f"Warning: could not open PDF {pdf_path}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                return []
 
-        results = []
-        total_pages = len(doc)
-        for page_num, page in enumerate(doc, start=1):
-            if cancel_event is not None and cancel_event.is_set():
-                break
-            profile = self.analyzer.analyze(page)
-            chunks = self._route(page, page_num, profile, doc)
-            results.extend(chunks)
-            if progress_callback:
-                try:
-                    char_count = sum(len(c.get("text", "")) for c in chunks)
-                    model_used = chunks[0]["model_used"] if chunks else "skip"
-                    page_class = profile.page_class.name.lower()
-                    progress_callback(page_num, total_pages, page_class, model_used, char_count)
-                except Exception:
-                    pass
-        doc.close()
-        return results
+            results = []
+            total_pages = len(doc)
+            for page_num, page in enumerate(doc, start=1):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
+                profile = self.analyzer.analyze(page)
+                chunks = self._route(page, page_num, profile, doc)
+                results.extend(chunks)
+                if progress_callback:
+                    try:
+                        char_count = sum(len(c.get("text", "")) for c in chunks)
+                        model_used = chunks[0]["model_used"] if chunks else "skip"
+                        page_class = profile.page_class.name.lower()
+                        progress_callback(page_num, total_pages, page_class, model_used, char_count)
+                    except Exception:
+                        pass
+            doc.close()
+            return results
 
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any

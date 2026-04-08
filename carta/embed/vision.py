@@ -10,6 +10,8 @@ try:
 except ImportError:
     fitz = None  # type: ignore
 
+from carta.mupdf_util import mupdf_quiet
+
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
@@ -205,54 +207,55 @@ def extract_image_descriptions(pdf_path: Path, cfg: dict) -> list[dict]:
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"].get("ollama_vision_model", "llava:latest")
 
-    try:
-        doc = fitz.open(str(pdf_path))
-    except Exception as exc:
-        print(
-            f"Warning: could not open PDF {pdf_path}: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return []
+    with mupdf_quiet():
+        try:
+            doc = fitz.open(str(pdf_path))
+        except Exception as exc:
+            print(
+                f"Warning: could not open PDF {pdf_path}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return []
 
-    results = []
+        results = []
 
-    for page_num, page in enumerate(doc, start=1):
-        # --- Embedded image objects ---
-        embedded_pngs = _extract_embedded_images(doc, page, fitz)
-        for img_index, png_bytes in enumerate(embedded_pngs):
-            try:
-                description = _call_vision_model(png_bytes, ollama_url, model)
-                results.append({
-                    "page_num": page_num,
-                    "image_index": img_index,
-                    "doc_type": "image_description",
-                    "text": description,
-                })
-            except Exception as exc:
-                print(
-                    f"Warning: vision model failed for page {page_num} image {img_index}: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        for page_num, page in enumerate(doc, start=1):
+            # --- Embedded image objects ---
+            embedded_pngs = _extract_embedded_images(doc, page, fitz)
+            for img_index, png_bytes in enumerate(embedded_pngs):
+                try:
+                    description = _call_vision_model(png_bytes, ollama_url, model)
+                    results.append({
+                        "page_num": page_num,
+                        "image_index": img_index,
+                        "doc_type": "image_description",
+                        "text": description,
+                    })
+                except Exception as exc:
+                    print(
+                        f"Warning: vision model failed for page {page_num} image {img_index}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
-        # --- Page-render fallback for vector-only pages ---
-        if not embedded_pngs and _has_significant_vector_content(page):
-            try:
-                png_bytes = _render_page_as_png(page, dpi=150)
-                description = _call_vision_model(png_bytes, ollama_url, model)
-                results.append({
-                    "page_num": page_num,
-                    "image_index": 0,
-                    "doc_type": "image_description",
-                    "text": description,
-                })
-            except Exception as exc:
-                print(
-                    f"Warning: vision model failed for page-render fallback page {page_num}: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            # --- Page-render fallback for vector-only pages ---
+            if not embedded_pngs and _has_significant_vector_content(page):
+                try:
+                    png_bytes = _render_page_as_png(page, dpi=150)
+                    description = _call_vision_model(png_bytes, ollama_url, model)
+                    results.append({
+                        "page_num": page_num,
+                        "image_index": 0,
+                        "doc_type": "image_description",
+                        "text": description,
+                    })
+                except Exception as exc:
+                    print(
+                        f"Warning: vision model failed for page-render fallback page {page_num}: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
-    doc.close()
-    return results
+        doc.close()
+        return results

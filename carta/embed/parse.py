@@ -4,6 +4,8 @@ import re
 import yaml
 from pathlib import Path
 
+from carta.mupdf_util import mupdf_quiet
+
 
 def extract_pdf_text(pdf_path: Path) -> list[dict]:
     """Extract text from a PDF, returning a list of page dicts.
@@ -13,37 +15,38 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
     """
     import fitz  # pymupdf
 
-    doc = fitz.open(str(pdf_path))
-    pages = []
+    with mupdf_quiet():
+        doc = fitz.open(str(pdf_path))
+        pages = []
 
-    for page_num, page in enumerate(doc, start=1):
-        blocks = page.get_text("dict")["blocks"]
-        text_parts = []
-        headings = []
+        for page_num, page in enumerate(doc, start=1):
+            blocks = page.get_text("dict")["blocks"]
+            text_parts = []
+            headings = []
 
-        for block in blocks:
-            if block.get("type") != 0:
-                continue
-            for line in block.get("lines", []):
-                line_text = ""
-                max_size = 0
-                for span in line.get("spans", []):
-                    line_text += span["text"]
-                    max_size = max(max_size, span["size"])
-                line_text = line_text.strip()
-                if not line_text:
+            for block in blocks:
+                if block.get("type") != 0:
                     continue
-                text_parts.append(line_text)
-                if max_size >= 13:
-                    headings.append(line_text)
+                for line in block.get("lines", []):
+                    line_text = ""
+                    max_size = 0
+                    for span in line.get("spans", []):
+                        line_text += span["text"]
+                        max_size = max(max_size, span["size"])
+                    line_text = line_text.strip()
+                    if not line_text:
+                        continue
+                    text_parts.append(line_text)
+                    if max_size >= 13:
+                        headings.append(line_text)
 
-        pages.append({
-            "page": page_num,
-            "text": "\n".join(text_parts),
-            "headings": headings,
-        })
+            pages.append({
+                "page": page_num,
+                "text": "\n".join(text_parts),
+                "headings": headings,
+            })
 
-    doc.close()
+        doc.close()
     return pages
 
 
