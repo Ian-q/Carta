@@ -50,6 +50,7 @@ try:
 except ImportError:
     fitz = None  # type: ignore
 
+from carta.mupdf_util import mupdf_quiet
 
 # Default render DPI for page images
 DEFAULT_RENDER_DPI = 150
@@ -242,33 +243,34 @@ class ColPaliEmbedder:
         if fitz is None:
             raise ImportError("PyMuPDF (fitz) is required for PDF page rendering")
 
-        try:
-            doc = fitz.open(str(pdf_path))
-        except Exception as exc:
-            raise ColPaliError(f"Cannot open PDF {pdf_path}: {exc}") from exc
+        with mupdf_quiet():
+            try:
+                doc = fitz.open(str(pdf_path))
+            except Exception as exc:
+                raise ColPaliError(f"Cannot open PDF {pdf_path}: {exc}") from exc
 
-        try:
-            if page_num < 1 or page_num > len(doc):
-                raise ColPaliError(
-                    f"Page {page_num} out of range (PDF has {len(doc)} pages)"
-                )
+            try:
+                if page_num < 1 or page_num > len(doc):
+                    raise ColPaliError(
+                        f"Page {page_num} out of range (PDF has {len(doc)} pages)"
+                    )
 
-            page = doc[page_num - 1]  # PyMuPDF uses 0-indexing
-            pix = page.get_pixmap(dpi=dpi)
-            png_bytes = pix.tobytes("png")
+                page = doc[page_num - 1]  # PyMuPDF uses 0-indexing
+                pix = page.get_pixmap(dpi=dpi)
+                png_bytes = pix.tobytes("png")
 
-            # Convert to PIL Image for embedding
-            image = Image.open(io.BytesIO(png_bytes))
-            if image.mode != "RGB":
-                image = image.convert("RGB")
+                # Convert to PIL Image for embedding
+                image = Image.open(io.BytesIO(png_bytes))
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
 
-            # Embed the page
-            vectors = self.embed_page(image)
+                # Embed the page
+                vectors = self.embed_page(image)
 
-            return vectors, png_bytes
+                return vectors, png_bytes
 
-        finally:
-            doc.close()
+            finally:
+                doc.close()
 
     def embed_pdf_pages(
         self,
@@ -296,78 +298,79 @@ class ColPaliEmbedder:
         if self._model is None:
             self._load_model()
 
-        try:
-            doc = fitz.open(str(pdf_path))
-        except Exception as exc:
-            raise ColPaliError(f"Cannot open PDF {pdf_path}: {exc}") from exc
+        with mupdf_quiet():
+            try:
+                doc = fitz.open(str(pdf_path))
+            except Exception as exc:
+                raise ColPaliError(f"Cannot open PDF {pdf_path}: {exc}") from exc
 
-        try:
-            if page_nums is None:
-                page_nums = list(range(1, len(doc) + 1))
+            try:
+                if page_nums is None:
+                    page_nums = list(range(1, len(doc) + 1))
 
-            results = []
+                results = []
 
-            # Process in batches
-            for i in range(0, len(page_nums), self.batch_size):
-                batch = page_nums[i : i + self.batch_size]
-                batch_images = []
-                batch_meta = []
+                # Process in batches
+                for i in range(0, len(page_nums), self.batch_size):
+                    batch = page_nums[i : i + self.batch_size]
+                    batch_images = []
+                    batch_meta = []
 
-                for page_num in batch:
-                    if page_num < 1 or page_num > len(doc):
+                    for page_num in batch:
+                        if page_num < 1 or page_num > len(doc):
+                            print(
+                                f"Warning: Page {page_num} out of range, skipping",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            continue
+
+                        page = doc[page_num - 1]
+                        pix = page.get_pixmap(dpi=dpi)
+                        png_bytes = pix.tobytes("png")
+                        image = Image.open(io.BytesIO(png_bytes))
+                        if image.mode != "RGB":
+                            image = image.convert("RGB")
+
+                        batch_images.append(image)
+                        batch_meta.append({"page_num": page_num, "png_bytes": png_bytes})
+
+                    if not batch_images:
+                        continue
+
+                    # Embed batch using native transformers API
+                    try:
+                        inputs = self._processor(
+                            images=batch_images, return_tensors="pt"
+                        ).to(self.device)
+
+                        with torch.no_grad():
+                            outputs = self._model(**inputs)
+                            embeddings = outputs.embeddings
+
+                        # Convert to numpy
+                        vectors_batch = embeddings.cpu().float().numpy()
+
+                        # Store results
+                        for idx, meta in enumerate(batch_meta):
+                            results.append({
+                                "page_num": meta["page_num"],
+                                "vectors": vectors_batch[idx],
+                                "png_bytes": meta["png_bytes"],
+                            })
+
+                    except Exception as exc:
                         print(
-                            f"Warning: Page {page_num} out of range, skipping",
+                            f"Warning: Failed to embed batch starting at page {batch[0]}: {exc}",
                             file=sys.stderr,
                             flush=True,
                         )
                         continue
 
-                    page = doc[page_num - 1]
-                    pix = page.get_pixmap(dpi=dpi)
-                    png_bytes = pix.tobytes("png")
-                    image = Image.open(io.BytesIO(png_bytes))
-                    if image.mode != "RGB":
-                        image = image.convert("RGB")
+                return results
 
-                    batch_images.append(image)
-                    batch_meta.append({"page_num": page_num, "png_bytes": png_bytes})
-
-                if not batch_images:
-                    continue
-
-                # Embed batch using native transformers API
-                try:
-                    inputs = self._processor(
-                        images=batch_images, return_tensors="pt"
-                    ).to(self.device)
-
-                    with torch.no_grad():
-                        outputs = self._model(**inputs)
-                        embeddings = outputs.embeddings
-
-                    # Convert to numpy
-                    vectors_batch = embeddings.cpu().float().numpy()
-
-                    # Store results
-                    for idx, meta in enumerate(batch_meta):
-                        results.append({
-                            "page_num": meta["page_num"],
-                            "vectors": vectors_batch[idx],
-                            "png_bytes": meta["png_bytes"],
-                        })
-
-                except Exception as exc:
-                    print(
-                        f"Warning: Failed to embed batch starting at page {batch[0]}: {exc}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    continue
-
-            return results
-
-        finally:
-            doc.close()
+            finally:
+                doc.close()
 
     def save_page_cache(
         self,
