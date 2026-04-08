@@ -237,7 +237,7 @@ def _check_path_conflict() -> None:
 def cmd_init(args):
     _check_path_conflict()
     from carta.install.bootstrap import run_bootstrap
-    run_bootstrap(Path.cwd())
+    run_bootstrap(Path.cwd(), skip_skills=getattr(args, "skip_skills", False))
     _notify_if_update()
 
 def cmd_doctor(args):
@@ -330,7 +330,12 @@ def main():
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("init")
+    init_p = sub.add_parser("init", help="Initialize Carta in the current project")
+    init_p.add_argument(
+        "--skip-skills",
+        action="store_true",
+        help="Do not install Carta skills to ~/.claude/skills or .claude/skills",
+    )
     sub.add_parser("scan")
     sub.add_parser("embed")
 
