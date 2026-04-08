@@ -36,6 +36,83 @@ def _prompt_user(message: str, default: bool = True) -> bool:
         return response in ("y", "yes", "true")
 
 
+def _skills_source_dir(project_root: Path) -> Path:
+    """Directory containing Carta skill markdown files shipped with the repo checkout."""
+    return project_root / "docs" / "superpowers" / "skills"
+
+
+def _skills_destination_root(choice: str, project_root: Path) -> Path:
+    """Root directory for Claude Code skills: global ~/.claude/skills or project .claude/skills."""
+    if choice == "G":
+        return Path.home() / ".claude" / "skills"
+    if choice == "P":
+        return project_root / ".claude" / "skills"
+    raise ValueError(f"Invalid skills choice: {choice!r}")
+
+
+def _prompt_skills_choice() -> str:
+    """Interactive G/P/S for skill installation. Default G."""
+    if not _is_interactive():
+        return "G"
+    try:
+        print("Install Carta skills? [G]lobal/[P]roject/[S]kip [G]: ", end="", flush=True)
+        line = input().strip().lower()
+    except (EOFError, OSError):
+        return "G"
+    if not line or line in ("g", "global"):
+        return "G"
+    if line in ("p", "project"):
+        return "P"
+    if line in ("s", "skip"):
+        return "S"
+    return "G"
+
+
+def _install_skills(choice: str, project_root: Path) -> tuple[int, int, str]:
+    """Copy each docs/superpowers/skills/*.md into Claude skill layout. Idempotent per file.
+
+    Returns:
+        (copied_count, already_present_count, display_path): new copies, skips because file
+        already existed, and a short path for messages (e.g. ~/.claude/skills or .claude/skills).
+        display_path is "" if nothing to report (missing source / empty dir).
+    """
+    source_dir = _skills_source_dir(project_root)
+    if not source_dir.is_dir():
+        print(
+            f"  Warning: skill sources not found ({source_dir}); skipping skill install.",
+            file=sys.stderr,
+        )
+        return (0, 0, "")
+
+    dest_root = _skills_destination_root(choice, project_root)
+    md_files = sorted(source_dir.glob("*.md"))
+    if not md_files:
+        print(f"  Warning: no .md files in {source_dir}; skipping skill install.", file=sys.stderr)
+        return (0, 0, "")
+
+    copied = 0
+    already = 0
+    for src in md_files:
+        stem = src.stem
+        dest_dir = dest_root / stem
+        dest_file = dest_dir / f"{stem}.md"
+        if dest_file.is_file():
+            already += 1
+            continue
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest_file)
+            copied += 1
+        except OSError as e:
+            print(f"  Warning: could not install skill {stem}: {e}", file=sys.stderr)
+
+    if choice == "G":
+        display = "~/.claude/skills"
+    else:
+        display = ".claude/skills"
+    return (copied, already, display)
+
+
 def run_bootstrap(project_root: Path) -> None:
     """Bootstrap Carta in a project with comprehensive preflight checks."""
     # Phase 0: Run comprehensive preflight checks
