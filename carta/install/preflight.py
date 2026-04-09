@@ -33,6 +33,8 @@ from urllib.parse import urlparse
 
 import requests
 
+_DEFAULT_PROJECT_ROOT = Path.cwd()
+
 
 @dataclass
 class PreflightCheck:
@@ -195,9 +197,10 @@ class PreflightResult:
 class PreflightChecker:
     """Orchestrates all preflight checks across 4 phases."""
 
-    def __init__(self, interactive: bool = True, verbose: bool = False):
+    def __init__(self, interactive: bool = True, verbose: bool = False, project_root: Optional[Path] = None):
         self.interactive = interactive
         self.verbose = verbose
+        self.project_root = (project_root or _DEFAULT_PROJECT_ROOT).resolve()
         self.checks: list[PreflightCheck] = []
         self.os_type = self._detect_os()
 
@@ -229,6 +232,78 @@ class PreflightChecker:
         self.checks.append(self._check_pip())
         self.checks.append(self._check_virtual_environment())
         self.checks.append(self._check_network_connectivity())
+        self.checks.append(self._check_claude_skills_accessible())
+
+    def _expected_skill_names(self) -> list[str]:
+        """Return skill names shipped by Carta (directory names containing SKILL.md)."""
+        # Prefer repo-local skills/ if present; otherwise fall back to package skills/.
+        candidates = [self.project_root / "skills", Path(__file__).resolve().parent.parent / "skills"]
+        source = next((p for p in candidates if p.is_dir()), None)
+        if source is None:
+            return []
+
+        names: list[str] = []
+        for d in sorted(source.iterdir()):
+            if not d.is_dir():
+                continue
+            if (d / "SKILL.md").is_file():
+                names.append(d.name)
+        return names
+
+    def _check_claude_skills_accessible(self) -> PreflightCheck:
+        """Check whether Carta's Claude Code skills are installed globally or locally."""
+        expected = self._expected_skill_names()
+        if not expected:
+            return PreflightCheck(
+                name="claude_skills_accessible",
+                status="skip",
+                message="Skipped (no bundled skills found)",
+                category="environment",
+            )
+
+        global_root = Path.home() / ".claude" / "skills"
+        project_root = self.project_root / ".claude" / "skills"
+
+        def _has(skill: str, root: Path) -> bool:
+            return (root / skill / "SKILL.md").is_file()
+
+        global_found = [s for s in expected if _has(s, global_root)]
+        project_found = [s for s in expected if _has(s, project_root)]
+        missing = [s for s in expected if s not in set(global_found) and s not in set(project_found)]
+
+        if not missing:
+            return PreflightCheck(
+                name="claude_skills_accessible",
+                status="pass",
+                message=f"Claude skills installed ({len(expected)} found)",
+                category="environment",
+                details={
+                    "expected": expected,
+                    "global_found": global_found,
+                    "project_found": project_found,
+                },
+            )
+
+        # Missing skills are non-blocking (users can still run CLI), but they break Skill discovery.
+        return PreflightCheck(
+            name="claude_skills_accessible",
+            status="warn",
+            message=f"Claude skills missing ({len(missing)}/{len(expected)} not installed)",
+            category="environment",
+            fixable=False,
+            details={
+                "expected": expected,
+                "missing": missing,
+                "global_root": str(global_root),
+                "project_root": str(project_root),
+                "global_found": global_found,
+                "project_found": project_found,
+            },
+            suggestion=(
+                "Re-run `carta init` and install skills (Global or Project), or manually copy/symlink "
+                f"the skill folders into `{global_root}` or `{project_root}`."
+            ),
+        )
 
     def _phase2_infrastructure(self) -> None:
         """Check Docker, Qdrant, Ollama, ports."""

@@ -197,3 +197,39 @@ class TestFixFooter:
         # Numbered format confirms these appear in the footer, not just inline
         assert "1. Qdrant not running" in captured.out
         assert "2. Model 'qwen3.5:0.8b' not pulled" in captured.out
+
+
+class TestClaudeSkillsAccessible:
+    def test_warn_when_no_skills_installed(self, tmp_path, monkeypatch):
+        project = tmp_path / "proj"
+        project.mkdir()
+        # Bundle skills in repo layout
+        (project / "skills" / "doc-audit").mkdir(parents=True)
+        (project / "skills" / "doc-audit" / "SKILL.md").write_text("---\nname: doc-audit\n---\n")
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr("carta.install.preflight.Path.home", lambda: fake_home)
+
+        checker = PreflightChecker(interactive=False, project_root=project)
+        check = checker._check_claude_skills_accessible()
+        assert check.status == "warn"
+        assert "missing" in check.message.lower()
+
+    def test_pass_when_skills_installed_globally(self, tmp_path, monkeypatch):
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "skills" / "doc-search").mkdir(parents=True)
+        (project / "skills" / "doc-search" / "SKILL.md").write_text("---\nname: doc-search\n---\n")
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr("carta.install.preflight.Path.home", lambda: fake_home)
+
+        global_skill = fake_home / ".claude" / "skills" / "doc-search" / "SKILL.md"
+        global_skill.parent.mkdir(parents=True)
+        global_skill.write_text("ok")
+
+        checker = PreflightChecker(interactive=False, project_root=project)
+        check = checker._check_claude_skills_accessible()
+        assert check.status == "pass"

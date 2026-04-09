@@ -1,0 +1,54 @@
+<h2>Decision Tree v2: Caption detection with text ceiling</h2>
+<p class="subtitle">Figure caption only triggers image fallback when text is sparse enough that the figure is likely <em>on this page</em></p>
+
+<div style="font-family: monospace; font-size: 12px; line-height: 2; background: var(--bg); padding: 20px; border-radius: 8px; overflow-x: auto;">
+
+<span style="color:#94a3b8;"># Thresholds</span><br>
+TEXT_MIN   = 150    <span style="color:#94a3b8;"># below → FLATTENED</span><br>
+TEXT_MAX   = 600    <span style="color:#94a3b8;"># above + caption → cross-ref to another page, ignore</span><br>
+<br>
+<span style="color:#4ade80;">if</span> len(text) &gt; TEXT_MIN:<br>
+&nbsp;&nbsp;<span style="color:#4ade80;">if</span> has_tables:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;→ <strong style="color:#f59e0b;">STRUCTURED_TEXT</strong><br>
+&nbsp;&nbsp;<span style="color:#4ade80;">elif</span> images:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;→ <strong style="color:#60a5fa;">TEXT_WITH_IMAGES</strong>         <span style="color:#94a3b8;"># always, image is clearly here</span><br>
+&nbsp;&nbsp;<span style="color:#4ade80;">elif</span> has_caps <span style="color:#4ade80;">and</span> len(text) &lt; TEXT_MAX:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;→ <strong style="color:#60a5fa;">TEXT_WITH_IMAGES</strong>         <span style="color:#94a3b8;"># sparse text + caption → likely vector graphic</span><br>
+&nbsp;&nbsp;<span style="color:#4ade80;">else</span>:                            <span style="color:#94a3b8;"># dense text, any captions are cross-refs</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;→ <strong style="color:#4ade80;">PURE_TEXT</strong><br>
+<span style="color:#4ade80;">else</span>:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;→ <strong style="color:#f87171;">FLATTENED</strong>
+
+</div>
+
+<div style="margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+
+  <div style="padding: 14px; border: 1px solid #166534; border-radius: 8px; background: #052e16;">
+    <div style="font-size:12px; font-weight:600; color:#4ade80; margin-bottom:8px;">✓ Dense text + "see Figure 12"</div>
+    <div style="font-size:11px; color:var(--text-secondary); line-height:1.7;">
+      text_length = 1,200 chars<br>
+      has_caps = true (cross-reference)<br>
+      images = []<br>
+      <br>
+      len(text) &gt; TEXT_MAX → <strong style="color:#4ade80;">PURE_TEXT</strong><br>
+      <em>No false LLaVA call. Figure is on another page.</em>
+    </div>
+  </div>
+
+  <div style="padding: 14px; border: 1px solid #1e3a5f; border-radius: 8px; background: #0c1a2e;">
+    <div style="font-size:12px; font-weight:600; color:#60a5fa; margin-bottom:8px;">✓ Sparse text + "Figure 3: Timing diagram"</div>
+    <div style="font-size:11px; color:var(--text-secondary); line-height:1.7;">
+      text_length = 280 chars (caption + title)<br>
+      has_caps = true<br>
+      images = []  ← vector graphic, not listed<br>
+      <br>
+      len(text) &lt; TEXT_MAX → <strong style="color:#60a5fa;">TEXT_WITH_IMAGES</strong><br>
+      <em>Full page render → LLaVA. Catches the vector.</em>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12px;">
+  <strong>TEXT_MAX = 600</strong> is approximate — a page with 600+ chars of running text is almost certainly a prose/spec page cross-referencing a figure elsewhere. A page with 150–600 chars is likely a diagram page with a short caption and label text. Both thresholds are config-tunable.
+</div>

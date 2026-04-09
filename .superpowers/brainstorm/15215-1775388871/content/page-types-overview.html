@@ -1,0 +1,68 @@
+<h2>PDF Page Classification: The 5 Cases</h2>
+<p class="subtitle">Mapping out what you described — confirm this is the right taxonomy before we design the system</p>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 24px;">
+
+  <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--surface);">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+      <span style="font-size:24px;">📄</span>
+      <h3 style="margin:0; color: var(--accent);">Case 1: Pure Text</h3>
+    </div>
+    <p style="margin:0; font-size:13px; color: var(--text-secondary);">PyMuPDF extracts text cleanly. No images present.</p>
+    <div style="margin-top:10px; padding:8px; background:var(--bg); border-radius:4px; font-size:12px;">
+      <strong>Action:</strong> PyMuPDF only — skip all vision models
+    </div>
+    <div style="margin-top:6px; font-size:11px; color: #4ade80;">✓ Fast, cheap, already works well</div>
+  </div>
+
+  <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--surface);">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+      <span style="font-size:24px;">📊</span>
+      <h3 style="margin:0; color: var(--accent);">Case 2: Structured Text / Tables</h3>
+    </div>
+    <p style="margin:0; font-size:13px; color: var(--text-secondary);">Text is present but arranged in tables — row/column relationships matter.</p>
+    <div style="margin-top:10px; padding:8px; background:var(--bg); border-radius:4px; font-size:12px;">
+      <strong>Action:</strong> GLM-OCR (structured extraction) to preserve table alignment
+    </div>
+    <div style="margin-top:6px; font-size:11px; color: #facc15;">⚠ PyMuPDF may scramble row associations</div>
+  </div>
+
+  <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--surface);">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+      <span style="font-size:24px;">🖼️</span>
+      <h3 style="margin:0; color: var(--accent);">Case 3: Flattened Image Page</h3>
+    </div>
+    <p style="margin:0; font-size:13px; color: var(--text-secondary);">Entire page is a raster image. Could be: scanned text, scanned table, diagram, or decorative photo.</p>
+    <div style="margin-top:10px; padding:8px; background:var(--bg); border-radius:4px; font-size:12px;">
+      <strong>Sub-routing:</strong> GLM-OCR first → if low yield, LLaVA for description
+    </div>
+    <div style="margin-top:6px; font-size:11px; color: #facc15;">⚠ Can't distinguish text-scan vs photo without running a model</div>
+  </div>
+
+  <div style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--surface);">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+      <span style="font-size:24px;">📝🔬</span>
+      <h3 style="margin:0; color: var(--accent);">Case 4: Text + Technical Image</h3>
+    </div>
+    <p style="margin:0; font-size:13px; color: var(--text-secondary);">Good PyMuPDF text AND an embedded image that looks like a plot, timing diagram, or schematic.</p>
+    <div style="margin-top:10px; padding:8px; background:var(--bg); border-radius:4px; font-size:12px;">
+      <strong>Action:</strong> Keep PyMuPDF text chunk + extract image crop + LLaVA describe image
+    </div>
+    <div style="margin-top:6px; font-size:11px; color: #4ade80;">✓ This is the key case carta was missing</div>
+  </div>
+
+  <div style="border: 1px solid var(--border); border-radius: 8px; grid-column: span 2; padding: 16px; background: var(--surface);">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+      <span style="font-size:24px;">📝🌳</span>
+      <h3 style="margin:0; color: var(--accent);">Case 5: Text + Non-Technical Image</h3>
+    </div>
+    <p style="margin:0; font-size:13px; color: var(--text-secondary);">Good PyMuPDF text AND an embedded image that's decorative/irrelevant (logo, stock photo, chapter header art).</p>
+    <div style="margin-top:10px; padding:8px; background:var(--bg); border-radius:4px; font-size:12px;">
+      <strong>Action:</strong> Keep PyMuPDF text only — skip image description (it adds noise, not signal)
+    </div>
+    <div style="margin-top:6px; font-size:11px; color: #f87171;">✗ Key question: how do we tell Case 4 from Case 5 cheaply?</div>
+  </div>
+
+</div>
+
+<p style="margin-top:20px; font-size:13px; color: var(--text-secondary); text-align:center;">Does this taxonomy match what you had in mind? Any cases missing or combined incorrectly?</p>

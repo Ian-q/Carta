@@ -1,0 +1,72 @@
+<h2>Routing Approaches: How much classification is enough?</h2>
+<p class="subtitle">Two options — differ mainly in how we handle flattened pages and figure detection</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Metadata-only routing <span style="font-size:11px; color:#4ade80; font-weight:400;">(recommended)</span></h3>
+      <p style="font-size:12px; margin:4px 0 10px 0; color: var(--text-secondary);">PyMuPDF tells us everything we need — no model for routing, only for extraction</p>
+
+      <div style="font-family: monospace; font-size:11px; line-height:1.8; background:var(--bg); padding:10px; border-radius:4px;">
+        text = page.get_text() → long?<br>
+        images = page.get_images() → any?<br>
+        tables = column-alignment heuristic<br>
+        captions = regex("fig|figure|plot|chart")<br>
+        <br>
+        <span style="color:#4ade80;">if</span> text_long <span style="color:#4ade80;">and</span> no_images <span style="color:#4ade80;">and</span> no_tables:<br>
+        &nbsp;&nbsp;→ <strong>PyMuPDF only</strong> (skip vision)<br>
+        <span style="color:#4ade80;">elif</span> text_long <span style="color:#4ade80;">and</span> has_tables:<br>
+        &nbsp;&nbsp;→ <strong>GLM-OCR</strong> (structured)<br>
+        <span style="color:#4ade80;">elif</span> text_long <span style="color:#4ade80;">and</span> (has_images <span style="color:#4ade80;">or</span> has_captions):<br>
+        &nbsp;&nbsp;→ <strong>PyMuPDF text</strong> + <strong>LLaVA on image crops</strong><br>
+        <span style="color:#4ade80;">else</span> (no/little text):<br>
+        &nbsp;&nbsp;→ <strong>GLM-OCR</strong> (handles OCR + structure)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;if yield low → <strong>LLaVA describe</strong>
+      </div>
+
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <span style="font-size:11px; background:#166534; color:#4ade80; padding:2px 8px; border-radius:4px;">Zero model calls for routing</span>
+        <span style="font-size:11px; background:#166534; color:#4ade80; padding:2px 8px; border-radius:4px;">Figure captions = free heuristic</span>
+        <span style="font-size:11px; background:#7c2d12; color:#f87171; padding:2px 8px; border-radius:4px;">Flattened: GLM-OCR runs blind</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Metadata + small classifier for flattened pages</h3>
+      <p style="font-size:12px; margin:4px 0 10px 0; color: var(--text-secondary);">Same as A, but flattened pages get a cheap multimodal "what is this?" scan before deciding</p>
+
+      <div style="font-family: monospace; font-size:11px; line-height:1.8; background:var(--bg); padding:10px; border-radius:4px;">
+        <span style="color:#94a3b8;"># same as A for text-bearing pages...</span><br>
+        <br>
+        <span style="color:#4ade80;">else</span> (no/little text):<br>
+        &nbsp;&nbsp;<span style="color:#94a3b8;"># Ask small model: text/table/diagram/photo?</span><br>
+        &nbsp;&nbsp;kind = moondream.classify(page_image)<br>
+        &nbsp;&nbsp;<span style="color:#4ade80;">if</span> kind == "text" <span style="color:#4ade80;">or</span> "table":<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;→ <strong>GLM-OCR</strong> (structured OCR)<br>
+        &nbsp;&nbsp;<span style="color:#4ade80;">elif</span> kind == "diagram":<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;→ <strong>LLaVA</strong> (description)<br>
+        &nbsp;&nbsp;<span style="color:#4ade80;">else</span> (photo/decorative):<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;→ <strong>skip</strong> (low value)
+      </div>
+
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <span style="font-size:11px; background:#166534; color:#4ade80; padding:2px 8px; border-radius:4px;">Avoids OCR on decorative photos</span>
+        <span style="font-size:11px; background:#166534; color:#4ade80; padding:2px 8px; border-radius:4px;">Better routing for scanned PDFs</span>
+        <span style="font-size:11px; background:#7c2d12; color:#f87171; padding:2px 8px; border-radius:4px;">New model dependency (moondream/minicpm)</span>
+        <span style="font-size:11px; background:#7c2d12; color:#f87171; padding:2px 8px; border-radius:4px;">Extra latency on every flattened page</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px; padding:14px; border: 1px solid var(--border); border-radius:8px; background:var(--surface);">
+  <p style="margin:0; font-size:13px;"><strong>Figure caption detection</strong> (in both approaches) — scan <code>page.get_text()</code> for patterns like <em>"Fig. 3"</em>, <em>"Figure 12: Voltage vs time"</em>, <em>"see plot above"</em>. If found and no image in PyMuPDF metadata, it suggests either: (a) the image is a vector graphic not listed by <code>get_images()</code>, or (b) the figure is on a nearby page. Could trigger a LLaVA pass on the full page render as a safety net.</p>
+</div>
+
+<p style="margin-top:16px; font-size:13px; color: var(--text-secondary); text-align:center;">My recommendation is <strong>A</strong> — GLM-OCR handles flattened pages well enough, and approach B adds a new model dependency for a relatively rare case. We can add B later if flattened-page quality is a real issue. Does A feel right?</p>

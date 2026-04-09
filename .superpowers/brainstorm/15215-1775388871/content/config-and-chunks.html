@@ -1,0 +1,85 @@
+<h2>Design Section 3: Config & Chunk Output</h2>
+<p class="subtitle">New tunable thresholds and what each page class produces in Qdrant</p>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px;">
+
+  <!-- Config -->
+  <div>
+    <h3 style="margin-bottom: 10px;">New config keys <span style="font-size:11px; font-weight:400; color:var(--text-secondary);">(under <code>embed:</code> in .carta/config.yaml)</span></h3>
+    <div style="font-family: monospace; font-size: 11px; line-height: 2; background: var(--bg); padding: 14px; border-radius: 8px;">
+      embed:<br>
+      &nbsp;&nbsp;<span style="color:#94a3b8;"># existing — unchanged</span><br>
+      &nbsp;&nbsp;ocr_model: glm-ocr:latest<br>
+      &nbsp;&nbsp;ollama_vision_model: llava:latest<br>
+      &nbsp;&nbsp;ollama_url: http://localhost:11434<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#94a3b8;"># new thresholds</span><br>
+      &nbsp;&nbsp;<span style="color:#4ade80;">vision_text_min_chars: 150</span><br>
+      &nbsp;&nbsp;<span style="color:#94a3b8;">&nbsp;&nbsp;# below → FLATTENED</span><br>
+      &nbsp;&nbsp;<span style="color:#4ade80;">vision_text_max_chars: 600</span><br>
+      &nbsp;&nbsp;<span style="color:#94a3b8;">&nbsp;&nbsp;# above → captions are cross-refs</span><br>
+      &nbsp;&nbsp;<span style="color:#4ade80;">vision_flattened_min_yield: 50</span><br>
+      &nbsp;&nbsp;<span style="color:#94a3b8;">&nbsp;&nbsp;# GLM-OCR chars below → try LLaVA</span><br>
+      &nbsp;&nbsp;<span style="color:#4ade80;">vision_max_images_per_page: 4</span><br>
+      &nbsp;&nbsp;<span style="color:#94a3b8;">&nbsp;&nbsp;# cap LLaVA calls (skips tiny icons)</span>
+    </div>
+    <div style="margin-top:10px; font-size:11px; color:var(--text-secondary);">
+      All have sensible defaults — existing projects don't need to change their config.
+      <code>vision_routing: auto</code> (existing key) is removed/ignored.
+    </div>
+  </div>
+
+  <!-- Chunk output -->
+  <div>
+    <h3 style="margin-bottom: 10px;">Chunk output per page class</h3>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+
+      <div style="border-left: 3px solid #4ade80; padding: 8px 12px; background: var(--bg); border-radius: 0 4px 4px 0; font-size:11px;">
+        <div style="color:#4ade80; font-weight:600; margin-bottom:4px;">PURE_TEXT → 0 image chunks</div>
+        <div style="color:var(--text-secondary);">PyMuPDF text chunk already created by pipeline. Vision returns empty list.</div>
+      </div>
+
+      <div style="border-left: 3px solid #f59e0b; padding: 8px 12px; background: var(--bg); border-radius: 0 4px 4px 0; font-size:11px;">
+        <div style="color:#f59e0b; font-weight:600; margin-bottom:4px;">STRUCTURED_TEXT → 1 chunk</div>
+        <div style="font-family:monospace; font-size:10px; color:var(--text-secondary);">
+          doc_type: "image_description"<br>
+          model_used: "glm-ocr"<br>
+          page_class: "structured_text"<br>
+          image_index: 0
+        </div>
+      </div>
+
+      <div style="border-left: 3px solid #60a5fa; padding: 8px 12px; background: var(--bg); border-radius: 0 4px 4px 0; font-size:11px;">
+        <div style="color:#60a5fa; font-weight:600; margin-bottom:4px;">TEXT_WITH_IMAGES → 1 chunk per image crop</div>
+        <div style="font-family:monospace; font-size:10px; color:var(--text-secondary);">
+          doc_type: "image_description"<br>
+          model_used: "llava"<br>
+          page_class: "text_with_images"<br>
+          image_index: 0, 1, 2… (per crop)<br>
+          <span style="color:#94a3b8;"># PyMuPDF text chunk kept separately</span>
+        </div>
+      </div>
+
+      <div style="border-left: 3px solid #f87171; padding: 8px 12px; background: var(--bg); border-radius: 0 4px 4px 0; font-size:11px;">
+        <div style="color:#f87171; font-weight:600; margin-bottom:4px;">FLATTENED → 1 chunk</div>
+        <div style="font-family:monospace; font-size:10px; color:var(--text-secondary);">
+          doc_type: "image_description"<br>
+          model_used: "glm-ocr" or "llava"<br>
+          page_class: "flattened"<br>
+          image_index: 0
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12px; line-height: 1.8;">
+  <strong>Backward compatibility:</strong> <code>doc_type: "image_description"</code> is preserved on all chunks so existing Qdrant collections don't need to be re-indexed. The new <code>page_class</code> field is additive — existing search queries ignore it, but it's available for future filtering (e.g. "only return chunks from structured table pages").
+  <br><br>
+  <strong>vision_max_images_per_page = 4</strong> prevents pages with many small decorative icons (arrows, warning symbols, pin diagrams with 20 tiny images) from triggering 20 LLaVA calls. Images beyond the cap are skipped. Largest images first via bounding box area sort.
+</div>
+
+<p style="margin-top:14px; font-size:12px; color: var(--text-secondary); text-align:center;">That's the full design. Ready to write the spec doc?</p>
