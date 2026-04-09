@@ -1,7 +1,7 @@
 import pytest
 import yaml
 from pathlib import Path
-from carta.config import load_config, ConfigError
+from carta.config import load_config, ConfigError, DEFAULTS
 
 MINIMAL_CONFIG = {
     "project_name": "test-project",
@@ -67,7 +67,7 @@ def test_proactive_recall_defaults(tmp_path):
     assert pr["low_threshold"] == 0.60
     assert pr["max_results"] == 5
     assert pr["judge_timeout_s"] == 3
-    assert pr["ollama_model"] == "qwen2.5:0.5b"
+    assert pr["ollama_model"] == "qwen3.5:0.8b"
     assert "similarity_threshold" not in pr
     assert "ollama_judge" not in pr
 
@@ -88,6 +88,10 @@ class TestVisionThresholdDefaults:
     def test_vision_max_images_per_page_default(self):
         from carta.config import DEFAULTS
         assert DEFAULTS["embed"]["vision_max_images_per_page"] == 4
+
+
+def test_judge_model_default_is_qwen35():
+    assert DEFAULTS["proactive_recall"]["ollama_model"] == "qwen3.5:0.8b"
 
 
 def test_update_check_defaults_to_true(tmp_path):
