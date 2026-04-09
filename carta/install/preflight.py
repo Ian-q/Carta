@@ -153,9 +153,6 @@ class PreflightResult:
         icon = icons.get(check.status, "❓")
         print(f"  {icon} {check.name}: {check.message}")
 
-        if check.suggestion and check.status in ("fail", "warn"):
-            print(f"     → {check.suggestion}")
-
         if verbose and check.details:
             for key, value in check.details.items():
                 print(f"     • {key}: {value}")
