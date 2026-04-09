@@ -105,10 +105,17 @@ See **[docs/install.md](docs/install.md)** for pipx vs venv, PATH, PlatformIO co
 
 **Prerequisites:**
 
-- [Qdrant](https://qdrant.tech/documentation/quick-start/) running locally (Docker: `docker run -p 6333:6333 qdrant/qdrant`)
-- [Ollama](https://ollama.ai) with `nomic-embed-text` pulled: `ollama pull nomic-embed-text`
+```bash
+# 1. Qdrant — run with persistence so collections survive restarts
+docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant
 
-Both are optional if you only want the structural audit and semantic contradiction detection (no embedding, no search). Set `modules.doc_embed: false` (and optionally `modules.doc_search: false`) in `.carta/config.yaml`.
+# 2. Ollama — install from ollama.ai, then pull required models
+ollama pull nomic-embed-text   # text embeddings
+ollama pull qwen3.5:0.8b       # hook judge (swap for larger model if preferred)
+ollama pull llava               # optional: visual embedding only
+```
+
+Both services are optional if you only want structural audit without embedding or search. See **[docs/install.md](docs/install.md)** for the full setup walkthrough and `carta doctor` to verify your environment.
 
 **After init:**
 
