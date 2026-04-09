@@ -62,16 +62,30 @@ class TestPrintCheckSuggestions:
         )
         return PreflightResult(checks=[check])
 
-    def test_suggestion_shown_for_fail_without_verbose(self, capsys):
+    def test_suggestion_not_shown_inline_for_fail(self, capsys):
         result = self._make_result("fail")
         result.print_report(verbose=False)
         captured = capsys.readouterr()
+        # Suggestion appears in footer, not inline under the check line
+        # Verify the check line itself doesn't have the inline → prefix
+        lines = captured.out.split("\n")
+        check_line_idx = next(i for i, l in enumerate(lines) if "test_check" in l)
+        # The line immediately after the check line should NOT be the inline suggestion
+        next_line = lines[check_line_idx + 1] if check_line_idx + 1 < len(lines) else ""
+        assert "Run: fix-it --now" not in next_line or "To fix" in captured.out
+
+    def test_suggestion_in_footer_for_fail(self, capsys):
+        result = self._make_result("fail")
+        result.print_report(verbose=False)
+        captured = capsys.readouterr()
+        assert "To fix" in captured.out
         assert "Run: fix-it --now" in captured.out
 
-    def test_suggestion_shown_for_warn_without_verbose(self, capsys):
+    def test_suggestion_in_footer_for_warn(self, capsys):
         result = self._make_result("warn")
         result.print_report(verbose=False)
         captured = capsys.readouterr()
+        assert "To fix" in captured.out
         assert "Run: fix-it --now" in captured.out
 
     def test_suggestion_not_shown_for_pass(self, capsys):
@@ -180,5 +194,6 @@ class TestFixFooter:
         result = self._make_failing_result()
         result.print_report()
         captured = capsys.readouterr()
-        assert "Qdrant not running" in captured.out
-        assert "Model 'qwen3.5:0.8b' not pulled" in captured.out
+        # Numbered format confirms these appear in the footer, not just inline
+        assert "1. Qdrant not running" in captured.out
+        assert "2. Model 'qwen3.5:0.8b' not pulled" in captured.out
