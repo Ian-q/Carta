@@ -499,7 +499,7 @@ class PreflightChecker:
                     message=f"Qdrant not running at {url}",
                     category="infrastructure",
                     fixable=True,
-                    suggestion="Start with: docker run -d -p 6333:6333 --name qdrant qdrant/qdrant:latest",
+                    suggestion="Start with: docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
                 )
         except requests.ConnectionError:
             return PreflightCheck(
@@ -508,7 +508,7 @@ class PreflightChecker:
                 message=f"Qdrant not running at {url}",
                 category="infrastructure",
                 fixable=True,
-                suggestion="Start with: docker run -d -p 6333:6333 --name qdrant qdrant/qdrant:latest",
+                suggestion="Start with: docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
             )
         except Exception as e:
             return PreflightCheck(
@@ -517,7 +517,7 @@ class PreflightChecker:
                 message=f"Cannot reach Qdrant at {url}: {e}",
                 category="infrastructure",
                 fixable=True,
-                suggestion="Start with: docker run -d -p 6333:6333 --name qdrant qdrant/qdrant:latest",
+                suggestion="Start with: docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
             )
 
     def _check_ollama_installed(self) -> PreflightCheck:

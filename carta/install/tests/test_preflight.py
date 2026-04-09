@@ -1,4 +1,5 @@
 import subprocess
+import requests
 from unittest.mock import patch
 import pytest
 
@@ -33,3 +34,18 @@ class TestDockerRunningTip:
             mock_run.return_value = type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
             result = checker._check_docker_running()
         assert result.status == "pass"
+
+
+class TestQdrantSuggestion:
+    def test_suggestion_includes_volume_flag(self):
+        checker = PreflightChecker(interactive=False)
+        with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
+            result = checker._check_qdrant_running()
+        assert result.status == "fail"
+        assert "-v ~/.carta/qdrant_storage:/qdrant/storage" in result.suggestion
+
+    def test_suggestion_includes_detached_flag(self):
+        checker = PreflightChecker(interactive=False)
+        with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
+            result = checker._check_qdrant_running()
+        assert "-d" in result.suggestion
