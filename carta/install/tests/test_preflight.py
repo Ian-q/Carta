@@ -86,3 +86,50 @@ class TestPrintCheckSuggestions:
         result.print_report(verbose=False)
         captured = capsys.readouterr()
         assert "You shouldn't see this" not in captured.out
+
+
+class TestJudgeModelCheck:
+    def test_judge_model_checked_when_ollama_running(self):
+        checker = PreflightChecker(interactive=False)
+        checker.checks = [
+            PreflightCheck(
+                name="ollama_running",
+                status="pass",
+                message="Ollama server running",
+                category="infrastructure",
+            )
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {
+                "returncode": 0,
+                "stdout": "nomic-embed-text:latest\nllava:latest\n",
+                "stderr": "",
+            })()
+            checker._phase3_models()
+
+        check_names = [c.name for c in checker.checks]
+        assert "ollama_model_qwen3.5:0.8b" in check_names
+
+    def test_judge_model_warn_when_not_pulled(self):
+        checker = PreflightChecker(interactive=False)
+        checker.checks = [
+            PreflightCheck(
+                name="ollama_running",
+                status="pass",
+                message="Ollama server running",
+                category="infrastructure",
+            )
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {
+                "returncode": 0,
+                "stdout": "nomic-embed-text:latest\n",
+                "stderr": "",
+            })()
+            checker._phase3_models()
+
+        judge_check = next(
+            c for c in checker.checks if c.name == "ollama_model_qwen3.5:0.8b"
+        )
+        assert judge_check.status == "warn"
+        assert "qwen3.5:0.8b" in judge_check.suggestion
