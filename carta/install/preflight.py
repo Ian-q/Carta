@@ -182,6 +182,18 @@ class PreflightResult:
             critical = len(self.critical_failures)
             print(f"\n🔴 {critical} critical issue(s) must be resolved manually.")
 
+        actionable = [
+            c for c in self.checks
+            if c.status in ("fail", "warn") and c.suggestion
+        ]
+        if actionable:
+            print(f"\n{'━' * 55}")
+            count = len(actionable)
+            print(f"\n🔧 To fix ({count} issue{'s' if count > 1 else ''}):\n")
+            for i, check in enumerate(actionable, 1):
+                print(f"  {i}. {check.message}")
+                print(f"     → {check.suggestion}\n")
+
 
 class PreflightChecker:
     """Orchestrates all preflight checks across 4 phases."""

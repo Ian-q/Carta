@@ -133,3 +133,52 @@ class TestJudgeModelCheck:
         )
         assert judge_check.status == "warn"
         assert "qwen3.5:0.8b" in judge_check.suggestion
+
+
+class TestFixFooter:
+    def _make_failing_result(self) -> PreflightResult:
+        checks = [
+            PreflightCheck(
+                name="qdrant_running",
+                status="fail",
+                message="Qdrant not running at http://localhost:6333",
+                category="infrastructure",
+                fixable=True,
+                suggestion="docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
+            ),
+            PreflightCheck(
+                name="ollama_model_qwen3.5:0.8b",
+                status="warn",
+                message="Model 'qwen3.5:0.8b' not pulled",
+                category="models",
+                suggestion="ollama pull qwen3.5:0.8b",
+            ),
+        ]
+        return PreflightResult(checks=checks)
+
+    def test_fix_footer_shown_when_failures_exist(self, capsys):
+        result = self._make_failing_result()
+        result.print_report()
+        captured = capsys.readouterr()
+        assert "To fix" in captured.out
+        assert "docker run" in captured.out
+        assert "ollama pull qwen3.5:0.8b" in captured.out
+
+    def test_fix_footer_not_shown_when_all_pass(self, capsys):
+        check = PreflightCheck(
+            name="qdrant_running",
+            status="pass",
+            message="Qdrant ready",
+            category="infrastructure",
+        )
+        result = PreflightResult(checks=[check])
+        result.print_report()
+        captured = capsys.readouterr()
+        assert "To fix" not in captured.out
+
+    def test_fix_footer_lists_all_actionable_checks(self, capsys):
+        result = self._make_failing_result()
+        result.print_report()
+        captured = capsys.readouterr()
+        assert "Qdrant not running" in captured.out
+        assert "Model 'qwen3.5:0.8b' not pulled" in captured.out
