@@ -37,8 +37,15 @@ def _prompt_user(message: str, default: bool = True) -> bool:
 
 
 def _skills_source_dir(project_root: Path) -> Path:
-    """Directory containing Carta skill markdown files shipped with the repo checkout."""
-    return project_root / "docs" / "superpowers" / "skills"
+    """Directory containing Claude Code skills shipped with Carta.
+
+    Prefer repo-local `skills/` when present, otherwise fall back to the installed
+    package's `carta/skills/` directory.
+    """
+    repo_skills = project_root / "skills"
+    if repo_skills.is_dir():
+        return repo_skills
+    return CARTA_RUNTIME_SRC / "skills"
 
 
 def _skills_destination_root(choice: str, project_root: Path) -> Path:
@@ -69,7 +76,7 @@ def _prompt_skills_choice() -> str:
 
 
 def _install_skills(choice: str, project_root: Path) -> tuple[int, int, str]:
-    """Copy each docs/superpowers/skills/*.md into Claude skill layout. Idempotent per file.
+    """Copy each `*/SKILL.md` folder into Claude skill layout. Idempotent per skill.
 
     Returns:
         (copied_count, already_present_count, display_path): new copies, skips because file
@@ -85,26 +92,33 @@ def _install_skills(choice: str, project_root: Path) -> tuple[int, int, str]:
         return (0, 0, "")
 
     dest_root = _skills_destination_root(choice, project_root)
-    md_files = sorted(source_dir.glob("*.md"))
-    if not md_files:
-        print(f"  Warning: no .md files in {source_dir}; skipping skill install.", file=sys.stderr)
+    skill_dirs = sorted([p for p in source_dir.iterdir() if p.is_dir()])
+    if not skill_dirs:
+        print(f"  Warning: no skill dirs in {source_dir}; skipping skill install.", file=sys.stderr)
         return (0, 0, "")
 
     copied = 0
     already = 0
-    for src in md_files:
-        stem = src.stem
-        dest_dir = dest_root / stem
-        dest_file = dest_dir / f"{stem}.md"
-        if dest_file.is_file():
+    for src_dir in skill_dirs:
+        skill_name = src_dir.name
+        src_skill = src_dir / "SKILL.md"
+        if not src_skill.is_file():
+            # Not a Claude Code skill folder
+            continue
+
+        dest_dir = dest_root / skill_name
+        dest_skill = dest_dir / "SKILL.md"
+        if dest_skill.is_file():
             already += 1
             continue
+
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest_file)
+            # Copy the whole folder so future auxiliary files are preserved.
+            shutil.copytree(src_dir, dest_dir, dirs_exist_ok=True)
             copied += 1
         except OSError as e:
-            print(f"  Warning: could not install skill {stem}: {e}", file=sys.stderr)
+            print(f"  Warning: could not install skill {skill_name}: {e}", file=sys.stderr)
 
     if choice == "G":
         display = "~/.claude/skills"
@@ -122,7 +136,7 @@ def run_bootstrap(project_root: Path, *, skip_skills: bool = False) -> None:
     interactive = _is_interactive()
 
     print("🔍 Running preflight checks...")
-    checker = PreflightChecker(interactive=interactive, verbose=False)
+    checker = PreflightChecker(interactive=interactive, verbose=False, project_root=project_root)
     result = checker.run()
 
     # Print report

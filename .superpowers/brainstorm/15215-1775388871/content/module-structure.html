@@ -1,0 +1,73 @@
+<h2>Design Section 2: Module Structure</h2>
+<p class="subtitle">What changes, what stays the same, and where new logic lives</p>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 16px;">
+
+  <!-- pipeline.py -->
+  <div style="border: 1px solid #166534; border-radius: 8px; overflow: hidden;">
+    <div style="background: #052e16; padding: 10px 14px; font-size: 12px; font-weight: 600; color: #4ade80;">
+      carta/embed/pipeline.py &nbsp;<span style="font-weight:400; opacity:0.7;">— unchanged</span>
+    </div>
+    <div style="padding: 12px 14px; font-size: 11px; color: var(--text-secondary); line-height: 1.8;">
+      Calls <code>extract_image_descriptions_intelligent(file_path, cfg)</code><br>
+      <br>
+      Public API stays identical — pipeline doesn't need to know about page classes. The 300s file timeout stays.
+    </div>
+  </div>
+
+  <!-- classifier.py -->
+  <div style="border: 1px solid #f59e0b; border-radius: 8px; overflow: hidden;">
+    <div style="background: #1c0a00; padding: 10px 14px; font-size: 12px; font-weight: 600; color: #f59e0b;">
+      carta/vision/classifier.py &nbsp;<span style="font-weight:400; opacity:0.7;">— rewritten</span>
+    </div>
+    <div style="padding: 12px 14px; font-size: 11px; line-height: 1.8;">
+      <div style="color: #f87171; text-decoration: line-through; opacity: 0.6;">ContentType (TEXT/MIXED/VISUAL)</div>
+      <div style="color: #f87171; text-decoration: line-through; opacity: 0.6;">ContentClassifier</div>
+      <div style="color: #f87171; text-decoration: line-through; opacity: 0.6;">entropy / PIL analysis</div>
+      <br>
+      <div style="color: #4ade80;">+ PageClass enum</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;PURE_TEXT</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;STRUCTURED_TEXT</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;TEXT_WITH_IMAGES</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;FLATTENED</div>
+      <div style="color: #4ade80; margin-top:6px;">+ PageProfile dataclass</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;text_length, has_images</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;has_tables, has_captions</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;page_class</div>
+      <div style="color: #4ade80; margin-top:6px;">+ PageAnalyzer.analyze(page)</div>
+      <div style="color: var(--text-secondary); font-size: 10px; margin-top: 4px;">no model calls, no PIL dep</div>
+    </div>
+  </div>
+
+  <!-- router.py -->
+  <div style="border: 1px solid #60a5fa; border-radius: 8px; overflow: hidden;">
+    <div style="background: #0c1a2e; padding: 10px 14px; font-size: 12px; font-weight: 600; color: #60a5fa;">
+      carta/vision/router.py &nbsp;<span style="font-weight:400; opacity:0.7;">— rewritten</span>
+    </div>
+    <div style="padding: 12px 14px; font-size: 11px; line-height: 1.8;">
+      <div style="color: #f87171; text-decoration: line-through; opacity: 0.6;">DualExtractionRouter</div>
+      <div style="color: #f87171; text-decoration: line-through; opacity: 0.6;">ContentType routing</div>
+      <div style="color: #f87171; text-decoration: line-through; opacity: 0.6;">_extract_hybrid()</div>
+      <br>
+      <div style="color: #4ade80;">+ SmartRouter</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;_route_pure_text() → skip</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;_route_structured() → GLM-OCR</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;_route_text_with_images()</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;&nbsp;&nbsp;→ PyMuPDF text chunk</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;&nbsp;&nbsp;+ LLaVA per image crop</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;_route_flattened()</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;&nbsp;&nbsp;→ GLM-OCR → if &lt;50 chars</div>
+      <div style="color: #4ade80;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ LLaVA full page</div>
+      <div style="color: #4ade80; margin-top:6px;">+ _extract_image_crops(page)</div>
+      <div style="color: var(--text-secondary); font-size:10px; margin-top: 4px;">public API unchanged</div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12px; line-height: 1.8;">
+  <strong>Image crop extraction</strong> — for TEXT_WITH_IMAGES, instead of rendering the whole page and sending it to LLaVA, we extract each embedded image individually using PyMuPDF's <code>page.get_image_rects()</code> + <code>fitz.Pixmap(doc, xref)</code>. Each crop gets its own LLaVA call and its own chunk. For the caption-fallback case (vector graphic, no <code>get_images()</code> results), we fall back to rendering the full page.<br><br>
+  <strong>Returned chunks</strong> — PURE_TEXT pages return no image chunks (pipeline already has PyMuPDF text). TEXT_WITH_IMAGES returns one chunk per image crop + the PyMuPDF text is kept as a separate chunk by the existing pipeline. STRUCTURED_TEXT and FLATTENED return one chunk for the full page OCR result.
+</div>
+
+<p style="margin-top:14px; font-size:12px; color: var(--text-secondary); text-align:center;">Does this structure make sense? One more section after this — config and the chunk output format — then we're done with the design.</p>

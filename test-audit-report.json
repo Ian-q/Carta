@@ -1,0 +1,161 @@
+{
+  "summary": {
+    "total_issues": 21,
+    "by_category": {
+      "disconnected_files": 21
+    },
+    "scanned_at": "2026-04-07T16:37:01.193505",
+    "repo_root": "/Users/ian/dev/doc-audit-cc",
+    "project_name": "doc-audit-cc",
+    "collection_scanned": "doc-audit-cc_doc"
+  },
+  "issues": [
+    {
+      "id": "disconnected_2026-03-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-03-25-cli-mcp-hybrid-and-bug-fixes-v2.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-05-carta-update.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_README",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/testing/README.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_README",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/testing/archive/README.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-05-carta-doctor-qdrant-start.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-04-05-smart-vision-routing-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-07-audit-command-implementation.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-06-embed-vision-progress.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-04-05-progress-bar-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-04-05-carta-update-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-03-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-03-31-999.3-collection-scoping-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-04-07-audit-command-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_install",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/install.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-04-02-999.4-glm-ocr-intelligent-extraction-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_AUDIT_TR",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/testing/AUDIT_TRACKER.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-05-progress-bar.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-04-carta-marketplace-readiness.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_install-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/testing/install-test-guide.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/specs/2026-04-06-embed-vision-progress-design.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_2026-04-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/superpowers/plans/2026-04-05-smart-vision-routing.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    },
+    {
+      "id": "disconnected_install-",
+      "category": "disconnected_files",
+      "severity": "info",
+      "file_path": "docs/testing/archive/install-test-findings-v0.1.10.md",
+      "reason": "File exists, no sidecar, no chunks in Qdrant"
+    }
+  ]
+}
