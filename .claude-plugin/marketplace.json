@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Carta — documentation auditor, embedder, and semantic search for Claude Code projects",
-    "version": "0.3.13"
+    "version": "0.3.14"
   },
   "plugins": [
     {
       "name": "carta-cc",
       "source": "./",
       "description": "Maps, connects, and remembers your documentation. Structural scanning, LLM semantic audit, Qdrant embedding, and /doc-search recall.",
-      "version": "0.3.13",
+      "version": "0.3.14",
       "author": {
         "name": "Ian-q"
       },
