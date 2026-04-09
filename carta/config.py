@@ -59,7 +59,7 @@ DEFAULTS = {
         "low_threshold": 0.60,
         "max_results": 5,
         "judge_timeout_s": 3,
-        "ollama_model": "qwen2.5:0.5b",
+        "ollama_model": "qwen3.5:0.8b",
     },
     "cross_project_recall": {
         "enabled": False,
