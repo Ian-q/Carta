@@ -1,0 +1,71 @@
+project_name: doc-audit-cc
+qdrant_url: http://localhost:6333
+docs_root: docs/
+stale_threshold_days: 30
+needs_input_at_audit_count: 3
+anchor_doc: CLAUDE.md
+excluded_paths:
+- node_modules/
+- .venv/
+- '*.tmp'
+- .planning/
+- .worktrees/
+- .carta/
+- .pio/
+contradiction_types:
+- version numbers
+- API endpoints
+- configuration values
+- environment variable names
+search:
+  top_n: 5
+embed:
+  reference_docs_path: docs/reference/
+  audio_path: docs/audio/
+  ollama_url: http://localhost:11434
+  ollama_model: nomic-embed-text:latest
+  ollama_vision_model: llava:latest
+  ocr_model: glm-ocr:latest
+  classification:
+    text_threshold: 0.7
+    visual_threshold: 0.4
+  vision_routing: auto
+  vision_text_min_chars: 150
+  vision_text_max_chars: 600
+  vision_flattened_min_yield: 50
+  vision_max_images_per_page: 4
+  vision_image_min_area_fraction: 0.05
+  chunking:
+    max_tokens: 800
+    overlap_fraction: 0.15
+    preserve_tables: true
+  colpali_enabled: false
+  colpali_model: vidore/colqwen2-v1.0-hf
+  colpali_device: cpu
+  colpali_batch_size: 1
+  colpali_sidecar_path: .carta/visual_cache/
+proactive_recall:
+  high_threshold: 0.85
+  low_threshold: 0.6
+  max_results: 5
+  judge_timeout_s: 3
+  ollama_model: qwen2.5:0.5b
+cross_project_recall:
+  enabled: false
+  scope:
+  - quirk
+  require_ollama_judge: true
+  project_filter:
+    mode: all
+    projects: []
+  default_search_scope: repo
+  global_pool:
+    enabled: true
+    auto_promote: false
+modules:
+  doc_audit: true
+  doc_embed: true
+  doc_search: true
+  session_memory: true
+  proactive_recall: true
+update_check: true
