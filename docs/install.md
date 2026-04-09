@@ -8,9 +8,50 @@ Release history: see the repo **`CHANGELOG.md`**. After install, confirm with `c
 
 - **Python 3.10+**
 - **pip** or **pipx** (recommended on macOS to avoid PEP 668 “externally managed environment” errors)
-- Optional: **Docker** (Qdrant), **Ollama** (embeddings/search) — only if you use embed/search
 
-If **`pipx` is not installed**: macOS `brew install pipx` then `pipx ensurepath`, or `python3 -m pip install --user pipx` and add pipx’s bin dir to `PATH`.
+### Qdrant (vector store)
+
+Carta stores embeddings in a local [Qdrant](https://qdrant.tech) vector database. Run it via Docker:
+
+```bash
+docker run -d \
+  -p 6333:6333 \
+  -v ~/.carta/qdrant_storage:/qdrant/storage \
+  --name qdrant \
+  qdrant/qdrant
+```
+
+- `-d` runs the container detached so it starts automatically with Docker.
+- `-v ~/.carta/qdrant_storage:/qdrant/storage` persists your collections across container restarts and upgrades. Without this flag, all embedded documents are lost when the container stops.
+- For TLS, resource limits, or upgrades, see the [Qdrant quickstart](https://qdrant.tech/documentation/quickstart/).
+
+### Ollama (embeddings, vision, hook judge)
+
+Install Ollama from [ollama.ai/download](https://ollama.ai/download), then pull the required models:
+
+```bash
+# Required — text embeddings (used by carta embed and carta search)
+ollama pull nomic-embed-text
+
+# Required — hook relevance judge
+# Filters retrieved context before it reaches your prompt.
+# Default is qwen3.5:0.8b (0.8B params, low latency).
+# Set proactive_recall.ollama_model in .carta/config.yaml to swap in a larger model.
+ollama pull qwen3.5:0.8b
+
+# Optional — visual embedding (only needed for carta embed --visual)
+ollama pull llava
+```
+
+### Verify
+
+Once Qdrant and Ollama are running, confirm everything is detected:
+
+```bash
+carta doctor
+```
+
+All Phase 2 (Infrastructure) and Phase 3 (Models) checks should pass before running `carta init`.
 
 ## Recommended: pipx
 
