@@ -245,7 +245,7 @@ def cmd_doctor(args):
     from carta.install.preflight import PreflightChecker, PreflightResult
     from carta.install.auto_fix import AutoInstaller
     interactive = not (args.yes or args.fix)  # --yes or --fix disables prompts
-    checker = PreflightChecker(interactive=interactive, verbose=args.verbose)
+    checker = PreflightChecker(interactive=interactive, verbose=args.verbose, project_root=Path.cwd())
     result = checker.run()
 
     # Print report
