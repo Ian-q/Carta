@@ -3,7 +3,7 @@ import requests
 from unittest.mock import patch
 import pytest
 
-from carta.install.preflight import PreflightChecker
+from carta.install.preflight import PreflightCheck, PreflightChecker, PreflightResult
 
 
 class TestDockerRunningTip:
@@ -49,3 +49,40 @@ class TestQdrantSuggestion:
         with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
             result = checker._check_qdrant_running()
         assert "-d" in result.suggestion
+
+
+class TestPrintCheckSuggestions:
+    def _make_result(self, status: str) -> PreflightResult:
+        check = PreflightCheck(
+            name="test_check",
+            status=status,
+            message="Something went wrong",
+            category="infrastructure",
+            suggestion="Run: fix-it --now",
+        )
+        return PreflightResult(checks=[check])
+
+    def test_suggestion_shown_for_fail_without_verbose(self, capsys):
+        result = self._make_result("fail")
+        result.print_report(verbose=False)
+        captured = capsys.readouterr()
+        assert "Run: fix-it --now" in captured.out
+
+    def test_suggestion_shown_for_warn_without_verbose(self, capsys):
+        result = self._make_result("warn")
+        result.print_report(verbose=False)
+        captured = capsys.readouterr()
+        assert "Run: fix-it --now" in captured.out
+
+    def test_suggestion_not_shown_for_pass(self, capsys):
+        check = PreflightCheck(
+            name="ok_check",
+            status="pass",
+            message="All good",
+            category="infrastructure",
+            suggestion="You shouldn't see this",
+        )
+        result = PreflightResult(checks=[check])
+        result.print_report(verbose=False)
+        captured = capsys.readouterr()
+        assert "You shouldn't see this" not in captured.out
