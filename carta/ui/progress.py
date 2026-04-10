@@ -130,14 +130,37 @@ class Progress:
     def _elapsed(self) -> float:
         return time.monotonic() - self._start if self._start is not None else 0.0
 
+    def _bar(self) -> str:
+        """Return a 12-char wide progress bar: [=====>    ] or [??] if total=0."""
+        if self._total <= 0:
+            return "[??]"
+        width = 10
+        filled = min(self._idx, self._total)
+        pct = filled / self._total
+        num_filled = int(pct * width)
+
+        if num_filled >= width:
+            # Full bar: all equals
+            bar = "=" * width
+        elif num_filled > 0:
+            # Partial bar: max(1, num_filled-1) equals + arrow + spaces to fill
+            equals = max(1, num_filled - 1)
+            spaces = width - equals - 1  # -1 for arrow
+            bar = "=" * equals + ">" + " " * spaces
+        else:
+            # Empty bar
+            bar = " " * width
+        return f"[{bar}]"
+
     def _write_embed_line(self) -> None:
         """Redraw embed spinner line. Caller must hold _lock."""
         sp   = self._c(_CYAN, self._spin())
         idx  = self._c(_DIM, f"{self._idx}/{self._total}")
         name = self._c(_BOLD, self._name)
         sub  = self._c(_DIM, f"▸ {self._current_msg}")
+        bar  = self._c(_CYAN, self._bar())
         el   = self._c(_DIM, f"{self._elapsed():.0f}s")
-        sys.stdout.write(f"{_CLR}{sp}  {idx}  {name}  {sub}  {el}")
+        sys.stdout.write(f"{_CLR}{sp}  {idx}  {name}  {sub}  {bar}  {el}")
         sys.stdout.flush()
 
     def _write_scan_line(self) -> None:
@@ -193,8 +216,9 @@ class Progress:
                 idx      = self._c(_DIM,   f"{self._idx}/{self._total}")
                 name     = self._c(_BOLD,  self._name)
                 chunks_s = self._c(_DIM,   f"{chunks} chunks")
+                bar      = self._c(_GREEN, self._bar())
                 el_s     = self._c(_DIM,   f"{elapsed:.1f}s")
-                sys.stdout.write(f"{_CLR}{check}  {idx}  {name}  {chunks_s}  {el_s}\n")
+                sys.stdout.write(f"{_CLR}{check}  {idx}  {name}  {chunks_s}  {bar}  {el_s}\n")
                 sys.stdout.flush()
         else:
             print(
@@ -213,7 +237,8 @@ class Progress:
                 idx      = self._c(_DIM, f"{self._idx}/{self._total}")
                 name     = self._c(_DIM, self._name)
                 reason_s = self._c(_DIM, f"skipped: {reason}")
-                sys.stdout.write(f"{_CLR}{dash}  {idx}  {name}  {reason_s}\n")
+                bar      = self._c(_DIM, self._bar())
+                sys.stdout.write(f"{_CLR}{dash}  {idx}  {name}  {reason_s}  {bar}\n")
                 sys.stdout.flush()
         else:
             print(
@@ -230,8 +255,9 @@ class Progress:
                 x   = self._c(_RED,  "✗")
                 idx = self._c(_DIM,  f"{self._idx}/{self._total}")
                 name = self._c(_BOLD, self._name)
+                bar = self._c(_RED,  self._bar())
                 err = self._c(_RED,  f"ERROR: {msg}")
-                sys.stderr.write(f"{_CLR}{x}  {idx}  {name}  {err}\n")
+                sys.stderr.write(f"{_CLR}{x}  {idx}  {name}  {bar}  {err}\n")
                 sys.stderr.flush()
         else:
             print(
