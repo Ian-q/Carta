@@ -107,14 +107,43 @@ def cmd_scan(args):
 
 def cmd_embed(args):
     from carta.config import load_config
-    from carta.embed.pipeline import run_embed, discover_pending_files
+    from carta.embed.pipeline import run_embed, discover_pending_files, run_embed_file
     from carta.ui import Progress
+    import time
 
     cfg_path = find_config()
     cfg = load_config(cfg_path)
     if not cfg["modules"].get("doc_embed"):
         print("doc_embed module is disabled in config.", file=sys.stderr)
         sys.exit(1)
+
+    # Targeted embed: one or more specific files, no lock, no discovery scan.
+    if getattr(args, "files", None):
+        files = args.files
+        embedded = 0
+        errors = []
+
+        with Progress(total=len(files)) as progress:
+            for idx, file_arg in enumerate(files, start=1):
+                file_path = Path(file_arg)
+                progress.file(idx, file_path.name)
+                t0 = time.monotonic()
+                try:
+                    result = run_embed_file(file_path, cfg, force=True, progress=progress)
+                    elapsed = time.monotonic() - t0
+                    progress.done(chunks=result.get("chunks", 0), elapsed=elapsed)
+                    embedded += 1
+                except FileNotFoundError as e:
+                    progress.error(str(e))
+                    errors.append(str(e))
+                except Exception as e:
+                    elapsed = time.monotonic() - t0
+                    progress.error(str(e))
+                    errors.append(f"{file_path.name}: {e}")
+
+        progress.summary(embedded=embedded, skipped=0, errors=len(errors))
+        _notify_if_update(cfg_path, cfg)
+        sys.exit(1 if errors else 0)
 
     # FT-5: Concurrency lock — only one embed process at a time (atomic create + stale PID).
     lock_path = cfg_path.parent / "embed.lock"
@@ -337,7 +366,12 @@ def main():
         help="Do not install Carta skills to ~/.claude/skills or .claude/skills",
     )
     sub.add_parser("scan")
-    sub.add_parser("embed")
+    embed_p = sub.add_parser("embed")
+    embed_p.add_argument(
+        "files",
+        nargs="*",
+        help="Specific file(s) to embed immediately (skips full pipeline and lock)",
+    )
 
     audit_p = sub.add_parser(
         "audit",
