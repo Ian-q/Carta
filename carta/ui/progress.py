@@ -131,9 +131,9 @@ class Progress:
         return time.monotonic() - self._start if self._start is not None else 0.0
 
     def _bar(self) -> str:
-        """Return a 12-char wide progress bar: [=====>    ] or [??] if total=0."""
+        """Return a 12-char wide progress bar: [=====>    ] or [----------] if total=0."""
         if self._total <= 0:
-            return "[??]"
+            return self._c(_DIM, "[----------]")
         width = 10
         filled = min(self._idx, self._total)
         pct = filled / self._total
