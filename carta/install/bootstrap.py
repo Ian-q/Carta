@@ -375,7 +375,13 @@ def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: 
 
 def _update_gitignore(project_root: Path) -> None:
     gitignore = project_root / ".gitignore"
-    entries = [".carta/scan-results.json", ".carta/carta/", ".carta/hooks/"]
+    entries = [
+        ".carta/scan-results.json",
+        ".carta/carta/",
+        ".carta/hooks/",
+        ".carta/visual_cache/",
+        ".carta/update-check.json",
+    ]
     existing_lines = gitignore.read_text().splitlines() if gitignore.exists() else []
     parent_globs = {".carta/", ".carta/*"}
     if parent_globs & set(existing_lines):
