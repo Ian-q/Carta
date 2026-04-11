@@ -46,11 +46,11 @@ class TestBar:
         assert bar == "[=>        ]"
 
     def test_bar_unknown_total(self):
-        """Bar should return [??] when total=0."""
+        """Bar should return [----------] when total=0."""
         p = make_progress(total=0)
         p._idx = 0
         bar = p._bar()
-        assert bar == "[??]"
+        assert bar == "[----------]"
 
     def test_bar_idx_exceeds_total(self):
         """Bar should cap at total even if idx > total."""
