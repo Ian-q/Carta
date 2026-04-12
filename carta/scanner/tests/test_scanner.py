@@ -565,3 +565,135 @@ def test_check_embed_transcript_unprocessed_has_summary(tmp_path):
     cfg = _minimal_cfg(tmp_path)
     issues = check_embed_transcript_unprocessed(tmp_path, cfg)
     assert len(issues) == 0
+
+
+# ---------------------------------------------------------------------------
+# check_one_way_links
+# ---------------------------------------------------------------------------
+
+from carta.scanner.scanner import check_one_way_links
+
+
+def test_one_way_link_detected(tmp_path):
+    """A -> B where B does not list A back should emit one_way_link."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc_b = tmp_path / "docs" / "CAN" / "TOPOLOGY.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B\n")
+
+    fm_a = {"related": ["docs/CAN/TOPOLOGY.md"], "last_reviewed": "2026-03-01"}
+    # B has frontmatter but does NOT back-link to A
+    fm_b = {"related": [], "last_reviewed": "2026-03-01"}
+    docs_fm = {
+        "docs/CAN/MESSAGE_FLOW.md": fm_a,
+        "docs/CAN/TOPOLOGY.md": fm_b,
+    }
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert len(issues) == 1
+    assert issues[0]["type"] == "one_way_link"
+    assert issues[0]["severity"] == "warning"
+    assert "TOPOLOGY.md" in issues[0]["detail"]
+    assert issues[0]["related_file"] == "docs/CAN/TOPOLOGY.md"
+
+
+def test_bidirectional_link_no_issue(tmp_path):
+    """A -> B and B -> A: no one_way_link should be emitted."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc_b = tmp_path / "docs" / "CAN" / "TOPOLOGY.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B\n")
+
+    fm_a = {"related": ["docs/CAN/TOPOLOGY.md"]}
+    fm_b = {"related": ["docs/CAN/MESSAGE_FLOW.md"]}
+    docs_fm = {
+        "docs/CAN/MESSAGE_FLOW.md": fm_a,
+        "docs/CAN/TOPOLOGY.md": fm_b,
+    }
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert issues == []
+
+
+def test_one_way_link_skips_nonexistent_target(tmp_path):
+    """Broken related entries (file missing) should be skipped — check_broken_related handles them."""
+    (tmp_path / "docs").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "ARCH.md"
+    doc_a.write_text("# A\n")
+
+    fm_a = {"related": ["docs/NONEXISTENT.md"]}
+    docs_fm = {"docs/ARCH.md": fm_a}
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert issues == []
+
+
+def test_one_way_link_skips_target_without_frontmatter(tmp_path):
+    """Target without parseable frontmatter is skipped (not a bidirectionality error)."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc_b = tmp_path / "docs" / "CAN" / "TOPOLOGY.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B — no frontmatter\n")
+
+    fm_a = {"related": ["docs/CAN/TOPOLOGY.md"]}
+    docs_fm = {
+        "docs/CAN/MESSAGE_FLOW.md": fm_a,
+        "docs/CAN/TOPOLOGY.md": None,  # no frontmatter
+    }
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert issues == []
+
+
+def test_one_way_link_multiple_targets(tmp_path):
+    """Doc with two related entries where only one is reciprocated."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    for name in ["SOURCE.md", "RECIPROCAL.md", "ONE_WAY.md"]:
+        (tmp_path / "docs" / "CAN" / name).write_text("# doc\n")
+
+    fm_source = {"related": ["docs/CAN/RECIPROCAL.md", "docs/CAN/ONE_WAY.md"]}
+    fm_recip = {"related": ["docs/CAN/SOURCE.md"]}  # back-links correctly
+    fm_one_way = {"related": []}                     # no back-link
+
+    docs_fm = {
+        "docs/CAN/SOURCE.md": fm_source,
+        "docs/CAN/RECIPROCAL.md": fm_recip,
+        "docs/CAN/ONE_WAY.md": fm_one_way,
+    }
+
+    issues = check_one_way_links(
+        tmp_path / "docs" / "CAN" / "SOURCE.md", fm_source, docs_fm, tmp_path
+    )
+    assert len(issues) == 1
+    assert "ONE_WAY.md" in issues[0]["related_file"]
+
+
+def test_run_scan_includes_one_way_link(tmp_path):
+    """Integration: run_scan emits one_way_link issues when back-links are missing."""
+    from unittest.mock import patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    (tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md").write_text(
+        "---\nrelated:\n  - docs/CAN/TOPOLOGY.md\nlast_reviewed: 2026-03-18\n---\n# A\n"
+    )
+    (tmp_path / "docs" / "CAN" / "TOPOLOGY.md").write_text(
+        "---\nrelated: []\nlast_reviewed: 2026-03-18\n---\n# B\n"
+    )
+
+    cfg = {
+        "docs_root": "docs/",
+        "excluded_paths": [],
+        "stale_threshold_days": 30,
+    }
+    output_path = tmp_path / "scan-results.json"
+
+    with patch("carta.scanner.scanner.get_current_git_hash", return_value="abc123"), \
+         patch("carta.scanner.scanner.get_file_last_commit_date", return_value=None):
+        result = run_scan(tmp_path, cfg, output_path, reference_date=date(2026, 3, 18))
+
+    one_way = [i for i in result["issues"] if i["type"] == "one_way_link"]
+    assert len(one_way) >= 1
+    assert any("TOPOLOGY.md" in i["detail"] for i in one_way)

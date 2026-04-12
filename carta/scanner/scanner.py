@@ -143,6 +143,56 @@ def check_broken_related(doc_path: Path, frontmatter: dict, repo_root: Path) -> 
     return issues
 
 
+def check_one_way_links(
+    doc_path: Path,
+    frontmatter: dict,
+    docs_with_frontmatter: dict,
+    repo_root: Path,
+) -> list:
+    """Flag related: entries that are not reciprocated by the target document.
+
+    When doc A lists doc B in its related: field, this check verifies that
+    doc B also lists doc A in its own related: field.  If the back-link is
+    absent a ``one_way_link`` warning is emitted for doc A so that humans (or
+    agents) know the graph edge is not bidirectional.
+
+    Only docs that *exist* and have parseable frontmatter are checked — broken
+    or missing-frontmatter targets are already flagged by other checks.
+
+    Args:
+        doc_path: Absolute path of the document being checked.
+        frontmatter: Parsed frontmatter dict for doc_path.
+        docs_with_frontmatter: Mapping of ``str(relative_path)`` → frontmatter
+            dict (or None) for every tracked document in the repo.
+        repo_root: Repository root used to compute relative paths.
+
+    Returns:
+        List of issue dicts with type ``one_way_link``.
+    """
+    issues = []
+    rel_doc = str(doc_path.relative_to(repo_root))
+    for rel_path in frontmatter.get("related") or []:
+        target = repo_root / rel_path
+        if not target.exists():
+            continue  # already handled by check_broken_related
+        target_fm = docs_with_frontmatter.get(rel_path)
+        if target_fm is None:
+            continue  # target has no frontmatter — not a structural error here
+        back_links = [str(r) for r in (target_fm.get("related") or [])]
+        if rel_doc not in back_links:
+            issues.append({
+                "type": "one_way_link",
+                "severity": "warning",
+                "doc": rel_doc,
+                "detail": (
+                    f"{rel_doc} lists '{rel_path}' in related:, "
+                    f"but '{rel_path}' does not list {rel_doc} back"
+                ),
+                "related_file": rel_path,
+            })
+    return issues
+
+
 def check_missing_frontmatter(doc_path: Path, frontmatter) -> Optional[dict]:
     """Return an issue if a tracked doc has no frontmatter."""
     if frontmatter is None:
@@ -249,7 +299,6 @@ def check_related_drift(doc_path: Path, frontmatter: dict, repo_root: Path) -> l
                 "related_git_hash": None,
             })
     return issues
-
 
 def build_inverted_index(docs_with_frontmatter: dict) -> dict:
     """Build inverted index: related_path -> set of docs that list it in related:."""
@@ -681,6 +730,7 @@ def run_scan(
         if prototype:
             issues.append(prototype)
         issues.extend(check_broken_related(doc_path, fm, repo_root))
+        issues.extend(check_one_way_links(doc_path, fm, frontmatters, repo_root))
         issues.extend(check_stale_last_reviewed(doc_path, fm, threshold, ref_date))
         issues.extend(check_related_drift(doc_path, fm, repo_root))
         orphan = check_orphaned_doc(doc_path, fm, inverted_index, repo_root)
