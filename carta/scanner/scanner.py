@@ -142,7 +142,6 @@ def check_broken_related(doc_path: Path, frontmatter: dict, repo_root: Path) -> 
             })
     return issues
 
-
 def check_missing_frontmatter(doc_path: Path, frontmatter) -> Optional[dict]:
     """Return an issue if a tracked doc has no frontmatter."""
     if frontmatter is None:
@@ -249,6 +248,138 @@ def check_related_drift(doc_path: Path, frontmatter: dict, repo_root: Path) -> l
                 "related_git_hash": None,
             })
     return issues
+
+
+# ---------------------------------------------------------------------------
+# Related auto-suggest (semantic similarity)
+# ---------------------------------------------------------------------------
+
+_SUGGEST_SIMILARITY_THRESHOLD = 0.85
+
+
+def _import_qdrant_client():
+    """Lazy import of QdrantClient; raises ImportError when qdrant_client not installed."""
+    from qdrant_client import QdrantClient  # noqa: PLC0415
+    return QdrantClient
+
+
+def _import_embed_helpers():
+    """Lazy import of get_embedding and collection_name from the embed pipeline."""
+    from carta.embed.pipeline import get_embedding, collection_name  # noqa: PLC0415
+    return get_embedding, collection_name
+
+
+# Module-level aliases so tests can patch carta.scanner.scanner.QdrantClient etc.
+try:
+    from qdrant_client import QdrantClient
+except ImportError:
+    QdrantClient = None  # type: ignore[assignment,misc]
+
+try:
+    from carta.embed.pipeline import get_embedding, collection_name
+except Exception:
+    get_embedding = None  # type: ignore[assignment]
+    collection_name = None  # type: ignore[assignment]
+
+
+def suggest_related_for_doc(
+    doc_path: Path,
+    frontmatter: dict,
+    repo_root: Path,
+    cfg: dict,
+    threshold: float = _SUGGEST_SIMILARITY_THRESHOLD,
+) -> list[dict]:
+    """Return semantic-similarity-based related: suggestions for a doc with no links.
+
+    Only runs when:
+    - The doc has no existing related: entries.
+    - Qdrant and Ollama are reachable (fails silently otherwise).
+
+    Returns list of suggestion dicts::
+
+        [
+            {
+                "doc": "docs/CAN/MESSAGE_FLOW.md",
+                "suggested": "docs/CAN/TOPOLOGY.md",
+                "score": 0.91,
+            },
+            ...
+        ]
+
+    Args:
+        doc_path: Absolute path of the document to suggest for.
+        frontmatter: Parsed frontmatter dict (may be empty).
+        repo_root: Repository root.
+        cfg: Carta config dict (needs qdrant_url and embed.ollama_*).
+        threshold: Minimum cosine-similarity score to include a suggestion.
+    """
+    if frontmatter.get("related"):
+        return []  # already has links — no suggestion needed
+    if QdrantClient is None or get_embedding is None or collection_name is None:
+        return []  # optional dependencies not installed
+
+    rel_doc = str(doc_path.relative_to(repo_root))
+    try:
+        doc_text = doc_path.read_text(encoding="utf-8", errors="ignore")[:2000]
+        if not doc_text.strip():
+            return []
+
+        ollama_url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+        model = cfg.get("embed", {}).get("ollama_model", "nomic-embed-text:latest")
+        coll = collection_name(cfg, "doc")
+
+        vec = get_embedding(doc_text, ollama_url=ollama_url, model=model)
+        client = QdrantClient(url=cfg.get("qdrant_url", "http://localhost:6333"), timeout=5)
+        hits = client.query_points(
+            collection_name=coll,
+            query=vec,
+            limit=6,
+            with_payload=True,
+        )
+        suggestions = []
+        for hit in hits.points:
+            if hit.score < threshold:
+                continue
+            payload = hit.payload or {}
+            source = payload.get("file_path", payload.get("slug", ""))
+            if not source or source == rel_doc:
+                continue
+            suggestions.append({
+                "doc": rel_doc,
+                "suggested": source,
+                "score": round(hit.score, 4),
+            })
+        return suggestions
+    except Exception:
+        return []  # Qdrant/Ollama unavailable — degrade gracefully
+
+
+def suggest_related_for_all(
+    tracked_docs: list,
+    frontmatters: dict,
+    repo_root: Path,
+    cfg: dict,
+    threshold: float = _SUGGEST_SIMILARITY_THRESHOLD,
+) -> list[dict]:
+    """Run suggest_related_for_doc over all docs that have no related: links.
+
+    Args:
+        tracked_docs: List of absolute Paths for every tracked doc.
+        frontmatters: Mapping str(relative_path) -> frontmatter dict (or None).
+        repo_root: Repository root.
+        cfg: Carta config dict.
+        threshold: Minimum score to include a suggestion.
+
+    Returns:
+        Flat list of suggestion dicts (see suggest_related_for_doc).
+    """
+    all_suggestions: list[dict] = []
+    for doc_path in tracked_docs:
+        rel = str(doc_path.relative_to(repo_root))
+        fm = frontmatters.get(rel) or {}
+        suggestions = suggest_related_for_doc(doc_path, fm, repo_root, cfg, threshold)
+        all_suggestions.extend(suggestions)
+    return all_suggestions
 
 
 def build_inverted_index(docs_with_frontmatter: dict) -> dict:
@@ -714,6 +845,11 @@ def run_scan(
             issues.append(drift)
         issues.extend(check_sidecar_broken_related(sidecar_path, data, repo_root))
 
+    # Related auto-suggest (semantic; degrades gracefully when Qdrant/Ollama unavailable)
+    if progress:
+        progress.scan_step("computing related: suggestions")
+    related_suggestions = suggest_related_for_all(tracked_docs, frontmatters, repo_root, cfg)
+
     # Build stats
     by_severity = {"error": 0, "warning": 0, "info": 0}
     for i in issues:
@@ -728,6 +864,7 @@ def run_scan(
         "run_at_git_hash": current_hash,
         "git_branch": git_branch,
         "issues": issues,
+        "related_suggestions": related_suggestions,
         "changed_since_last_audit": changed,
         "stats": {
             "docs_scanned": len(tracked_docs),

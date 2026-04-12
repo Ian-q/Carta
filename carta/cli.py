@@ -103,6 +103,13 @@ def cmd_scan(args):
         )
     issue_count = len(results["issues"])
     print(f"Results at {output_path}")
+    # Print related: auto-suggestions (only when Qdrant is available)
+    suggestions = results.get("related_suggestions") or []
+    if suggestions:
+        print()
+        print("\U0001f4ce Suggested related: links (similarity ≥ 0.85):")
+        for s in suggestions:
+            print(f"  {s['doc']}: {s['suggested']} ({s['score']:.2f})")
     _notify_if_update(cfg_path, cfg)
 
 def cmd_embed(args):
@@ -204,6 +211,7 @@ def cmd_search(args):
         return
     for r in results:
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
+
     _notify_if_update(cfg_path, cfg)
 
 def cmd_update(args):
@@ -391,9 +399,8 @@ def main():
     doctor_p.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     doctor_p.add_argument("--json", action="store_true", help="Output in JSON format")
     
-    search_p = sub.add_parser("search")
+    search_p = sub.add_parser("search", help="Semantic search over embedded documents")
     search_p.add_argument("query", nargs="+")
-
     update_p = sub.add_parser("update", help="Update carta to the latest version")
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")
     update_p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")

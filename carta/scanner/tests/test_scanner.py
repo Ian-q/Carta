@@ -565,3 +565,167 @@ def test_check_embed_transcript_unprocessed_has_summary(tmp_path):
     cfg = _minimal_cfg(tmp_path)
     issues = check_embed_transcript_unprocessed(tmp_path, cfg)
     assert len(issues) == 0
+
+
+# ---------------------------------------------------------------------------
+# suggest_related_for_doc / suggest_related_for_all (Target 2)
+# ---------------------------------------------------------------------------
+
+from carta.scanner.scanner import suggest_related_for_doc, suggest_related_for_all
+
+
+def _make_cfg_with_qdrant(qdrant_url: str = "http://localhost:6333") -> dict:
+    return {
+        "project_name": "test",
+        "qdrant_url": qdrant_url,
+        "docs_root": "docs/",
+        "excluded_paths": [],
+        "stale_threshold_days": 30,
+        "embed": {
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "nomic-embed-text:latest",
+        },
+    }
+
+
+def test_suggest_related_skips_doc_with_existing_links(tmp_path):
+    """Docs that already have related: entries must not be queried."""
+    (tmp_path / "docs").mkdir()
+    doc = tmp_path / "docs" / "ARCH.md"
+    doc.write_text("# Arch\n")
+    fm = {"related": ["docs/OTHER.md"]}
+
+    results = suggest_related_for_doc(doc, fm, tmp_path, _make_cfg_with_qdrant())
+    assert results == []
+
+
+def test_suggest_related_degrades_gracefully_when_qdrant_unavailable(tmp_path):
+    """suggest_related_for_doc must return [] when Qdrant is not running."""
+    (tmp_path / "docs").mkdir()
+    doc = tmp_path / "docs" / "ARCH.md"
+    doc.write_text("# Arch — some content\n")
+    fm = {"related": []}
+
+    # Port 19999 should be unreachable in test environment
+    results = suggest_related_for_doc(doc, fm, tmp_path, _make_cfg_with_qdrant("http://localhost:19999"))
+    assert results == []
+
+
+def test_suggest_related_returns_suggestions_above_threshold(tmp_path):
+    """When Qdrant returns hits above threshold, they should be included."""
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc.write_text("# CAN message flow\n")
+
+    # Mock hit above threshold
+    mock_hit = MagicMock()
+    mock_hit.score = 0.91
+    mock_hit.payload = {"file_path": "docs/CAN/TOPOLOGY.md"}
+
+    mock_low = MagicMock()
+    mock_low.score = 0.70  # below threshold
+    mock_low.payload = {"file_path": "docs/CAN/SAFETY.md"}
+
+    mock_result = MagicMock()
+    mock_result.points = [mock_hit, mock_low]
+
+    cfg = _make_cfg_with_qdrant()
+
+    with patch("carta.scanner.scanner.QdrantClient") as mock_qc, \
+         patch("carta.scanner.scanner.get_embedding", return_value=[0.1] * 768), \
+         patch("carta.scanner.scanner.collection_name", return_value="test_doc"):
+        mock_qc.return_value.query_points.return_value = mock_result
+        results = suggest_related_for_doc(doc, {}, tmp_path, cfg)
+
+    assert len(results) == 1
+    assert results[0]["suggested"] == "docs/CAN/TOPOLOGY.md"
+    assert results[0]["score"] == 0.91
+    assert results[0]["doc"] == "docs/CAN/MESSAGE_FLOW.md"
+
+
+def test_suggest_related_excludes_self(tmp_path):
+    """The doc itself should not appear in its own suggestions."""
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc.write_text("# Self\n")
+
+    mock_self = MagicMock()
+    mock_self.score = 1.0
+    mock_self.payload = {"file_path": "docs/CAN/MESSAGE_FLOW.md"}  # self-reference
+
+    mock_result = MagicMock()
+    mock_result.points = [mock_self]
+
+    cfg = _make_cfg_with_qdrant()
+    with patch("carta.scanner.scanner.QdrantClient") as mock_qc, \
+         patch("carta.scanner.scanner.get_embedding", return_value=[0.1] * 768), \
+         patch("carta.scanner.scanner.collection_name", return_value="test_doc"):
+        mock_qc.return_value.query_points.return_value = mock_result
+        results = suggest_related_for_doc(doc, {}, tmp_path, cfg)
+
+    assert results == []
+
+
+def test_suggest_related_for_all_aggregates(tmp_path):
+    """suggest_related_for_all should aggregate results from all docs without related."""
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "A.md"
+    doc_b = tmp_path / "docs" / "CAN" / "B.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B\n")
+
+    # A has no related, B has related (should be skipped)
+    frontmatters = {
+        "docs/CAN/A.md": {"related": []},
+        "docs/CAN/B.md": {"related": ["docs/CAN/A.md"]},
+    }
+
+    mock_hit = MagicMock()
+    mock_hit.score = 0.92
+    mock_hit.payload = {"file_path": "docs/CAN/B.md"}
+    mock_result = MagicMock()
+    mock_result.points = [mock_hit]
+
+    cfg = _make_cfg_with_qdrant()
+    with patch("carta.scanner.scanner.QdrantClient") as mock_qc, \
+         patch("carta.scanner.scanner.get_embedding", return_value=[0.1] * 768), \
+         patch("carta.scanner.scanner.collection_name", return_value="test_doc"):
+        mock_qc.return_value.query_points.return_value = mock_result
+        results = suggest_related_for_all(
+            [doc_a, doc_b], frontmatters, tmp_path, cfg
+        )
+
+    # Only doc_a (no links) should have generated suggestions
+    assert len(results) == 1
+    assert results[0]["doc"] == "docs/CAN/A.md"
+
+
+def test_run_scan_includes_related_suggestions_key(tmp_path):
+    """run_scan result dict must always contain 'related_suggestions' key."""
+    from unittest.mock import patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    (tmp_path / "docs" / "CAN" / "TOPOLOGY.md").write_text(
+        "---\nrelated: []\nlast_reviewed: 2026-03-18\n---\n# Topology\n"
+    )
+
+    cfg = {
+        "docs_root": "docs/",
+        "excluded_paths": [],
+        "stale_threshold_days": 30,
+    }
+    output_path = tmp_path / "scan-results.json"
+
+    with patch("carta.scanner.scanner.get_current_git_hash", return_value="abc123"), \
+         patch("carta.scanner.scanner.get_file_last_commit_date", return_value=None):
+        result = run_scan(tmp_path, cfg, output_path, reference_date=date(2026, 3, 18))
+
+    assert "related_suggestions" in result
+    # With no embed config / Qdrant, suggestions should be empty (graceful degrade)
+    assert isinstance(result["related_suggestions"], list)
