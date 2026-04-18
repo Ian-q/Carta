@@ -103,6 +103,12 @@ def cmd_scan(args):
         )
     issue_count = len(results["issues"])
     print(f"Results at {output_path}")
+    suggestions = results.get("related_suggestions") or []
+    if suggestions:
+        print()
+        print("\U0001f4ce Suggested related: links (similarity \u2265 0.85):")
+        for s in suggestions:
+            print(f"  {s['doc']}: {s['suggested']} ({s['score']:.2f})")
     _notify_if_update(cfg_path, cfg)
 
 def cmd_embed(args):
@@ -204,6 +210,21 @@ def cmd_search(args):
         return
     for r in results:
         print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
+
+    hops = getattr(args, "hops", 0)
+    if hops > 0:
+        from carta.search.graph import build_related_graph, walk_hops
+        repo_root = cfg_path.parent.parent
+        docs_root_rel = cfg.get("docs_root", "docs/").rstrip("/")
+        graph = build_related_graph(repo_root, repo_root / docs_root_rel)
+        seeds = [r["source"] for r in results if r.get("source")]
+        hop_results = walk_hops(seeds, graph, hops)
+        if hop_results:
+            print()
+            print(f"\U0001f310 Related via graph ({hops}-hop expansion):")
+            for h in hop_results:
+                print(f"  [{h['hop']}-hop] {h['doc']}  (via {h['via']})")
+
     _notify_if_update(cfg_path, cfg)
 
 def cmd_update(args):
@@ -391,8 +412,18 @@ def main():
     doctor_p.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     doctor_p.add_argument("--json", action="store_true", help="Output in JSON format")
     
-    search_p = sub.add_parser("search")
+    search_p = sub.add_parser("search", help="Semantic search over embedded documents")
     search_p.add_argument("query", nargs="+")
+    search_p.add_argument(
+        "--hops",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "After returning semantic results, also return docs linked via related: "
+            "within N hops of each result (default: 0 = no graph expansion)"
+        ),
+    )
 
     update_p = sub.add_parser("update", help="Update carta to the latest version")
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")

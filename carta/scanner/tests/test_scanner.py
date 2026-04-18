@@ -565,3 +565,290 @@ def test_check_embed_transcript_unprocessed_has_summary(tmp_path):
     cfg = _minimal_cfg(tmp_path)
     issues = check_embed_transcript_unprocessed(tmp_path, cfg)
     assert len(issues) == 0
+
+
+# ---------------------------------------------------------------------------
+# check_one_way_links
+# ---------------------------------------------------------------------------
+
+from carta.scanner.scanner import check_one_way_links
+
+
+def test_one_way_link_detected(tmp_path):
+    """A -> B where B does not list A back should emit one_way_link."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc_b = tmp_path / "docs" / "CAN" / "TOPOLOGY.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B\n")
+
+    fm_a = {"related": ["docs/CAN/TOPOLOGY.md"], "last_reviewed": "2026-03-01"}
+    fm_b = {"related": [], "last_reviewed": "2026-03-01"}
+    docs_fm = {
+        "docs/CAN/MESSAGE_FLOW.md": fm_a,
+        "docs/CAN/TOPOLOGY.md": fm_b,
+    }
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert len(issues) == 1
+    assert issues[0]["type"] == "one_way_link"
+    assert issues[0]["severity"] == "warning"
+    assert "TOPOLOGY.md" in issues[0]["detail"]
+    assert issues[0]["related_file"] == "docs/CAN/TOPOLOGY.md"
+
+
+def test_bidirectional_link_no_issue(tmp_path):
+    """A -> B and B -> A: no one_way_link should be emitted."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc_b = tmp_path / "docs" / "CAN" / "TOPOLOGY.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B\n")
+
+    fm_a = {"related": ["docs/CAN/TOPOLOGY.md"]}
+    fm_b = {"related": ["docs/CAN/MESSAGE_FLOW.md"]}
+    docs_fm = {
+        "docs/CAN/MESSAGE_FLOW.md": fm_a,
+        "docs/CAN/TOPOLOGY.md": fm_b,
+    }
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert issues == []
+
+
+def test_one_way_link_skips_nonexistent_target(tmp_path):
+    """Broken related entries (file missing) should be skipped — check_broken_related handles them."""
+    (tmp_path / "docs").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "ARCH.md"
+    doc_a.write_text("# A\n")
+
+    fm_a = {"related": ["docs/NONEXISTENT.md"]}
+    docs_fm = {"docs/ARCH.md": fm_a}
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert issues == []
+
+
+def test_one_way_link_skips_target_without_frontmatter(tmp_path):
+    """Target without parseable frontmatter is skipped (not a bidirectionality error)."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc_b = tmp_path / "docs" / "CAN" / "TOPOLOGY.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B — no frontmatter\n")
+
+    fm_a = {"related": ["docs/CAN/TOPOLOGY.md"]}
+    docs_fm = {
+        "docs/CAN/MESSAGE_FLOW.md": fm_a,
+        "docs/CAN/TOPOLOGY.md": None,
+    }
+
+    issues = check_one_way_links(doc_a, fm_a, docs_fm, tmp_path)
+    assert issues == []
+
+
+def test_one_way_link_multiple_targets(tmp_path):
+    """Doc with two related entries where only one is reciprocated."""
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    for name in ["SOURCE.md", "RECIPROCAL.md", "ONE_WAY.md"]:
+        (tmp_path / "docs" / "CAN" / name).write_text("# doc\n")
+
+    fm_source = {"related": ["docs/CAN/RECIPROCAL.md", "docs/CAN/ONE_WAY.md"]}
+    fm_recip = {"related": ["docs/CAN/SOURCE.md"]}
+    fm_one_way = {"related": []}
+
+    docs_fm = {
+        "docs/CAN/SOURCE.md": fm_source,
+        "docs/CAN/RECIPROCAL.md": fm_recip,
+        "docs/CAN/ONE_WAY.md": fm_one_way,
+    }
+
+    issues = check_one_way_links(
+        tmp_path / "docs" / "CAN" / "SOURCE.md", fm_source, docs_fm, tmp_path
+    )
+    assert len(issues) == 1
+    assert "ONE_WAY.md" in issues[0]["related_file"]
+
+
+def test_run_scan_includes_one_way_link(tmp_path):
+    """Integration: run_scan emits one_way_link issues when back-links are missing."""
+    from unittest.mock import patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    (tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md").write_text(
+        "---\nrelated:\n  - docs/CAN/TOPOLOGY.md\nlast_reviewed: 2026-03-18\n---\n# A\n"
+    )
+    (tmp_path / "docs" / "CAN" / "TOPOLOGY.md").write_text(
+        "---\nrelated: []\nlast_reviewed: 2026-03-18\n---\n# B\n"
+    )
+
+    cfg = {
+        "docs_root": "docs/",
+        "excluded_paths": [],
+        "stale_threshold_days": 30,
+    }
+    output_path = tmp_path / "scan-results.json"
+
+    with patch("carta.scanner.scanner.get_current_git_hash", return_value="abc123"), \
+         patch("carta.scanner.scanner.get_file_last_commit_date", return_value=None):
+        result = run_scan(tmp_path, cfg, output_path, reference_date=date(2026, 3, 18))
+
+    one_way = [i for i in result["issues"] if i["type"] == "one_way_link"]
+    assert len(one_way) >= 1
+    assert any("TOPOLOGY.md" in i["detail"] for i in one_way)
+
+
+# ---------------------------------------------------------------------------
+# suggest_related_for_doc / suggest_related_for_all
+# ---------------------------------------------------------------------------
+
+from carta.scanner.scanner import suggest_related_for_doc, suggest_related_for_all
+
+
+def _make_cfg_with_qdrant(qdrant_url: str = "http://localhost:6333") -> dict:
+    return {
+        "project_name": "test",
+        "qdrant_url": qdrant_url,
+        "docs_root": "docs/",
+        "excluded_paths": [],
+        "stale_threshold_days": 30,
+        "embed": {
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "nomic-embed-text:latest",
+        },
+    }
+
+
+def test_suggest_related_skips_doc_with_existing_links(tmp_path):
+    """Docs that already have related: entries must not be queried."""
+    (tmp_path / "docs").mkdir()
+    doc = tmp_path / "docs" / "ARCH.md"
+    doc.write_text("# Arch\n")
+    fm = {"related": ["docs/OTHER.md"]}
+
+    results = suggest_related_for_doc(doc, fm, tmp_path, _make_cfg_with_qdrant())
+    assert results == []
+
+
+def test_suggest_related_degrades_gracefully_when_qdrant_unavailable(tmp_path):
+    """suggest_related_for_doc must return [] when Qdrant is not running."""
+    (tmp_path / "docs").mkdir()
+    doc = tmp_path / "docs" / "ARCH.md"
+    doc.write_text("# Arch — some content\n")
+    fm = {"related": []}
+
+    results = suggest_related_for_doc(doc, fm, tmp_path, _make_cfg_with_qdrant("http://localhost:19999"))
+    assert results == []
+
+
+def test_suggest_related_returns_suggestions_above_threshold(tmp_path):
+    """When Qdrant returns hits above threshold, they should be included."""
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc.write_text("# CAN message flow\n")
+
+    mock_hit = MagicMock()
+    mock_hit.score = 0.91
+    mock_hit.payload = {"file_path": "docs/CAN/TOPOLOGY.md"}
+
+    mock_low = MagicMock()
+    mock_low.score = 0.70
+    mock_low.payload = {"file_path": "docs/CAN/SAFETY.md"}
+
+    mock_result = MagicMock()
+    mock_result.points = [mock_hit, mock_low]
+
+    cfg = _make_cfg_with_qdrant()
+    with patch("carta.scanner.scanner.QdrantClient") as mock_qc, \
+         patch("carta.scanner.scanner.get_embedding", return_value=[0.1] * 768), \
+         patch("carta.scanner.scanner.collection_name", return_value="test_doc"):
+        mock_qc.return_value.query_points.return_value = mock_result
+        results = suggest_related_for_doc(doc, {}, tmp_path, cfg)
+
+    assert len(results) == 1
+    assert results[0]["suggested"] == "docs/CAN/TOPOLOGY.md"
+    assert results[0]["score"] == 0.91
+    assert results[0]["doc"] == "docs/CAN/MESSAGE_FLOW.md"
+
+
+def test_suggest_related_excludes_self(tmp_path):
+    """The doc itself should not appear in its own suggestions."""
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc = tmp_path / "docs" / "CAN" / "MESSAGE_FLOW.md"
+    doc.write_text("# Self\n")
+
+    mock_self = MagicMock()
+    mock_self.score = 1.0
+    mock_self.payload = {"file_path": "docs/CAN/MESSAGE_FLOW.md"}
+
+    mock_result = MagicMock()
+    mock_result.points = [mock_self]
+
+    cfg = _make_cfg_with_qdrant()
+    with patch("carta.scanner.scanner.QdrantClient") as mock_qc, \
+         patch("carta.scanner.scanner.get_embedding", return_value=[0.1] * 768), \
+         patch("carta.scanner.scanner.collection_name", return_value="test_doc"):
+        mock_qc.return_value.query_points.return_value = mock_result
+        results = suggest_related_for_doc(doc, {}, tmp_path, cfg)
+
+    assert results == []
+
+
+def test_suggest_related_for_all_aggregates(tmp_path):
+    """suggest_related_for_all should aggregate results from all docs without related."""
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    doc_a = tmp_path / "docs" / "CAN" / "A.md"
+    doc_b = tmp_path / "docs" / "CAN" / "B.md"
+    doc_a.write_text("# A\n")
+    doc_b.write_text("# B\n")
+
+    frontmatters = {
+        "docs/CAN/A.md": {"related": []},
+        "docs/CAN/B.md": {"related": ["docs/CAN/A.md"]},  # already has links — skipped
+    }
+
+    mock_hit = MagicMock()
+    mock_hit.score = 0.92
+    mock_hit.payload = {"file_path": "docs/CAN/B.md"}
+    mock_result = MagicMock()
+    mock_result.points = [mock_hit]
+
+    cfg = _make_cfg_with_qdrant()
+    with patch("carta.scanner.scanner.QdrantClient") as mock_qc, \
+         patch("carta.scanner.scanner.get_embedding", return_value=[0.1] * 768), \
+         patch("carta.scanner.scanner.collection_name", return_value="test_doc"):
+        mock_qc.return_value.query_points.return_value = mock_result
+        results = suggest_related_for_all([doc_a, doc_b], frontmatters, tmp_path, cfg)
+
+    assert len(results) == 1
+    assert results[0]["doc"] == "docs/CAN/A.md"
+
+
+def test_run_scan_includes_related_suggestions_key(tmp_path):
+    """run_scan result dict must always contain 'related_suggestions' key."""
+    from unittest.mock import patch
+
+    (tmp_path / "docs" / "CAN").mkdir(parents=True)
+    (tmp_path / "docs" / "CAN" / "TOPOLOGY.md").write_text(
+        "---\nrelated: []\nlast_reviewed: 2026-03-18\n---\n# Topology\n"
+    )
+
+    cfg = {
+        "docs_root": "docs/",
+        "excluded_paths": [],
+        "stale_threshold_days": 30,
+    }
+    output_path = tmp_path / "scan-results.json"
+
+    with patch("carta.scanner.scanner.get_current_git_hash", return_value="abc123"), \
+         patch("carta.scanner.scanner.get_file_last_commit_date", return_value=None):
+        result = run_scan(tmp_path, cfg, output_path, reference_date=date(2026, 3, 18))
+
+    assert "related_suggestions" in result
+    assert isinstance(result["related_suggestions"], list)
