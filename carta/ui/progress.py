@@ -6,6 +6,8 @@ and tests).
 """
 
 import os
+import re
+import shutil
 import sys
 import threading
 import time
@@ -24,6 +26,34 @@ _CYAN   = "\033[36m"
 _CLR    = "\r\033[K"   # move to line start + clear to end
 
 _TICK_INTERVAL = 0.1  # seconds between spinner redraws
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _fit_to_terminal(line: str) -> str:
+    """Truncate *line* so its visible length (excluding ANSI codes) fits within
+    the terminal width.  Prevents the line from wrapping, which would leave
+    stale fragments that \r\033[K cannot clear."""
+    cols = shutil.get_terminal_size(fallback=(80, 24)).columns - 1
+    if len(_ANSI_RE.sub("", line)) <= cols:
+        return line
+    # Walk character-by-character, copying ANSI sequences verbatim and
+    # counting only printable characters toward the column budget.
+    count = 0
+    result: list[str] = []
+    i = 0
+    while i < len(line):
+        m = _ANSI_RE.match(line, i)
+        if m:
+            result.append(m.group())
+            i = m.end()
+        else:
+            if count >= cols:
+                break
+            result.append(line[i])
+            count += 1
+            i += 1
+    return "".join(result)
 
 _VISION_STRATEGY_LABELS = {
     "skip":    ("pure-text",   ""),
@@ -160,7 +190,7 @@ class Progress:
         sub  = self._c(_DIM, f"▸ {self._current_msg}")
         bar  = self._c(_CYAN, self._bar())
         el   = self._c(_DIM, f"{self._elapsed():.0f}s")
-        sys.stdout.write(f"{_CLR}{sp}  {idx}  {name}  {sub}  {bar}  {el}")
+        sys.stdout.write(_fit_to_terminal(f"{_CLR}{sp}  {idx}  {name}  {sub}  {bar}  {el}"))
         sys.stdout.flush()
 
     def _write_scan_line(self) -> None:
@@ -168,7 +198,7 @@ class Progress:
         sp  = self._c(_CYAN, self._spin())
         lbl = self._c(_BOLD, "Scanning")
         sub = self._c(_DIM, self._current_msg)
-        sys.stdout.write(f"{_CLR}{sp}  {lbl}  {sub}")
+        sys.stdout.write(_fit_to_terminal(f"{_CLR}{sp}  {lbl}  {sub}"))
         sys.stdout.flush()
 
     def _tick(self) -> None:
