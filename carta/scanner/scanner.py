@@ -143,6 +143,56 @@ def check_broken_related(doc_path: Path, frontmatter: dict, repo_root: Path) -> 
     return issues
 
 
+def check_one_way_links(
+    doc_path: Path,
+    frontmatter: dict,
+    docs_with_frontmatter: dict,
+    repo_root: Path,
+) -> list:
+    """Flag related: entries that are not reciprocated by the target document.
+
+    When doc A lists doc B in its related: field, this check verifies that
+    doc B also lists doc A in its own related: field.  If the back-link is
+    absent a ``one_way_link`` warning is emitted for doc A so that humans (or
+    agents) know the graph edge is not bidirectional.
+
+    Only docs that *exist* and have parseable frontmatter are checked — broken
+    or missing-frontmatter targets are already flagged by other checks.
+
+    Args:
+        doc_path: Absolute path of the document being checked.
+        frontmatter: Parsed frontmatter dict for doc_path.
+        docs_with_frontmatter: Mapping of ``str(relative_path)`` → frontmatter
+            dict (or None) for every tracked document in the repo.
+        repo_root: Repository root used to compute relative paths.
+
+    Returns:
+        List of issue dicts with type ``one_way_link``.
+    """
+    issues = []
+    rel_doc = str(doc_path.relative_to(repo_root))
+    for rel_path in frontmatter.get("related") or []:
+        target = repo_root / rel_path
+        if not target.exists():
+            continue  # already handled by check_broken_related
+        target_fm = docs_with_frontmatter.get(rel_path)
+        if target_fm is None:
+            continue  # target has no frontmatter — not a structural error here
+        back_links = [str(r) for r in (target_fm.get("related") or [])]
+        if rel_doc not in back_links:
+            issues.append({
+                "type": "one_way_link",
+                "severity": "warning",
+                "doc": rel_doc,
+                "detail": (
+                    f"{rel_doc} lists '{rel_path}' in related:, "
+                    f"but '{rel_path}' does not list {rel_doc} back"
+                ),
+                "related_file": rel_path,
+            })
+    return issues
+
+
 def check_missing_frontmatter(doc_path: Path, frontmatter) -> Optional[dict]:
     """Return an issue if a tracked doc has no frontmatter."""
     if frontmatter is None:
@@ -260,6 +310,98 @@ def build_inverted_index(docs_with_frontmatter: dict) -> dict:
         for rel in fm.get("related") or []:
             idx.setdefault(rel, set()).add(doc_path)
     return idx
+
+
+# ---------------------------------------------------------------------------
+# Related auto-suggest (semantic similarity)
+# ---------------------------------------------------------------------------
+
+_SUGGEST_SIMILARITY_THRESHOLD = 0.85
+
+# Module-level aliases so tests can patch carta.scanner.scanner.QdrantClient etc.
+try:
+    from qdrant_client import QdrantClient
+except ImportError:
+    QdrantClient = None  # type: ignore[assignment,misc]
+
+try:
+    from carta.embed.pipeline import get_embedding, collection_name
+except Exception:
+    get_embedding = None  # type: ignore[assignment]
+    collection_name = None  # type: ignore[assignment]
+
+
+def suggest_related_for_doc(
+    doc_path: Path,
+    frontmatter: dict,
+    repo_root: Path,
+    cfg: dict,
+    threshold: float = _SUGGEST_SIMILARITY_THRESHOLD,
+) -> list[dict]:
+    """Return semantic-similarity-based related: suggestions for a doc with no links.
+
+    Only runs when the doc has no existing related: entries and Qdrant/Ollama
+    are reachable.  Fails silently otherwise.
+
+    Returns list of suggestion dicts::
+
+        [{"doc": "docs/CAN/MESSAGE_FLOW.md", "suggested": "docs/CAN/TOPOLOGY.md", "score": 0.91}]
+    """
+    if frontmatter.get("related"):
+        return []
+    if QdrantClient is None or get_embedding is None or collection_name is None:
+        return []
+
+    rel_doc = str(doc_path.relative_to(repo_root))
+    try:
+        doc_text = doc_path.read_text(encoding="utf-8", errors="ignore")[:2000]
+        if not doc_text.strip():
+            return []
+
+        ollama_url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+        model = cfg.get("embed", {}).get("ollama_model", "nomic-embed-text:latest")
+        coll = collection_name(cfg, "doc")
+
+        vec = get_embedding(doc_text, ollama_url=ollama_url, model=model)
+        client = QdrantClient(url=cfg.get("qdrant_url", "http://localhost:6333"), timeout=5)
+        hits = client.query_points(
+            collection_name=coll,
+            query=vec,
+            limit=6,
+            with_payload=True,
+        )
+        suggestions = []
+        for hit in hits.points:
+            if hit.score < threshold:
+                continue
+            payload = hit.payload or {}
+            source = payload.get("file_path", payload.get("slug", ""))
+            if not source or source == rel_doc:
+                continue
+            suggestions.append({
+                "doc": rel_doc,
+                "suggested": source,
+                "score": round(hit.score, 4),
+            })
+        return suggestions
+    except Exception:
+        return []
+
+
+def suggest_related_for_all(
+    tracked_docs: list,
+    frontmatters: dict,
+    repo_root: Path,
+    cfg: dict,
+    threshold: float = _SUGGEST_SIMILARITY_THRESHOLD,
+) -> list[dict]:
+    """Run suggest_related_for_doc over all docs that have no related: links."""
+    all_suggestions: list[dict] = []
+    for doc_path in tracked_docs:
+        rel = str(doc_path.relative_to(repo_root))
+        fm = frontmatters.get(rel) or {}
+        all_suggestions.extend(suggest_related_for_doc(doc_path, fm, repo_root, cfg, threshold))
+    return all_suggestions
 
 
 def check_orphaned_doc(
@@ -683,6 +825,7 @@ def run_scan(
         if prototype:
             issues.append(prototype)
         issues.extend(check_broken_related(doc_path, fm, repo_root))
+        issues.extend(check_one_way_links(doc_path, fm, frontmatters, repo_root))
         issues.extend(check_stale_last_reviewed(doc_path, fm, threshold, ref_date))
         issues.extend(check_related_drift(doc_path, fm, repo_root))
         orphan = check_orphaned_doc(doc_path, fm, inverted_index, repo_root)
@@ -716,6 +859,11 @@ def run_scan(
             issues.append(drift)
         issues.extend(check_sidecar_broken_related(sidecar_path, data, repo_root))
 
+    # Related auto-suggest (semantic; degrades gracefully when Qdrant/Ollama unavailable)
+    if progress:
+        progress.scan_step("computing related: suggestions")
+    related_suggestions = suggest_related_for_all(tracked_docs, frontmatters, repo_root, cfg)
+
     # Build stats
     by_severity = {"error": 0, "warning": 0, "info": 0}
     for i in issues:
@@ -730,6 +878,7 @@ def run_scan(
         "run_at_git_hash": current_hash,
         "git_branch": git_branch,
         "issues": issues,
+        "related_suggestions": related_suggestions,
         "changed_since_last_audit": changed,
         "stats": {
             "docs_scanned": len(tracked_docs),
