@@ -316,9 +316,11 @@ _SIDECAR_SKIP_DIRS = frozenset([".git", ".pio", "node_modules", "build", "instal
 
 
 def _iter_sidecar_files(repo_root: Path, cfg: dict):
-    """Yield all .embed-meta.yaml files under repo_root, skipping build-artifact dirs."""
+    """Yield all .embed-meta.yaml files under repo_root, skipping build-artifact dirs and excluded_paths."""
     for p in repo_root.rglob("*.embed-meta.yaml"):
         if any(part in _SIDECAR_SKIP_DIRS for part in p.parts):
+            continue
+        if is_excluded(p, cfg, repo_root):
             continue
         yield p
 
