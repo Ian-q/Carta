@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files
+from carta.embed.induct import sidecar_path as get_sidecar_path
 from carta.config import find_config
 
 
@@ -649,10 +650,11 @@ class TestVisionProgressWiring:
         }
 
         pdf = self._make_pdf(tmp_path)
-        sidecar_path = pdf.parent / (pdf.stem + ".embed-meta.yaml")
+        sc_path = get_sidecar_path(pdf, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
 
         import yaml
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
                        "file_type": "pdf", "current_path": "docs/test.pdf"}, f)
 
@@ -700,10 +702,11 @@ class TestVisionProgressWiring:
         }
 
         pdf = self._make_pdf(tmp_path)
-        sidecar_path = pdf.parent / (pdf.stem + ".embed-meta.yaml")
+        sc_path = get_sidecar_path(pdf, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
 
         import yaml
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
                        "file_type": "pdf", "current_path": "docs/test.pdf"}, f)
 
@@ -752,10 +755,11 @@ class TestVisionProgressWiring:
         md = tmp_path / "docs" / "test.md"
         md.parent.mkdir(parents=True, exist_ok=True)
         md.write_text("# Hello\n\nworld")
-        sidecar_path = md.parent / (md.stem + ".embed-meta.yaml")
+        sc_path = get_sidecar_path(md, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
 
         import yaml
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
                        "file_type": "markdown", "current_path": "docs/test.md"}, f)
 
@@ -799,9 +803,10 @@ class TestVisionProgressWiring:
         }
 
         pdf = self._make_pdf(tmp_path)
-        sidecar_path = pdf.parent / (pdf.stem + ".embed-meta.yaml")
+        sc_path = get_sidecar_path(pdf, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump({"slug": "test", "doc_type": "guide", "status": "pending",
                        "file_type": "pdf", "current_path": "docs/test.pdf",
                        "generation": 0, "version_history": []}, f)
