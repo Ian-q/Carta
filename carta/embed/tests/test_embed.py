@@ -512,12 +512,16 @@ def test_discover_pending_files(tmp_path):
     doc_dir.mkdir(parents=True)
     pdf = doc_dir / "manual.pdf"
     pdf.write_bytes(b"%PDF-1.4")
-    sidecar = doc_dir / "manual.embed-meta.yaml"
-    sidecar.write_text(_yaml.dump({
-        "slug": "manual",
-        "doc_type": "reference",
-        "status": "pending",
-    }))
+    sc_dir = tmp_path / ".carta" / "sidecars" / "docs" / "reference"
+    sc_dir.mkdir(parents=True)
+    (sc_dir / "manual.embed-meta.yaml").write_text(
+        _yaml.dump({
+            "slug": "manual",
+            "doc_type": "reference",
+            "status": "pending",
+            "current_path": "docs/reference/manual.pdf",
+        })
+    )
 
     pending = discover_pending_files(tmp_path)
     assert len(pending) == 1
@@ -532,8 +536,15 @@ def test_discover_pending_files_skips_embedded(tmp_path):
     doc_dir.mkdir()
     pdf = doc_dir / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4")
-    sidecar = doc_dir / "doc.embed-meta.yaml"
-    sidecar.write_text(_yaml.dump({"slug": "doc", "status": "embedded"}))
+    sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+    sc_dir.mkdir(parents=True)
+    (sc_dir / "doc.embed-meta.yaml").write_text(
+        _yaml.dump({
+            "slug": "doc",
+            "status": "embedded",
+            "current_path": "docs/doc.pdf",
+        })
+    )
 
     pending = discover_pending_files(tmp_path)
     assert pending == []
@@ -838,7 +849,9 @@ def test_heal_sidecar_current_paths(tmp_path):
 
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4")
-    sidecar = tmp_path / "doc.embed-meta.yaml"
+    sc_dir = tmp_path / ".carta" / "sidecars"
+    sc_dir.mkdir(parents=True)
+    sidecar = sc_dir / "doc.embed-meta.yaml"
     sidecar.write_text(_yaml.dump({"slug": "doc", "status": "embedded"}))
 
     healed = _heal_sidecar_current_paths(tmp_path)
@@ -852,7 +865,9 @@ def test_heal_sidecar_skips_missing_source(tmp_path):
     """Sidecars without a matching source file are skipped during heal."""
     import yaml as _yaml
 
-    sidecar = tmp_path / "ghost.embed-meta.yaml"
+    sc_dir = tmp_path / ".carta" / "sidecars"
+    sc_dir.mkdir(parents=True)
+    sidecar = sc_dir / "ghost.embed-meta.yaml"
     sidecar.write_text(_yaml.dump({"slug": "ghost", "status": "embedded"}))
 
     healed = _heal_sidecar_current_paths(tmp_path)
