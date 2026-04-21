@@ -59,7 +59,7 @@ Already-migrated files won't match the old discovery pattern, so subsequent runs
 
 ### Section 3: Orphan Detection
 
-After migration, `carta embed` calls `detect_orphaned_sidecars(repo_root)` which walks `.carta/sidecars/` and checks each sidecar's `current_path` field against the filesystem. For any missing source file, it prints to stderr:
+After migration and after the existing `_heal_sidecar_current_paths()` pass, `carta embed` calls `detect_orphaned_sidecars(repo_root)` which walks `.carta/sidecars/` and checks each sidecar's `current_path` field against the filesystem. Sidecars with no `current_path` field are skipped silently (pre-lifecycle sidecars that the heal pass couldn't resolve). For any missing source file, it prints to stderr:
 
 ```
 Warning: orphaned sidecar (source not found): .carta/sidecars/docs/manuals/old-chip.embed-meta.yaml
