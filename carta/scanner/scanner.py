@@ -330,6 +330,8 @@ except Exception:
     get_embedding = None  # type: ignore[assignment]
     collection_name = None  # type: ignore[assignment]
 
+from carta.embed.induct import sidecar_path as get_sidecar_path
+
 
 def suggest_related_for_doc(
     doc_path: Path,
@@ -458,10 +460,11 @@ _SIDECAR_SKIP_DIRS = frozenset([".git", ".pio", "node_modules", "build", "instal
 
 
 def _iter_sidecar_files(repo_root: Path, cfg: dict):
-    """Yield all .embed-meta.yaml files under repo_root, skipping build-artifact dirs and excluded_paths."""
-    for p in repo_root.rglob("*.embed-meta.yaml"):
-        if any(part in _SIDECAR_SKIP_DIRS for part in p.parts):
-            continue
+    """Yield all .embed-meta.yaml files under .carta/sidecars/, skipping excluded_paths."""
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return
+    for p in sidecars_root.rglob("*.embed-meta.yaml"):
         if is_excluded(p, cfg, repo_root):
             continue
         yield p
@@ -552,7 +555,7 @@ def check_embed_induction_needed(repo_root: Path, cfg: dict = None) -> list:
             if f.name.startswith("."):
                 continue
             rel = str(f.relative_to(repo_root))
-            sidecar = f.parent / (f.stem + ".embed-meta.yaml")
+            sidecar = get_sidecar_path(f, repo_root)
             if not sidecar.exists():
                 issues.append({
                     "type": "embed_induction_needed",
@@ -590,7 +593,7 @@ def check_embed_drift(repo_root: Path, cfg: dict = None) -> list:
                 continue
             if f.name.startswith("."):
                 continue
-            sidecar = f.parent / (f.stem + ".embed-meta.yaml")
+            sidecar = get_sidecar_path(f, repo_root)
             if not sidecar.exists():
                 continue  # no sidecar = pending, not drift
             data = parse_sidecar(sidecar)
@@ -661,7 +664,7 @@ def check_embed_transcript_unprocessed(repo_root: Path, cfg: dict = None) -> lis
         if summary and summary.exists():
             continue
 
-        sidecar = inputs_dir / f"{stem}.embed-meta.yaml"
+        sidecar = repo_root / ".carta" / "sidecars" / inputs_dir.relative_to(repo_root) / f"{stem}.embed-meta.yaml"
         if sidecar.exists():
             data = parse_sidecar(sidecar)
             if data and data.get("status") in ("integrated", "fulfilled"):
