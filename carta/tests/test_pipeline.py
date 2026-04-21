@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 import yaml
 
-from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files
+from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files, migrate_sidecars
 from carta.embed.induct import sidecar_path as get_sidecar_path
 from carta.config import find_config
 
@@ -831,3 +831,54 @@ class TestVisionProgressWiring:
             run_embed_file(pdf, cfg, force=True)
 
         assert "_vision_events" not in written_data
+
+
+class TestMigrateSidecars:
+    """Test migrate_sidecars() moves co-located sidecars to .carta/sidecars/."""
+
+    def test_migrate_moves_colocated_sidecar(self, temp_repo):
+        repo_root, cfg = temp_repo
+        docs = repo_root / "docs"
+        docs.mkdir()
+        old = docs / "chip.embed-meta.yaml"
+        old.write_text("slug: chip\nstatus: pending\ncurrent_path: docs/chip.pdf\n")
+
+        migrate_sidecars(repo_root)
+
+        expected = repo_root / ".carta" / "sidecars" / "docs" / "chip.embed-meta.yaml"
+        assert expected.exists()
+        assert not old.exists()
+
+    def test_migrate_skips_already_in_carta(self, temp_repo):
+        repo_root, cfg = temp_repo
+        sc = repo_root / ".carta" / "sidecars" / "docs" / "chip.embed-meta.yaml"
+        sc.parent.mkdir(parents=True)
+        sc.write_text("slug: chip\nstatus: pending\n")
+
+        migrate_sidecars(repo_root)
+
+        assert sc.exists()  # unchanged
+
+    def test_migrate_returns_count(self, temp_repo):
+        repo_root, cfg = temp_repo
+        docs = repo_root / "docs"
+        docs.mkdir()
+        (docs / "a.embed-meta.yaml").write_text("slug: a\nstatus: pending\n")
+        (docs / "b.embed-meta.yaml").write_text("slug: b\nstatus: pending\n")
+
+        count = migrate_sidecars(repo_root)
+
+        assert count == 2
+
+    def test_migrate_nested_preserves_directory_structure(self, temp_repo):
+        repo_root, cfg = temp_repo
+        nested = repo_root / "docs" / "manuals" / "sub"
+        nested.mkdir(parents=True)
+        old = nested / "spec.embed-meta.yaml"
+        old.write_text("slug: spec\nstatus: pending\n")
+
+        migrate_sidecars(repo_root)
+
+        expected = repo_root / ".carta" / "sidecars" / "docs" / "manuals" / "sub" / "spec.embed-meta.yaml"
+        assert expected.exists()
+        assert not old.exists()
