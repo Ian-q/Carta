@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import os
+import shutil
 import sys
 import threading
 import time
@@ -16,7 +17,7 @@ from qdrant_client.models import Filter
 from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding, upsert_visual_pages
-from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar
+from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
 
 
@@ -44,62 +45,46 @@ def _update_sidecar(sidecar_path: Path, updates: dict) -> None:
 
 
 def discover_pending_files(repo_root: Path) -> list[dict]:
-    """Find all .embed-meta.yaml sidecars with status: pending under repo_root.
+    """Find all sidecars under .carta/sidecars/ with status: pending.
 
     Returns list of dicts: sidecar data + 'sidecar_path' + 'file_path'.
     """
     results = []
-    for sidecar_path in repo_root.rglob("*.embed-meta.yaml"):
-        data = read_sidecar(sidecar_path)
-        if data is None:
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return results
+    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        data = read_sidecar(sc_path)
+        if data is None or data.get("status") != "pending":
             continue
-        if data.get("status") != "pending":
+        current_path = data.get("current_path")
+        if not current_path:
             continue
-
-        stem = sidecar_path.name.replace(".embed-meta.yaml", "")
-        parent = sidecar_path.parent
-        source_file = None
-        for ext in _SUPPORTED_EXTENSIONS:
-            candidate = parent / f"{stem}{ext}"
-            if candidate.exists():
-                source_file = candidate
-                break
-
-        if source_file:
-            results.append({
-                **data,
-                "sidecar_path": sidecar_path,
-                "file_path": source_file,
-            })
-
+        source_file = repo_root / current_path
+        if source_file.exists():
+            results.append({**data, "sidecar_path": sc_path, "file_path": source_file})
     return results
 
 
 def discover_stale_files(repo_root: Path) -> list[Path]:
-    """Find all files with .embed-meta.yaml sidecars marked status: stale under repo_root.
+    """Find all files with sidecars under .carta/sidecars/ marked status: stale.
 
-    Returns list of file paths (the document path, not the sidecar path).
+    Returns list of source file paths.
     """
     results = []
-    for sidecar_path in repo_root.rglob("*.embed-meta.yaml"):
-        data = read_sidecar(sidecar_path)
-        if data is None:
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return results
+    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        data = read_sidecar(sc_path)
+        if data is None or data.get("status") != "stale":
             continue
-        if data.get("status") != "stale":
+        current_path = data.get("current_path")
+        if not current_path:
             continue
-
-        stem = sidecar_path.name.replace(".embed-meta.yaml", "")
-        parent = sidecar_path.parent
-        source_file = None
-        for ext in _SUPPORTED_EXTENSIONS:
-            candidate = parent / f"{stem}{ext}"
-            if candidate.exists():
-                source_file = candidate
-                break
-
-        if source_file:
+        source_file = repo_root / current_path
+        if source_file.exists():
             results.append(source_file)
-
     return results
 
 
@@ -486,28 +471,24 @@ def _embed_visual_pages_colpali(
 
 
 def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
-    """Add current_path to sidecars that are missing the field.
-
-    Skips sidecars whose source file does not exist.
-
-    Args:
-        repo_root: root directory to scan for .embed-meta.yaml files.
-        verbose: if True, print a summary of healed sidecars.
-
-    Returns:
-        Number of sidecars healed.
-    """
+    """Add current_path to sidecars under .carta/sidecars/ that are missing the field."""
     healed = 0
-    for sidecar_path in repo_root.rglob("*.embed-meta.yaml"):
-        data = read_sidecar(sidecar_path)
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return healed
+    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        data = read_sidecar(sc_path)
         if data is None or "current_path" in data:
             continue
-        stem = sidecar_path.name.replace(".embed-meta.yaml", "")
+        # Infer source path from sidecar's mirror position
+        rel_from_sidecars = sc_path.relative_to(sidecars_root)
+        stem = sc_path.name.replace(".embed-meta.yaml", "")
+        parent_dirs = rel_from_sidecars.parent
         for ext in _SUPPORTED_EXTENSIONS:
-            candidate = sidecar_path.parent / f"{stem}{ext}"
+            candidate = repo_root / parent_dirs / f"{stem}{ext}"
             if candidate.exists():
-                data["current_path"] = str(candidate.relative_to(repo_root))
-                _update_sidecar(sidecar_path, data)
+                data["current_path"] = str(parent_dirs / f"{stem}{ext}")
+                _update_sidecar(sc_path, data)
                 healed += 1
                 break
     if verbose and healed:
@@ -543,15 +524,15 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     if not file_path.exists():
         raise FileNotFoundError(f"Path does not exist: {path}")
 
-    sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
+    sc_path = sidecar_path(file_path, repo_root)
 
     # Generate sidecar if it doesn't exist
-    if not sidecar_path.exists():
+    if not sc_path.exists():
         stub = generate_sidecar_stub(file_path, repo_root, cfg)
-        write_sidecar(file_path, stub)
+        write_sidecar(file_path, stub, repo_root)
 
     # Read sidecar for file_info
-    sidecar_data = read_sidecar(sidecar_path) or {}
+    sidecar_data = read_sidecar(sc_path) or {}
 
     # Mtime fast-path: skip hash computation if mtime unchanged (unless force=True)
     if not force and not needs_rehash(file_path, sidecar_data):
@@ -564,7 +545,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
 
     if current_hash == old_hash and old_hash is not None:
         # Hash unchanged: just update mtime and fast-path fields
-        _update_sidecar(sidecar_path, {
+        _update_sidecar(sc_path, {
             "file_mtime": current_mtime,
             "last_hash_check_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -611,7 +592,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     file_info = {
         "slug": sidecar_data.get("slug", file_path.stem),
         "doc_type": sidecar_data.get("doc_type", "unknown"),
-        "sidecar_path": sidecar_path,
+        "sidecar_path": sc_path,
         "file_path": file_path,
     }
 
@@ -628,7 +609,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     # Merge lifecycle updates with embedding updates
     sidecar_updates.update(lifecycle_updates)
     sidecar_updates.pop("_vision_events", None)  # temp key — never written to sidecar
-    _update_sidecar(sidecar_path, sidecar_updates)
+    _update_sidecar(sc_path, sidecar_updates)
     return {"status": "ok", "chunks": count}
 
 
@@ -672,10 +653,10 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     if docs_root_path.is_dir():
         for ext in _SUPPORTED_EXTENSIONS:
             for file_path in docs_root_path.rglob(f"*{ext}"):
-                sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
-                if not sidecar_path.exists():
+                sc_path = sidecar_path(file_path, repo_root)
+                if not sc_path.exists():
                     stub = generate_sidecar_stub(file_path, repo_root, cfg)
-                    write_sidecar(file_path, stub)
+                    write_sidecar(file_path, stub, repo_root)
                     if verbose:
                         print(f"  inducted: {file_path.relative_to(repo_root)}", flush=True)
 
@@ -691,7 +672,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
     for idx, file_info in enumerate(pending, start=1):
         file_path: Path = file_info["file_path"]
-        sidecar_path: Path = file_info["sidecar_path"]
+        sc_path: Path = file_info["sidecar_path"]
 
         # LFS guard
         if is_lfs_pointer(file_path):
@@ -721,7 +702,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             count, sidecar_updates = future.result(timeout=file_timeout_s)
             executor.shutdown(wait=False)
             vision_events = sidecar_updates.pop("_vision_events", [])
-            _update_sidecar(sidecar_path, sidecar_updates)
+            _update_sidecar(sc_path, sidecar_updates)
             elapsed = time.monotonic() - t0
             if progress:
                 progress.done(chunks=count, elapsed=elapsed)

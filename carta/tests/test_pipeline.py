@@ -61,8 +61,10 @@ class TestRunEmbedFileMinimalPath:
         test_file = docs_dir / "test.md"
         test_file.write_text("# Test Document\n\nContent here.")
 
-        # Create sidecar with current mtime
-        sidecar_path = test_file.parent / (test_file.stem + ".embed-meta.yaml")
+        # Create sidecar in .carta/sidecars/
+        from carta.embed.induct import sidecar_path as get_sidecar_path
+        sc_path = get_sidecar_path(test_file, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
         current_mtime = os.path.getmtime(str(test_file))
         sidecar = {
             "slug": "test",
@@ -79,7 +81,7 @@ class TestRunEmbedFileMinimalPath:
             "last_hash_check_at": datetime.now(timezone.utc).isoformat(),
             "version_history": [],
         }
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump(sidecar, f)
 
         # Mock find_config to return the test config path
@@ -106,8 +108,10 @@ class TestRunEmbedFileMinimalPath:
         test_file = docs_dir / "test.md"
         test_file.write_text("# Test Document\n\nContent here.")
 
-        # Create sidecar with old mtime
-        sidecar_path = test_file.parent / (test_file.stem + ".embed-meta.yaml")
+        # Create sidecar in .carta/sidecars/
+        from carta.embed.induct import sidecar_path as get_sidecar_path
+        sc_path = get_sidecar_path(test_file, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
         old_mtime = 1000.0
         sidecar = {
             "slug": "test",
@@ -124,7 +128,7 @@ class TestRunEmbedFileMinimalPath:
             "last_hash_check_at": datetime.now(timezone.utc).isoformat(),
             "version_history": [],
         }
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump(sidecar, f)
 
         current_mtime = os.path.getmtime(str(test_file))
@@ -144,7 +148,7 @@ class TestRunEmbedFileMinimalPath:
                             assert result["status"] == "skipped"
 
                             # Read updated sidecar
-                            with open(sidecar_path) as f:
+                            with open(sc_path) as f:
                                 updated = yaml.safe_load(f)
 
                             # mtime should be updated
@@ -162,8 +166,10 @@ class TestRunEmbedFileMinimalPath:
         test_file = docs_dir / "test.md"
         test_file.write_text("# Updated Content\n\nThis is different.")
 
-        # Create sidecar with old hash
-        sidecar_path = test_file.parent / (test_file.stem + ".embed-meta.yaml")
+        # Create sidecar in .carta/sidecars/
+        from carta.embed.induct import sidecar_path as get_sidecar_path
+        sc_path = get_sidecar_path(test_file, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
         old_hash = "old_hash_value"
         new_hash = "new_hash_value"
         sidecar = {
@@ -184,7 +190,7 @@ class TestRunEmbedFileMinimalPath:
             ],
             "sidecar_id": "test-sidecar-id",
         }
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump(sidecar, f)
 
         current_mtime = os.path.getmtime(str(test_file))
@@ -205,7 +211,7 @@ class TestRunEmbedFileMinimalPath:
                                     assert result["status"] == "ok"
 
                                     # Read updated sidecar
-                                    with open(sidecar_path) as f:
+                                    with open(sc_path) as f:
                                         updated = yaml.safe_load(f)
 
                                     # Generation should increment
@@ -233,8 +239,10 @@ class TestRunEmbedFileMinimalPath:
         test_file = docs_dir / "test.md"
         test_file.write_text("# Updated Content\n\nThis is different.")
 
-        # Create sidecar with version_history already at max
-        sidecar_path = test_file.parent / (test_file.stem + ".embed-meta.yaml")
+        # Create sidecar in .carta/sidecars/
+        from carta.embed.induct import sidecar_path as get_sidecar_path
+        sc_path = get_sidecar_path(test_file, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
         old_hash = "old_hash"
         new_hash = "new_hash"
         sidecar = {
@@ -256,7 +264,7 @@ class TestRunEmbedFileMinimalPath:
             ],
             "sidecar_id": "test-sidecar-id",
         }
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump(sidecar, f)
 
         with patch("carta.embed.pipeline.find_config") as mock_find_cfg:
@@ -272,7 +280,7 @@ class TestRunEmbedFileMinimalPath:
                                     result = run_embed_file(test_file, cfg, force=False)
 
                                     # Read updated sidecar
-                                    with open(sidecar_path) as f:
+                                    with open(sc_path) as f:
                                         updated = yaml.safe_load(f)
 
                                     # version_history should be trimmed to max_generations
@@ -290,8 +298,10 @@ class TestRunEmbedFileMinimalPath:
         test_file = docs_dir / "test.md"
         test_file.write_text("# Updated Content\n\nThis is different.")
 
-        # Create sidecar WITHOUT sidecar_id (pre-999.1)
-        sidecar_path = test_file.parent / (test_file.stem + ".embed-meta.yaml")
+        # Create sidecar WITHOUT sidecar_id (pre-999.1) in .carta/sidecars/
+        from carta.embed.induct import sidecar_path as get_sidecar_path
+        sc_path = get_sidecar_path(test_file, repo_root)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
         old_hash = "old_hash"
         new_hash = "new_hash"
         sidecar = {
@@ -310,7 +320,7 @@ class TestRunEmbedFileMinimalPath:
             "version_history": [],
             # NOTE: no sidecar_id field
         }
-        with open(sidecar_path, "w") as f:
+        with open(sc_path, "w") as f:
             yaml.dump(sidecar, f)
 
         with patch("carta.embed.pipeline.find_config") as mock_find_cfg:
@@ -345,9 +355,11 @@ class TestRunEmbedStaleAlert:
             (docs_dir / fname).write_text("# Test\n\nContent.")
 
         # Create sidecars
+        from carta.embed.induct import sidecar_path as get_sidecar_path
         for fname in test_files:
+            sc_path = get_sidecar_path(docs_dir / fname, repo_root)
+            sc_path.parent.mkdir(parents=True, exist_ok=True)
             stem = fname.replace(".md", "")
-            sidecar_path = docs_dir / (stem + ".embed-meta.yaml")
             sidecar = {
                 "slug": stem,
                 "doc_type": "guide",
@@ -362,7 +374,7 @@ class TestRunEmbedStaleAlert:
                 "version_history": [],
                 "sidecar_id": f"{stem}-id",
             }
-            with open(sidecar_path, "w") as f:
+            with open(sc_path, "w") as f:
                 yaml.dump(sidecar, f)
 
         with patch("carta.embed.pipeline.find_config") as mock_find_cfg:
@@ -399,81 +411,60 @@ class TestDiscoverStaleFiles:
     """Test discover_stale_files helper function."""
 
     def test_discover_stale_files_returns_stale_paths(self, temp_repo):
-        """Two sidecars, one stale, one embedded -> returns one Path."""
         repo_root, cfg = temp_repo
-
-        # Create docs directory
         docs_dir = repo_root / "docs"
         docs_dir.mkdir()
 
-        # Create first file with stale sidecar
         stale_file = docs_dir / "stale.md"
         stale_file.write_text("# Stale Document")
-        stale_sidecar = docs_dir / "stale.embed-meta.yaml"
-        with open(stale_sidecar, "w") as f:
-            yaml.dump({"status": "stale", "slug": "stale"}, f)
+        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
+            yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
 
-        # Create second file with embedded sidecar
         embedded_file = docs_dir / "embedded.md"
         embedded_file.write_text("# Embedded Document")
-        embedded_sidecar = docs_dir / "embedded.embed-meta.yaml"
-        with open(embedded_sidecar, "w") as f:
-            yaml.dump({"status": "embedded", "slug": "embedded"}, f)
+        with open(sc_dir / "embedded.embed-meta.yaml", "w") as f:
+            yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
 
-        # Call discover_stale_files
         results = discover_stale_files(repo_root)
 
-        # Should return only the stale file
         assert len(results) == 1
         assert results[0] == stale_file
 
     def test_discover_stale_files_returns_empty_when_none_stale(self, temp_repo):
-        """No stale sidecars -> returns empty list."""
         repo_root, cfg = temp_repo
-
-        # Create docs directory
         docs_dir = repo_root / "docs"
         docs_dir.mkdir()
 
-        # Create file with embedded sidecar
         embedded_file = docs_dir / "embedded.md"
         embedded_file.write_text("# Embedded Document")
-        embedded_sidecar = docs_dir / "embedded.embed-meta.yaml"
-        with open(embedded_sidecar, "w") as f:
-            yaml.dump({"status": "embedded", "slug": "embedded"}, f)
+        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        with open(sc_dir / "embedded.embed-meta.yaml", "w") as f:
+            yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
 
-        # Call discover_stale_files
         results = discover_stale_files(repo_root)
-
-        # Should return empty list
         assert results == []
 
     def test_discover_stale_files_skips_missing_status(self, temp_repo):
-        """Sidecar missing status key -> not included in results."""
         repo_root, cfg = temp_repo
-
-        # Create docs directory
         docs_dir = repo_root / "docs"
         docs_dir.mkdir()
 
-        # Create file with sidecar missing status
         file_no_status = docs_dir / "no_status.md"
         file_no_status.write_text("# Document")
-        sidecar_no_status = docs_dir / "no_status.embed-meta.yaml"
-        with open(sidecar_no_status, "w") as f:
-            yaml.dump({"slug": "no_status"}, f)
+        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        with open(sc_dir / "no_status.embed-meta.yaml", "w") as f:
+            yaml.dump({"slug": "no_status", "current_path": "docs/no_status.md"}, f)
 
-        # Create file with stale sidecar
         stale_file = docs_dir / "stale.md"
         stale_file.write_text("# Stale Document")
-        stale_sidecar = docs_dir / "stale.embed-meta.yaml"
-        with open(stale_sidecar, "w") as f:
-            yaml.dump({"status": "stale", "slug": "stale"}, f)
+        with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
+            yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
 
-        # Call discover_stale_files
         results = discover_stale_files(repo_root)
-
-        # Should return only the stale file
         assert len(results) == 1
         assert results[0] == stale_file
 
