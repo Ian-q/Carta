@@ -21,64 +21,45 @@ from carta.embed.lifecycle import compute_file_hash
 
 
 def _build_sidecar_registry(repo_root: Path, cfg: dict) -> dict:
-    """Build registry of all sidecars on disk.
-
-    Scans docs_root for .embed-meta.yaml files, respecting excluded_paths.
-
-    Args:
-        repo_root: Repository root path
-        cfg: Carta config dict with docs_root and excluded_paths
+    """Build registry of all sidecars under .carta/sidecars/.
 
     Returns:
         Dict mapping sidecar_id -> {
             "path": Path to sidecar file,
             "data": Parsed YAML content,
-            "file_path": Path to corresponding source file (if exists)
+            "file_path": Path to source file if it exists, else None
         }
     """
     registry = {}
-    docs_root = repo_root / cfg.get("docs_root", "docs")
+    sidecars_root = repo_root / ".carta" / "sidecars"
     excluded = cfg.get("excluded_paths", [])
 
-    if not docs_root.exists():
+    if not sidecars_root.exists():
         return registry
 
-    # Scan for all .embed-meta.yaml files
-    for sidecar_path in docs_root.rglob("*.embed-meta.yaml"):
-        # Check if excluded
-        rel_path = sidecar_path.relative_to(repo_root)
-        # Normalize path for pattern matching (use forward slashes)
-        rel_path_str = str(rel_path).replace("\\", "/")
-        # Try both exact match and wildcard match for excluded patterns
-        is_excluded = False
-        for pattern in excluded:
-            # Match if pattern is in path (with wildcards support)
-            if fnmatch.fnmatch(rel_path_str, pattern) or fnmatch.fnmatch(rel_path_str, f"*/{pattern}*"):
-                is_excluded = True
-                break
-        if is_excluded:
+    for sidecar_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        rel_path_str = str(sidecar_path.relative_to(repo_root)).replace("\\", "/")
+        if any(
+            fnmatch.fnmatch(rel_path_str, p) or fnmatch.fnmatch(rel_path_str, f"*/{p}*")
+            for p in excluded
+        ):
             continue
 
-        # Load sidecar
         try:
             sidecar_data = yaml.safe_load(sidecar_path.read_text())
             if not sidecar_data or "sidecar_id" not in sidecar_data:
                 continue
 
             sidecar_id = sidecar_data["sidecar_id"]
-            source_file = sidecar_path.with_suffix("") if sidecar_path.suffix == ".yaml" else None
-
-            # Adjust: .embed-meta.yaml means source is without .embed-meta.yaml
-            # e.g., test.md.embed-meta.yaml -> test.md
-            source_file = Path(str(sidecar_path).replace(".embed-meta.yaml", ""))
+            current_path = sidecar_data.get("current_path")
+            source_file = (repo_root / current_path) if current_path else None
 
             registry[sidecar_id] = {
                 "path": sidecar_path,
                 "data": sidecar_data,
-                "file_path": source_file if source_file.exists() else None
+                "file_path": source_file if (source_file and source_file.exists()) else None,
             }
         except Exception:
-            # Skip malformed sidecars
             continue
 
     return registry
@@ -209,7 +190,7 @@ def detect_missing_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict, 
                 "sidecar_id": sidecar_id,
                 "file_path": file_path,
                 "chunk_count": len(chunks),
-                "expected_sidecar_path": f"{file_path}.embed-meta.yaml" if file_path else "unknown"
+                "expected_sidecar_path": f".carta/sidecars/{file_path}.embed-meta.yaml" if file_path else "unknown"
             }
             issues.append(issue)
 
@@ -412,6 +393,42 @@ def detect_qdrant_sidecar_mismatches(client: QdrantClient, cfg: dict, sidecar_re
     return issues
 
 
+def detect_missing_source_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict) -> list[dict]:
+    """Detect sidecars in .carta/sidecars/ whose source file no longer exists.
+
+    Args:
+        repo_root: Repository root
+        cfg: Config dict
+        sidecar_registry: Sidecars from _build_sidecar_registry
+
+    Returns:
+        List of issue dicts with category="missing_source_sidecars"
+    """
+    issues = []
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return issues
+    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        try:
+            sidecar_data = yaml.safe_load(sc_path.read_text())
+        except Exception:
+            continue
+        if not sidecar_data:
+            continue
+        current_path = sidecar_data.get("current_path")
+        if not current_path:
+            continue  # pre-lifecycle sidecar — skip
+        if not (repo_root / current_path).exists():
+            issues.append({
+                "id": f"missing_source_{sc_path.stem[:8]}",
+                "category": "missing_source_sidecars",
+                "severity": "warning",
+                "sidecar_path": str(sc_path.relative_to(repo_root)),
+                "missing_source": current_path,
+            })
+    return issues
+
+
 def run_audit(cfg: dict, repo_root: Path, verbose: bool = False) -> dict:
     """Run full audit and return results dict matching JSON schema.
 
@@ -465,6 +482,7 @@ def run_audit(cfg: dict, repo_root: Path, verbose: bool = False) -> dict:
     all_issues.extend(detect_hash_mismatches(repo_root, cfg, sidecar_registry))
     all_issues.extend(detect_disconnected_files(repo_root, cfg, sidecar_registry, qdrant_index))
     all_issues.extend(detect_qdrant_sidecar_mismatches(client, cfg, sidecar_registry, qdrant_index))
+    all_issues.extend(detect_missing_source_sidecars(repo_root, cfg, sidecar_registry))
 
     # Tally by category
     by_category = {}

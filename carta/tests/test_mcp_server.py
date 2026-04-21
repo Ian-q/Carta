@@ -110,12 +110,14 @@ class TestDiscoverStaleFilesIntegration:
             docs_dir = repo_root / "docs"
             docs_dir.mkdir()
 
-            # Create file with embedded sidecar
+            # Create file with embedded sidecar in .carta/sidecars/docs/
             embedded_file = docs_dir / "embedded.md"
             embedded_file.write_text("# Embedded Document")
-            embedded_sidecar = docs_dir / "embedded.embed-meta.yaml"
+            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+            sc_dir.mkdir(parents=True, exist_ok=True)
+            embedded_sidecar = sc_dir / "embedded.embed-meta.yaml"
             with open(embedded_sidecar, "w") as f:
-                yaml.dump({"status": "embedded", "slug": "embedded"}, f)
+                yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
 
             # Call discover_stale_files
             results = discover_stale_files(repo_root)
