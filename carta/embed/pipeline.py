@@ -496,7 +496,7 @@ def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
     return healed
 
 
-def migrate_sidecars(repo_root: Path) -> int:
+def migrate_sidecars(repo_root: Path, verbose: bool = False) -> int:
     """Move co-located *.embed-meta.yaml files to .carta/sidecars/. Returns count moved."""
     moved = 0
     carta_dir = repo_root / ".carta"
@@ -509,8 +509,14 @@ def migrate_sidecars(repo_root: Path) -> int:
         rel = old_path.relative_to(repo_root)
         new_path = repo_root / ".carta" / "sidecars" / rel
         new_path.parent.mkdir(parents=True, exist_ok=True)
+        if new_path.exists():
+            # Canonical sidecar already present — discard stale co-located copy
+            old_path.unlink()
+            moved += 1
+            continue
         shutil.move(str(old_path), str(new_path))
-        print(f"  migrated: {rel} → {new_path.relative_to(repo_root)}", flush=True)
+        if verbose:
+            print(f"  migrated: {rel} → {new_path.relative_to(repo_root)}", flush=True)
         moved += 1
     return moved
 
@@ -646,7 +652,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     summary: dict = {"embedded": 0, "skipped": 0, "errors": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
-    migrate_sidecars(repo_root)
+    migrate_sidecars(repo_root, verbose=verbose)
 
     # Pre-flight: check Qdrant reachability with a short timeout
     if verbose:
