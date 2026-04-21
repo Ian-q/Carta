@@ -13,6 +13,7 @@ from carta.audit.audit import (
     _build_qdrant_chunk_index,
     detect_orphaned_chunks,
     detect_missing_sidecars,
+    detect_missing_source_sidecars,
     detect_stale_sidecars,
     detect_hash_mismatches,
     detect_disconnected_files,
@@ -49,14 +50,17 @@ class TestBuildSidecarRegistry:
             test_file = docs_root / "test.md"
             test_file.write_text("# Test")
 
-            # Create sidecar
-            sidecar_file = docs_root / "test.md.embed-meta.yaml"
+            # Create sidecar in .carta/sidecars/docs/
+            sidecar_dir = repo_root / ".carta" / "sidecars" / "docs"
+            sidecar_dir.mkdir(parents=True, exist_ok=True)
+            sidecar_file = sidecar_dir / "test.embed-meta.yaml"
             sidecar_data = {
                 "sidecar_id": "test_sidecar_123",
                 "file_hash": "abc123",
                 "file_mtime": 1234567890.0,
                 "chunk_count": 5,
-                "doc_type": "doc"
+                "doc_type": "doc",
+                "current_path": "docs/test.md",
             }
             sidecar_file.write_text(yaml.dump(sidecar_data))
 
@@ -74,16 +78,18 @@ class TestBuildSidecarRegistry:
             docs_root = repo_root / "docs"
             docs_root.mkdir()
 
-            # Create sidecar in excluded path
-            excluded_dir = docs_root / "node_modules"
-            excluded_dir.mkdir()
-            sidecar_file = excluded_dir / "pkg.md.embed-meta.yaml"
-            sidecar_data = {"sidecar_id": "excluded_123"}
+            # Create sidecar in excluded path under .carta/sidecars/docs/node_modules/
+            excluded_dir = repo_root / ".carta" / "sidecars" / "docs" / "node_modules"
+            excluded_dir.mkdir(parents=True, exist_ok=True)
+            sidecar_file = excluded_dir / "pkg.embed-meta.yaml"
+            sidecar_data = {"sidecar_id": "excluded_123", "current_path": "docs/node_modules/pkg.md"}
             sidecar_file.write_text(yaml.dump(sidecar_data))
 
             # Create sidecar in included path
-            included_sidecar = docs_root / "included.md.embed-meta.yaml"
-            included_sidecar.write_text(yaml.dump({"sidecar_id": "included_123"}))
+            included_dir = repo_root / ".carta" / "sidecars" / "docs"
+            included_dir.mkdir(parents=True, exist_ok=True)
+            included_sidecar = included_dir / "included.embed-meta.yaml"
+            included_sidecar.write_text(yaml.dump({"sidecar_id": "included_123", "current_path": "docs/included.md"}))
 
             cfg = {"docs_root": "docs", "excluded_paths": ["node_modules/"]}
             registry = _build_sidecar_registry(repo_root, cfg)
@@ -447,41 +453,46 @@ class TestAuditIntegration:
             repo_root = Path(tmpdir)
             docs_root = repo_root / "docs"
             docs_root.mkdir()
+            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+            sc_dir.mkdir(parents=True, exist_ok=True)
 
             # 1. Create a connected file (has sidecar)
             good_file = docs_root / "good.md"
             good_file.write_text("# Good")
             good_hash = compute_file_hash(good_file)
-            good_sidecar = docs_root / "good.md.embed-meta.yaml"
+            good_sidecar = sc_dir / "good.embed-meta.yaml"
             good_sidecar.write_text(yaml.dump({
                 "sidecar_id": "good_file",
                 "file_hash": good_hash,
                 "file_mtime": os.path.getmtime(good_file),
                 "chunk_count": 1,
-                "last_embedded": datetime.now().isoformat()
+                "last_embedded": datetime.now().isoformat(),
+                "current_path": "docs/good.md",
             }))
 
             # 2. Create a stale file (newer than sidecar)
             stale_file = docs_root / "stale.md"
             stale_file.write_text("# Stale")
-            stale_sidecar = docs_root / "stale.md.embed-meta.yaml"
+            stale_sidecar = sc_dir / "stale.embed-meta.yaml"
             stale_sidecar.write_text(yaml.dump({
                 "sidecar_id": "stale_file",
                 "file_hash": compute_file_hash(stale_file),
                 "file_mtime": 1000000000.0,  # Very old
                 "chunk_count": 1,
-                "last_embedded": "2026-01-01T00:00:00"
+                "last_embedded": "2026-01-01T00:00:00",
+                "current_path": "docs/stale.md",
             }))
 
             # 3. Create a hash-mismatched file
             mismatch_file = docs_root / "mismatch.md"
             mismatch_file.write_text("# Current Content")
-            mismatch_sidecar = docs_root / "mismatch.md.embed-meta.yaml"
+            mismatch_sidecar = sc_dir / "mismatch.embed-meta.yaml"
             mismatch_sidecar.write_text(yaml.dump({
                 "sidecar_id": "mismatch_file",
                 "file_hash": "oldoldoldhash",
                 "file_mtime": os.path.getmtime(mismatch_file),
-                "chunk_count": 1
+                "chunk_count": 1,
+                "current_path": "docs/mismatch.md",
             }))
 
             # 4. Create a disconnected file
@@ -524,3 +535,30 @@ class TestAuditIntegration:
 
                 # Summary should match
                 assert result["summary"]["total_issues"] > 0
+
+
+def test_detect_missing_source_sidecars_finds_orphan(tmp_path):
+    sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+    sc_dir.mkdir(parents=True)
+    sc = sc_dir / "deleted.embed-meta.yaml"
+    sc.write_text("sidecar_id: abc\nslug: deleted\nstatus: embedded\ncurrent_path: docs/deleted.pdf\n")
+
+    issues = detect_missing_source_sidecars(tmp_path, {}, {})
+
+    assert len(issues) == 1
+    assert issues[0]["category"] == "missing_source_sidecars"
+    assert issues[0]["missing_source"] == "docs/deleted.pdf"
+
+
+def test_detect_missing_source_sidecars_ignores_existing_source(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "present.pdf").touch()
+    sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+    sc_dir.mkdir(parents=True)
+    sc = sc_dir / "present.embed-meta.yaml"
+    sc.write_text("sidecar_id: abc\nslug: present\nstatus: embedded\ncurrent_path: docs/present.pdf\n")
+
+    issues = detect_missing_source_sidecars(tmp_path, {}, {})
+
+    assert issues == []
