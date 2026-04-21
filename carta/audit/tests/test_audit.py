@@ -150,7 +150,7 @@ class TestDetectOrphanedChunks:
         mock_client = Mock()
         cfg = {"docs_root": "docs", "excluded_paths": []}
         sidecar_registry = {
-            "sidecar_1": {"data": {"chunk_count": 2}, "path": Path("docs/test.md.embed-meta.yaml")}
+            "sidecar_1": {"data": {"chunk_count": 2}, "path": Path(".carta/sidecars/docs/test.embed-meta.yaml")}
         }
 
         issues = detect_orphaned_chunks(mock_client, cfg, sidecar_registry, {})
@@ -243,7 +243,7 @@ class TestDetectStaleSidecars:
 
             sidecar_registry = {
                 "sidecar_1": {
-                    "path": docs_root / "test.md.embed-meta.yaml",
+                    "path": repo_root / ".carta" / "sidecars" / "docs" / "test.embed-meta.yaml",
                     "file_path": test_file,
                     "data": {"file_mtime": 1000000000.0, "last_embedded": "2026-01-01T00:00:00"}
                 }
@@ -294,7 +294,7 @@ class TestDetectHashMismatches:
 
             sidecar_registry = {
                 "sidecar_1": {
-                    "path": docs_root / "test.md.embed-meta.yaml",
+                    "path": repo_root / ".carta" / "sidecars" / "docs" / "test.embed-meta.yaml",
                     "file_path": test_file,
                     "data": {"file_hash": "wrong_hash_value"}
                 }
