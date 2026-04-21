@@ -562,3 +562,21 @@ def test_detect_missing_source_sidecars_ignores_existing_source(tmp_path):
     issues = detect_missing_source_sidecars(tmp_path, {}, {})
 
     assert issues == []
+
+
+def test_detect_missing_source_sidecars_respects_excluded_paths(tmp_path):
+    """Sidecars under excluded paths are not reported as missing-source orphans."""
+    sc_dir = tmp_path / ".carta" / "sidecars" / "node_modules" / "pkg"
+    sc_dir.mkdir(parents=True)
+    sc = sc_dir / "readme.embed-meta.yaml"
+    sc.write_text(
+        "sidecar_id: xyz\nslug: readme\nstatus: embedded\n"
+        "current_path: node_modules/pkg/readme.md\n"
+    )
+    # source does NOT exist — would normally produce an issue
+
+    issues = detect_missing_source_sidecars(
+        tmp_path, {"excluded_paths": ["node_modules/"]}, {}
+    )
+
+    assert issues == []
