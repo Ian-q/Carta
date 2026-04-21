@@ -882,3 +882,26 @@ class TestMigrateSidecars:
         expected = repo_root / ".carta" / "sidecars" / "docs" / "manuals" / "sub" / "spec.embed-meta.yaml"
         assert expected.exists()
         assert not old.exists()
+
+    def test_migrate_does_not_overwrite_existing_canonical(self, temp_repo):
+        repo_root, cfg = temp_repo
+        docs = repo_root / "docs"
+        docs.mkdir()
+
+        # Canonical sidecar already in .carta/sidecars/ (newer, embedded)
+        canonical_dir = repo_root / ".carta" / "sidecars" / "docs"
+        canonical_dir.mkdir(parents=True)
+        canonical = canonical_dir / "chip.embed-meta.yaml"
+        canonical.write_text("slug: chip\nstatus: embedded\ngeneration: 3\n")
+
+        # Stale co-located copy (old, pending)
+        stale = docs / "chip.embed-meta.yaml"
+        stale.write_text("slug: chip\nstatus: pending\ngeneration: 0\n")
+
+        migrate_sidecars(repo_root)
+
+        # Canonical should be unchanged
+        assert yaml.safe_load(canonical.read_text())["status"] == "embedded"
+        assert yaml.safe_load(canonical.read_text())["generation"] == 3
+        # Stale co-located copy should be gone
+        assert not stale.exists()
