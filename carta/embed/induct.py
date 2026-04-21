@@ -20,6 +20,12 @@ _PATH_TYPE_MAP = {
 }
 
 
+def sidecar_path(file_path: Path, repo_root: Path) -> Path:
+    """Return the canonical .carta/sidecars/ path for a source file's sidecar."""
+    rel = file_path.relative_to(repo_root)
+    return repo_root / ".carta" / "sidecars" / rel.with_suffix(".embed-meta.yaml")
+
+
 def slug_from_filename(filename: str) -> str:
     """Convert a filename (with extension) to a kebab-case slug."""
     stem = Path(filename).stem
@@ -91,12 +97,13 @@ def generate_sidecar_stub(
     return stub
 
 
-def write_sidecar(file_path: Path, stub: dict) -> Path:
-    """Write sidecar YAML next to the source file. Returns the sidecar path."""
-    sidecar_path = file_path.parent / (file_path.stem + ".embed-meta.yaml")
-    with open(sidecar_path, "w") as f:
+def write_sidecar(file_path: Path, stub: dict, repo_root: Path) -> Path:
+    """Write sidecar YAML to .carta/sidecars/ mirroring repo structure. Returns the sidecar path."""
+    path = sidecar_path(file_path, repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
         yaml.dump(stub, f, default_flow_style=False, sort_keys=False)
-    return sidecar_path
+    return path
 
 
 def read_sidecar(sidecar_path: Path) -> Optional[dict]:

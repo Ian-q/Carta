@@ -17,6 +17,7 @@ from carta.embed.induct import (
     read_sidecar,
     slug_from_filename,
     write_sidecar,
+    sidecar_path,
 )
 from carta.embed.embed import _point_id, ensure_collection, get_embedding, upsert_chunks
 from carta.embed.parse import extract_pdf_text
@@ -223,24 +224,53 @@ def test_generate_sidecar_stub_collection_from_cfg(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# induct.py — sidecar_path()
+# ---------------------------------------------------------------------------
+
+def test_sidecar_path_mirrors_repo_structure(tmp_path):
+    file_path = tmp_path / "docs" / "manuals" / "chip.pdf"
+    result = sidecar_path(file_path, tmp_path)
+    expected = tmp_path / ".carta" / "sidecars" / "docs" / "manuals" / "chip.embed-meta.yaml"
+    assert result == expected
+
+
+def test_sidecar_path_markdown(tmp_path):
+    file_path = tmp_path / "docs" / "guide.md"
+    result = sidecar_path(file_path, tmp_path)
+    expected = tmp_path / ".carta" / "sidecars" / "docs" / "guide.embed-meta.yaml"
+    assert result == expected
+
+
+def test_sidecar_path_at_repo_root(tmp_path):
+    file_path = tmp_path / "README.md"
+    result = sidecar_path(file_path, tmp_path)
+    expected = tmp_path / ".carta" / "sidecars" / "README.embed-meta.yaml"
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
 # induct.py — write_sidecar / read_sidecar round-trip
 # ---------------------------------------------------------------------------
 
 def test_write_sidecar_creates_yaml(tmp_path):
-    f = tmp_path / "chip.pdf"
+    repo_root = tmp_path
+    f = tmp_path / "docs" / "chip.pdf"
+    f.parent.mkdir()
     f.touch()
     stub = {"slug": "chip", "status": "pending", "doc_type": "datasheet"}
-    path = write_sidecar(f, stub)
+    path = write_sidecar(f, stub, repo_root)
     assert path.exists()
-    assert path.name == "chip.embed-meta.yaml"
+    assert path == tmp_path / ".carta" / "sidecars" / "docs" / "chip.embed-meta.yaml"
 
 
 def test_sidecar_round_trip(tmp_path):
-    f = tmp_path / "chip.pdf"
+    repo_root = tmp_path
+    f = tmp_path / "docs" / "chip.pdf"
+    f.parent.mkdir()
     f.touch()
     stub = {"slug": "chip", "status": "pending", "doc_type": "datasheet", "notes": ""}
-    sidecar_path = write_sidecar(f, stub)
-    loaded = read_sidecar(sidecar_path)
+    sc_path = write_sidecar(f, stub, repo_root)
+    loaded = read_sidecar(sc_path)
     assert loaded == stub
 
 
