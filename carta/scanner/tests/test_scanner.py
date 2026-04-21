@@ -476,7 +476,9 @@ def test_check_embed_induction_needed_with_pending_sidecar(tmp_path):
     ds = tmp_path / "docs" / "reference" / "datasheets"
     ds.mkdir(parents=True)
     (ds / "ads1263.pdf").write_bytes(b"%PDF-fake")
-    (ds / "ads1263.embed-meta.yaml").write_text("slug: ads1263\nstatus: pending\n")
+    sc_dir = tmp_path / ".carta" / "sidecars" / ds.relative_to(tmp_path)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "ads1263.embed-meta.yaml").write_text("slug: ads1263\nstatus: pending\n")
 
     cfg = _minimal_cfg(tmp_path)
     issues = check_embed_induction_needed(tmp_path, cfg)
@@ -504,7 +506,9 @@ def test_check_embed_lfs_not_pulled(tmp_path):
     (ds / "big.pdf").write_text(
         "version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 12345\n"
     )
-    (ds / "big.embed-meta.yaml").write_text("slug: big\nstatus: pending\n")
+    sc_dir = tmp_path / ".carta" / "sidecars" / ds.relative_to(tmp_path)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "big.embed-meta.yaml").write_text("slug: big\nstatus: pending\n")
 
     cfg = _minimal_cfg(tmp_path)
     issues = check_embed_lfs_not_pulled(tmp_path, cfg)
@@ -522,7 +526,9 @@ def test_check_embed_transcript_unprocessed(tmp_path):
     processed.mkdir(parents=True)
 
     (audio_in / "meeting.m4a").write_bytes(b"fake-audio")
-    (audio_in / "meeting.embed-meta.yaml").write_text("slug: meeting\nstatus: embedded\ndoc_type: audio\n")
+    sc_dir = tmp_path / ".carta" / "sidecars" / audio_in.relative_to(tmp_path)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "meeting.embed-meta.yaml").write_text("slug: meeting\nstatus: embedded\ndoc_type: audio\n")
     (transcripts / "meeting.txt").write_text("Speaker 1: hello")
     # No processed summary → should flag
 
@@ -562,7 +568,9 @@ def test_check_embed_transcript_unprocessed_has_summary(tmp_path):
     processed.mkdir(parents=True)
 
     (audio_in / "meeting.m4a").write_bytes(b"fake-audio")
-    (audio_in / "meeting.embed-meta.yaml").write_text("slug: meeting\nstatus: integrated\ndoc_type: audio\n")
+    sc_dir = tmp_path / ".carta" / "sidecars" / audio_in.relative_to(tmp_path)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "meeting.embed-meta.yaml").write_text("slug: meeting\nstatus: integrated\ndoc_type: audio\n")
     (transcripts / "meeting.txt").write_text("Speaker 1: hello")
     (processed / "meeting-summary.md").write_text("# Summary\nStuff was discussed.")
 
