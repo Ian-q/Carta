@@ -489,7 +489,9 @@ def test_check_embed_induction_needed_embedded_ok(tmp_path):
     ds = tmp_path / "docs" / "reference" / "datasheets"
     ds.mkdir(parents=True)
     (ds / "ads1263.pdf").write_bytes(b"%PDF-fake")
-    (ds / "ads1263.embed-meta.yaml").write_text("slug: ads1263\nstatus: embedded\n")
+    sc_dir = tmp_path / ".carta" / "sidecars" / ds.relative_to(tmp_path)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "ads1263.embed-meta.yaml").write_text("slug: ads1263\nstatus: embedded\n")
 
     cfg = _minimal_cfg(tmp_path)
     issues = check_embed_induction_needed(tmp_path, cfg)
@@ -541,7 +543,9 @@ def test_check_embed_transcript_unprocessed_skips_fulfilled_without_summary(tmp_
     processed.mkdir(parents=True)
 
     (audio_in / "meeting.m4a").write_bytes(b"fake-audio")
-    (audio_in / "meeting.embed-meta.yaml").write_text("slug: meeting\nstatus: fulfilled\ndoc_type: audio\n")
+    sc_dir = tmp_path / ".carta" / "sidecars" / audio_in.relative_to(tmp_path)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    (sc_dir / "meeting.embed-meta.yaml").write_text("slug: meeting\nstatus: fulfilled\ndoc_type: audio\n")
     (transcripts / "meeting.txt").write_text("Speaker 1: hello")
 
     cfg = _minimal_cfg(tmp_path)
