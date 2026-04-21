@@ -521,6 +521,24 @@ def migrate_sidecars(repo_root: Path, verbose: bool = False) -> int:
     return moved
 
 
+def detect_orphaned_sidecars(repo_root: Path) -> list[Path]:
+    """Return sidecar paths under .carta/sidecars/ whose current_path source no longer exists."""
+    orphans = []
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return orphans
+    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        data = read_sidecar(sc_path)
+        if data is None:
+            continue
+        current_path = data.get("current_path")
+        if not current_path:
+            continue  # skip pre-lifecycle sidecars without current_path
+        if not (repo_root / current_path).exists():
+            orphans.append(sc_path)
+    return orphans
+
+
 def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = False, progress=None) -> dict:
     """Embed a single specified file. Returns status dict.
 
@@ -675,6 +693,16 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
     # Heal sidecars missing current_path before processing
     _heal_sidecar_current_paths(repo_root, verbose=verbose)
+
+    # Warn about sidecars whose source files no longer exist
+    for orphan in detect_orphaned_sidecars(repo_root):
+        orphan_data = read_sidecar(orphan) or {}
+        print(
+            f"Warning: orphaned sidecar (source not found): {orphan.relative_to(repo_root)}\n"
+            f"  → source was: {orphan_data.get('current_path', 'unknown')}\n"
+            f"  Run 'carta audit' for full orphan report.",
+            file=sys.stderr, flush=True,
+        )
 
     # Auto-induct any supported files that lack a sidecar (e.g. after sidecar deletion)
     docs_root_path = repo_root / cfg.get("docs_root", "docs/")

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 import yaml
 
-from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files, migrate_sidecars
+from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files, migrate_sidecars, detect_orphaned_sidecars
 from carta.embed.induct import sidecar_path as get_sidecar_path
 from carta.config import find_config
 
@@ -905,3 +905,50 @@ class TestMigrateSidecars:
         assert yaml.safe_load(canonical.read_text())["generation"] == 3
         # Stale co-located copy should be gone
         assert not stale.exists()
+
+
+class TestDetectOrphanedSidecars:
+    """Test detect_orphaned_sidecars() identifies sidecars with missing source files."""
+
+    def test_detects_sidecar_with_missing_source(self, temp_repo):
+        repo_root, cfg = temp_repo
+        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        sc = sc_dir / "deleted.embed-meta.yaml"
+        sc.write_text("slug: deleted\nstatus: embedded\ncurrent_path: docs/deleted.pdf\n")
+
+        orphans = detect_orphaned_sidecars(repo_root)
+
+        assert len(orphans) == 1
+        assert orphans[0] == sc
+
+    def test_ignores_sidecar_with_existing_source(self, temp_repo):
+        repo_root, cfg = temp_repo
+        docs = repo_root / "docs"
+        docs.mkdir()
+        source = docs / "present.pdf"
+        source.touch()
+        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        sc = sc_dir / "present.embed-meta.yaml"
+        sc.write_text("slug: present\nstatus: embedded\ncurrent_path: docs/present.pdf\n")
+
+        orphans = detect_orphaned_sidecars(repo_root)
+
+        assert orphans == []
+
+    def test_skips_sidecar_with_no_current_path(self, temp_repo):
+        repo_root, cfg = temp_repo
+        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        sc = sc_dir / "no_path.embed-meta.yaml"
+        sc.write_text("slug: no_path\nstatus: embedded\n")
+
+        orphans = detect_orphaned_sidecars(repo_root)
+
+        assert orphans == []
+
+    def test_returns_empty_when_no_sidecars_dir(self, temp_repo):
+        repo_root, cfg = temp_repo
+        orphans = detect_orphaned_sidecars(repo_root)
+        assert orphans == []
