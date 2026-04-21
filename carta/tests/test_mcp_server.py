@@ -68,6 +68,7 @@ class TestDiscoverStaleFilesIntegration:
         """Two sidecars, one stale, one embedded -> returns one Path."""
         import tempfile
         from carta.embed.pipeline import discover_stale_files
+        from carta.embed.induct import sidecar_path as get_sidecar_path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
@@ -76,19 +77,19 @@ class TestDiscoverStaleFilesIntegration:
             docs_dir = repo_root / "docs"
             docs_dir.mkdir()
 
-            # Create first file with stale sidecar
+            # Create first file with stale sidecar in .carta/sidecars/
             stale_file = docs_dir / "stale.md"
             stale_file.write_text("# Stale Document")
-            stale_sidecar = docs_dir / "stale.embed-meta.yaml"
-            with open(stale_sidecar, "w") as f:
-                yaml.dump({"status": "stale", "slug": "stale"}, f)
+            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+            sc_dir.mkdir(parents=True)
+            with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
+                yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
 
             # Create second file with embedded sidecar
             embedded_file = docs_dir / "embedded.md"
             embedded_file.write_text("# Embedded Document")
-            embedded_sidecar = docs_dir / "embedded.embed-meta.yaml"
-            with open(embedded_sidecar, "w") as f:
-                yaml.dump({"status": "embedded", "slug": "embedded"}, f)
+            with open(sc_dir / "embedded.embed-meta.yaml", "w") as f:
+                yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
 
             # Call discover_stale_files
             results = discover_stale_files(repo_root)
@@ -134,19 +135,19 @@ class TestDiscoverStaleFilesIntegration:
             docs_dir = repo_root / "docs"
             docs_dir.mkdir()
 
-            # Create file with sidecar missing status
+            # Create file with sidecar missing status in .carta/sidecars/
             file_no_status = docs_dir / "no_status.md"
             file_no_status.write_text("# Document")
-            sidecar_no_status = docs_dir / "no_status.embed-meta.yaml"
-            with open(sidecar_no_status, "w") as f:
-                yaml.dump({"slug": "no_status"}, f)
+            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
+            sc_dir.mkdir(parents=True)
+            with open(sc_dir / "no_status.embed-meta.yaml", "w") as f:
+                yaml.dump({"slug": "no_status", "current_path": "docs/no_status.md"}, f)
 
             # Create file with stale sidecar
             stale_file = docs_dir / "stale.md"
             stale_file.write_text("# Stale Document")
-            stale_sidecar = docs_dir / "stale.embed-meta.yaml"
-            with open(stale_sidecar, "w") as f:
-                yaml.dump({"status": "stale", "slug": "stale"}, f)
+            with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
+                yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
 
             # Call discover_stale_files
             results = discover_stale_files(repo_root)
