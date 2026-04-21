@@ -1,12 +1,13 @@
 """Audit pipeline: detect inconsistencies across files, sidecars, and Qdrant.
 
-This module provides structured detection of six issue categories:
+This module provides structured detection of seven issue categories:
 - orphaned_chunks: chunks in Qdrant with no matching sidecar
 - missing_sidecars: files without .embed-meta.yaml but have chunks
 - stale_sidecars: sidecars with mtime older than actual file
 - hash_mismatches: file hash differs from sidecar record
 - disconnected_files: files with no sidecar and no chunks
 - qdrant_sidecar_mismatches: chunks don't align with sidecar metadata
+- missing_source_sidecars: sidecars with no corresponding source file on disk
 """
 
 import fnmatch
@@ -406,9 +407,16 @@ def detect_missing_source_sidecars(repo_root: Path, cfg: dict, sidecar_registry:
     """
     issues = []
     sidecars_root = repo_root / ".carta" / "sidecars"
+    excluded = cfg.get("excluded_paths", [])
     if not sidecars_root.exists():
         return issues
     for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        rel_path_str = str(sc_path.relative_to(repo_root)).replace("\\", "/")
+        if any(
+            fnmatch.fnmatch(rel_path_str, p) or fnmatch.fnmatch(rel_path_str, f"*/{p}*")
+            for p in excluded
+        ):
+            continue
         try:
             sidecar_data = yaml.safe_load(sc_path.read_text())
         except Exception:
@@ -420,7 +428,7 @@ def detect_missing_source_sidecars(repo_root: Path, cfg: dict, sidecar_registry:
             continue  # pre-lifecycle sidecar — skip
         if not (repo_root / current_path).exists():
             issues.append({
-                "id": f"missing_source_{sc_path.stem[:8]}",
+                "id": f"missing_source_{sc_path.with_suffix('').stem[:8]}",
                 "category": "missing_source_sidecars",
                 "severity": "warning",
                 "sidecar_path": str(sc_path.relative_to(repo_root)),
