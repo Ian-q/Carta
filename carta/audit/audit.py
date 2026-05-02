@@ -19,6 +19,7 @@ from qdrant_client import QdrantClient
 import yaml
 
 from carta.embed.lifecycle import compute_file_hash
+from carta.scanner.scanner import is_excluded
 
 
 def _build_sidecar_registry(repo_root: Path, cfg: dict) -> dict:
@@ -33,26 +34,21 @@ def _build_sidecar_registry(repo_root: Path, cfg: dict) -> dict:
     """
     registry = {}
     sidecars_root = repo_root / ".carta" / "sidecars"
-    excluded = cfg.get("excluded_paths", [])
 
     if not sidecars_root.exists():
         return registry
 
     for sidecar_path in sidecars_root.rglob("*.embed-meta.yaml"):
-        rel_path_str = str(sidecar_path.relative_to(repo_root)).replace("\\", "/")
-        if any(
-            fnmatch.fnmatch(rel_path_str, p) or fnmatch.fnmatch(rel_path_str, f"*/{p}*")
-            for p in excluded
-        ):
-            continue
-
         try:
             sidecar_data = yaml.safe_load(sidecar_path.read_text())
             if not sidecar_data or "sidecar_id" not in sidecar_data:
                 continue
 
-            sidecar_id = sidecar_data["sidecar_id"]
             current_path = sidecar_data.get("current_path")
+            if current_path and is_excluded(repo_root / current_path, cfg, repo_root):
+                continue
+
+            sidecar_id = sidecar_data["sidecar_id"]
             source_file = (repo_root / current_path) if current_path else None
 
             registry[sidecar_id] = {
@@ -407,16 +403,9 @@ def detect_missing_source_sidecars(repo_root: Path, cfg: dict, sidecar_registry:
     """
     issues = []
     sidecars_root = repo_root / ".carta" / "sidecars"
-    excluded = cfg.get("excluded_paths", [])
     if not sidecars_root.exists():
         return issues
     for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
-        rel_path_str = str(sc_path.relative_to(repo_root)).replace("\\", "/")
-        if any(
-            fnmatch.fnmatch(rel_path_str, p) or fnmatch.fnmatch(rel_path_str, f"*/{p}*")
-            for p in excluded
-        ):
-            continue
         try:
             sidecar_data = yaml.safe_load(sc_path.read_text())
         except Exception:
@@ -426,6 +415,8 @@ def detect_missing_source_sidecars(repo_root: Path, cfg: dict, sidecar_registry:
         current_path = sidecar_data.get("current_path")
         if not current_path:
             continue  # pre-lifecycle sidecar — skip
+        if is_excluded(repo_root / current_path, cfg, repo_root):
+            continue
         if not (repo_root / current_path).exists():
             issues.append({
                 "id": f"missing_source_{sc_path.with_suffix('').stem[:8]}",

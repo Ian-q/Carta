@@ -580,3 +580,18 @@ def test_detect_missing_source_sidecars_respects_excluded_paths(tmp_path):
     )
 
     assert issues == []
+
+
+def test_build_sidecar_registry_not_blocked_by_dot_carta_in_excluded_paths(tmp_path):
+    """`.carta/` in excluded_paths must not filter sidecars under .carta/sidecars/."""
+    sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+    sc_dir.mkdir(parents=True)
+    sc = sc_dir / "foo.embed-meta.yaml"
+    sc.write_text(
+        "sidecar_id: keep_1\nslug: foo\nstatus: embedded\n"
+        "current_path: docs/foo.md\n"
+    )
+
+    registry = _build_sidecar_registry(tmp_path, {"excluded_paths": [".carta/"]})
+
+    assert "keep_1" in registry

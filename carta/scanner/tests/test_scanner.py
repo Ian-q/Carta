@@ -864,3 +864,47 @@ def test_run_scan_includes_related_suggestions_key(tmp_path):
 
     assert "related_suggestions" in result
     assert isinstance(result["related_suggestions"], list)
+
+
+# ---------------------------------------------------------------------------
+# _iter_sidecar_files — excluded_paths applies to current_path, not sidecar location
+# ---------------------------------------------------------------------------
+
+from carta.scanner.scanner import _iter_sidecar_files
+
+
+def _write_sidecar(repo_root: Path, rel_under_sidecars: str, current_path: str):
+    sc = repo_root / ".carta" / "sidecars" / rel_under_sidecars
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_text(
+        f"sidecar_id: id_{rel_under_sidecars.replace('/', '_').replace('.', '_')}\n"
+        f"current_path: {current_path}\n"
+    )
+    return sc
+
+
+def test_iter_sidecar_files_not_blocked_by_dot_carta_in_excluded_paths(tmp_path):
+    """`.carta/` in excluded_paths must not filter sidecars under .carta/sidecars/."""
+    _write_sidecar(tmp_path, "docs/foo.embed-meta.yaml", "docs/foo.md")
+    cfg = _minimal_cfg(tmp_path, excluded_paths=[".carta/"])
+    yielded = list(_iter_sidecar_files(tmp_path, cfg))
+    assert len(yielded) == 1
+
+
+def test_iter_sidecar_files_excludes_by_current_path(tmp_path):
+    """A sidecar whose current_path matches excluded_paths is filtered out."""
+    _write_sidecar(tmp_path, "mobile/egge/foo.embed-meta.yaml", "mobile/egge/foo.md")
+    _write_sidecar(tmp_path, "docs/keep.embed-meta.yaml", "docs/keep.md")
+    cfg = _minimal_cfg(tmp_path, excluded_paths=["mobile/egge/"])
+    yielded = [p.name for p in _iter_sidecar_files(tmp_path, cfg)]
+    assert yielded == ["keep.embed-meta.yaml"]
+
+
+def test_iter_sidecar_files_yields_pre_lifecycle_sidecars(tmp_path):
+    """Sidecars without current_path (pre-lifecycle) are yielded unconditionally."""
+    sc = tmp_path / ".carta" / "sidecars" / "docs" / "old.embed-meta.yaml"
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_text("sidecar_id: old_1\nslug: old\n")  # no current_path
+    cfg = _minimal_cfg(tmp_path, excluded_paths=["docs/"])
+    yielded = list(_iter_sidecar_files(tmp_path, cfg))
+    assert len(yielded) == 1

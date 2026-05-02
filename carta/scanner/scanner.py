@@ -460,12 +460,21 @@ _SIDECAR_SKIP_DIRS = frozenset([".git", ".pio", "node_modules", "build", "instal
 
 
 def _iter_sidecar_files(repo_root: Path, cfg: dict):
-    """Yield all .embed-meta.yaml files under .carta/sidecars/, skipping excluded_paths."""
+    """Yield .embed-meta.yaml files under .carta/sidecars/ whose source isn't excluded.
+
+    excluded_paths is interpreted against the sidecar's current_path (the source it
+    references), not the sidecar's literal location. Otherwise an excluded_paths
+    entry of '.carta/' (common in user configs predating the sidecar relocation)
+    would silently filter every sidecar. Sidecars without current_path
+    (pre-lifecycle) are yielded unconditionally.
+    """
     sidecars_root = repo_root / ".carta" / "sidecars"
     if not sidecars_root.exists():
         return
     for p in sidecars_root.rglob("*.embed-meta.yaml"):
-        if is_excluded(p, cfg, repo_root):
+        data = parse_sidecar(p)
+        current_path = data.get("current_path") if data else None
+        if current_path and is_excluded(repo_root / current_path, cfg, repo_root):
             continue
         yield p
 
