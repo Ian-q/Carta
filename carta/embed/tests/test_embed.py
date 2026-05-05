@@ -837,6 +837,38 @@ def test_embed_one_file_timeout(mock_qdrant_cls, tmp_path, monkeypatch):
 
     result = run_embed(tmp_path, MINIMAL_CFG, verbose=False)
     assert result["skipped"] == 1
+    assert result["timed_out"] == ["slow.pdf"]
+
+
+@patch("carta.embed.pipeline.QdrantClient")
+def test_run_embed_respects_cfg_file_timeout_s(mock_qdrant_cls, tmp_path, monkeypatch):
+    """cfg['embed']['file_timeout_s'] overrides FILE_TIMEOUT_S — supports --timeout flag."""
+    import yaml as _yaml
+    import carta.embed.pipeline as pipeline_mod
+
+    mock_client = MagicMock()
+    mock_qdrant_cls.return_value = mock_client
+    mock_client.collection_exists.return_value = True
+
+    # Leave FILE_TIMEOUT_S at default (300s) but override via cfg to 1s
+    import time as _time
+
+    def _slow_embed(*args, **kwargs):
+        _time.sleep(5)
+        return (0, {})
+
+    monkeypatch.setattr(pipeline_mod, "_embed_one_file", _slow_embed)
+
+    doc_dir = tmp_path / "docs"
+    doc_dir.mkdir()
+    pdf = doc_dir / "slow.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    sidecar = doc_dir / "slow.embed-meta.yaml"
+    sidecar.write_text(_yaml.dump({"slug": "slow", "doc_type": "spec", "status": "pending"}))
+
+    cfg = {**MINIMAL_CFG, "embed": {**MINIMAL_CFG.get("embed", {}), "file_timeout_s": 1}}
+    result = run_embed(tmp_path, cfg, verbose=False)
+    assert result["timed_out"] == ["slow.pdf"]
 
 
 # ---------------------------------------------------------------------------

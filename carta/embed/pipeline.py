@@ -665,9 +665,9 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
         verbose: if True, print progress to stdout. If False, stdout is silent.
 
     Returns:
-        {"embedded": int, "skipped": int, "errors": list[str]}
+        {"embedded": int, "skipped": int, "errors": list[str], "timed_out": list[str]}
     """
-    summary: dict = {"embedded": 0, "skipped": 0, "errors": []}
+    summary: dict = {"embedded": 0, "skipped": 0, "errors": [], "timed_out": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
     migrate_sidecars(repo_root, verbose=verbose)
@@ -782,6 +782,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 file=sys.stderr, flush=True,
             )
             summary["skipped"] += 1
+            summary["timed_out"].append(file_path.name)
         except Exception as e:
             cancel_event.set()
             executor.shutdown(wait=False)

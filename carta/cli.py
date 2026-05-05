@@ -123,6 +123,11 @@ def cmd_embed(args):
         print("doc_embed module is disabled in config.", file=sys.stderr)
         sys.exit(1)
 
+    # --timeout overrides embed.file_timeout_s
+    timeout_override = getattr(args, "timeout", None)
+    if timeout_override is not None:
+        cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
+
     # Targeted embed: one or more specific files, no lock, no discovery scan.
     if getattr(args, "files", None):
         files = args.files
@@ -183,6 +188,15 @@ def cmd_embed(args):
         skipped=summary["skipped"],
         errors=len(summary["errors"]),
     )
+    timed_out = summary.get("timed_out", [])
+    if timed_out:
+        current = cfg.get("embed", {}).get("file_timeout_s", 600)
+        suggested = current * 2
+        print(
+            f"\nHint: {len(timed_out)} file(s) timed out at {current}s. "
+            f"Re-run with --timeout {suggested} to give them more time.",
+            file=sys.stderr,
+        )
     _notify_if_update(cfg_path, cfg)
     if summary["errors"]:
         sys.exit(1)
@@ -392,6 +406,12 @@ def main():
         "files",
         nargs="*",
         help="Specific file(s) to embed immediately (skips full pipeline and lock)",
+    )
+    embed_p.add_argument(
+        "--timeout",
+        type=int,
+        metavar="SECONDS",
+        help="Per-file timeout for embedding. Overrides embed.file_timeout_s in config.",
     )
 
     audit_p = sub.add_parser(
