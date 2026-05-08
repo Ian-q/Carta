@@ -122,3 +122,52 @@ class TestCmdDoctorInteractiveFix:
                 pass
 
             mock_installer_instance.fix_all.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# RAM-aware vision_workers tuning
+# ---------------------------------------------------------------------------
+
+class TestRecommendVisionWorkers:
+    def test_recommends_1_for_low_ram(self):
+        from carta.cli import _recommend_vision_workers
+        assert _recommend_vision_workers(8) == 1
+        assert _recommend_vision_workers(16) == 1
+        assert _recommend_vision_workers(17) == 1
+
+    def test_recommends_2_for_36gb(self):
+        """36GB Mac: 2 workers fit comfortably alongside OCR + nomic."""
+        from carta.cli import _recommend_vision_workers
+        assert _recommend_vision_workers(36) == 2
+
+    def test_recommends_more_with_more_ram(self):
+        from carta.cli import _recommend_vision_workers
+        assert _recommend_vision_workers(48) == 3
+        assert _recommend_vision_workers(64) == 4
+
+    def test_caps_at_4_for_huge_ram(self):
+        from carta.cli import _recommend_vision_workers
+        assert _recommend_vision_workers(128) == 4
+        assert _recommend_vision_workers(512) == 4
+
+
+class TestMaybeTuneWorkers:
+    def test_skips_when_skip_flag_true(self, monkeypatch):
+        from carta.cli import _maybe_tune_workers
+        cfg = {"embed": {"vision_workers": 4}}
+        out = _maybe_tune_workers(cfg, skip=True)
+        assert out["embed"]["vision_workers"] == 4
+
+    def test_skips_when_env_var_set(self, monkeypatch):
+        from carta.cli import _maybe_tune_workers
+        monkeypatch.setenv("CARTA_NO_TUNE", "1")
+        cfg = {"embed": {"vision_workers": 4}}
+        out = _maybe_tune_workers(cfg, skip=False)
+        assert out["embed"]["vision_workers"] == 4
+
+    def test_skips_when_not_tty(self, monkeypatch):
+        from carta.cli import _maybe_tune_workers
+        # Capsys / pytest already redirects stdin/stdout away from the tty.
+        cfg = {"embed": {"vision_workers": 4}}
+        out = _maybe_tune_workers(cfg, skip=False)
+        assert out["embed"]["vision_workers"] == 4
