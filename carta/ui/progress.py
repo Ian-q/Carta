@@ -27,7 +27,25 @@ _CLR    = "\r\033[K"   # move to line start + clear to end
 
 _TICK_INTERVAL = 0.1  # seconds between spinner redraws
 
+# Fixed column widths so embed lines align across all states (in-progress,
+# done, skip, error). Total ~92 cols including separators and status icon.
+_COUNTER_W = 6
+_NAME_W    = 30
+_INFO_W    = 24
+_TIME_W    = 7
+_BAR_W     = 10
+
+_BAR_FILLED = "▰"
+_BAR_EMPTY  = "▱"
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _truncate(s: str, max_len: int) -> str:
+    """Truncate *s* to *max_len* chars, replacing the last char with `…` if cut."""
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
 
 
 def _fit_to_terminal(line: str) -> str:
@@ -161,36 +179,43 @@ class Progress:
         return time.monotonic() - self._start if self._start is not None else 0.0
 
     def _bar(self) -> str:
-        """Return a 12-char wide progress bar: [=====>    ] or [----------] if total=0."""
+        """Return a fixed-width filled/empty block bar, or empty bar if total=0."""
         if self._total <= 0:
-            return self._c(_DIM, "[----------]")
-        width = 10
+            return _BAR_EMPTY * _BAR_W
         filled = min(self._idx, self._total)
-        pct = filled / self._total
-        num_filled = int(pct * width)
+        num_filled = int((filled / self._total) * _BAR_W)
+        return _BAR_FILLED * num_filled + _BAR_EMPTY * (_BAR_W - num_filled)
 
-        if num_filled >= width:
-            # Full bar: all equals
-            bar = "=" * width
-        elif num_filled > 0:
-            # Partial bar: max(1, num_filled-1) equals + arrow + spaces to fill
-            equals = max(1, num_filled - 1)
-            spaces = width - equals - 1  # -1 for arrow
-            bar = "=" * equals + ">" + " " * spaces
-        else:
-            # Empty bar
-            bar = " " * width
-        return f"[{bar}]"
+    def _format_embed_line(
+        self,
+        icon: str,
+        info: str,
+        info_color: str,
+        bar_color: str,
+        time_text: str,
+    ) -> str:
+        """Build a standardized embed line with aligned, fixed-width columns.
+
+        Layout: {icon}  {counter:>6}  {name:<30}  {info:<24}  {bar}  {time:>7}
+        """
+        counter = self._c(_DIM,  f"{self._idx}/{self._total}".rjust(_COUNTER_W))
+        name    = self._c(_BOLD, _truncate(self._name, _NAME_W).ljust(_NAME_W))
+        info_s  = self._c(info_color, _truncate(info, _INFO_W).ljust(_INFO_W))
+        bar_s   = self._c(bar_color, self._bar())
+        time_s  = self._c(_DIM,  time_text.rjust(_TIME_W))
+        return f"{icon}  {counter}  {name}  {info_s}  {bar_s}  {time_s}"
 
     def _write_embed_line(self) -> None:
         """Redraw embed spinner line. Caller must hold _lock."""
         sp   = self._c(_CYAN, self._spin())
-        idx  = self._c(_DIM, f"{self._idx}/{self._total}")
-        name = self._c(_BOLD, self._name)
-        sub  = self._c(_DIM, f"▸ {self._current_msg}")
-        bar  = self._c(_CYAN, self._bar())
-        el   = self._c(_DIM, f"{self._elapsed():.0f}s")
-        sys.stdout.write(_fit_to_terminal(f"{_CLR}{sp}  {idx}  {name}  {sub}  {bar}  {el}"))
+        line = self._format_embed_line(
+            icon=sp,
+            info=f"▸ {self._current_msg}",
+            info_color=_DIM,
+            bar_color=_CYAN,
+            time_text=f"{self._elapsed():.0f}s",
+        )
+        sys.stdout.write(_fit_to_terminal(f"{_CLR}{line}"))
         sys.stdout.flush()
 
     def _write_scan_line(self) -> None:
@@ -214,6 +239,11 @@ class Progress:
     # ------------------------------------------------------------------
     # Embed progress API
     # ------------------------------------------------------------------
+
+    def set_total(self, total: int) -> None:
+        """Update the total count once it is known (e.g. after auto-induct)."""
+        with self._lock:
+            self._total = total
 
     def file(self, idx: int, name: str) -> None:
         """Signal that a new file is starting."""
@@ -242,13 +272,14 @@ class Progress:
             with self._lock:
                 self._active = False
                 self._current_msg = ""
-                check    = self._c(_GREEN, "✓")
-                idx      = self._c(_DIM,   f"{self._idx}/{self._total}")
-                name     = self._c(_BOLD,  self._name)
-                chunks_s = self._c(_DIM,   f"{chunks} chunks")
-                bar      = self._c(_GREEN, self._bar())
-                el_s     = self._c(_DIM,   f"{elapsed:.1f}s")
-                sys.stdout.write(f"{_CLR}{check}  {idx}  {name}  {chunks_s}  {bar}  {el_s}\n")
+                line = self._format_embed_line(
+                    icon=self._c(_GREEN, "✓"),
+                    info=f"{chunks} chunks",
+                    info_color=_DIM,
+                    bar_color=_GREEN,
+                    time_text=f"{elapsed:.1f}s",
+                )
+                sys.stdout.write(f"{_CLR}{line}\n")
                 sys.stdout.flush()
         else:
             print(
@@ -263,12 +294,14 @@ class Progress:
             with self._lock:
                 self._active = False
                 self._current_msg = ""
-                dash     = self._c(_DIM, "–")
-                idx      = self._c(_DIM, f"{self._idx}/{self._total}")
-                name     = self._c(_DIM, self._name)
-                reason_s = self._c(_DIM, f"skipped: {reason}")
-                bar      = self._c(_DIM, self._bar())
-                sys.stdout.write(f"{_CLR}{dash}  {idx}  {name}  {reason_s}  {bar}\n")
+                line = self._format_embed_line(
+                    icon=self._c(_DIM, "–"),
+                    info=f"skipped: {reason}",
+                    info_color=_DIM,
+                    bar_color=_DIM,
+                    time_text=f"{self._elapsed():.0f}s",
+                )
+                sys.stdout.write(f"{_CLR}{line}\n")
                 sys.stdout.flush()
         else:
             print(
@@ -282,12 +315,14 @@ class Progress:
             with self._lock:
                 self._active = False
                 self._current_msg = ""
-                x   = self._c(_RED,  "✗")
-                idx = self._c(_DIM,  f"{self._idx}/{self._total}")
-                name = self._c(_BOLD, self._name)
-                bar = self._c(_RED,  self._bar())
-                err = self._c(_RED,  f"ERROR: {msg}")
-                sys.stderr.write(f"{_CLR}{x}  {idx}  {name}  {bar}  {err}\n")
+                line = self._format_embed_line(
+                    icon=self._c(_RED, "✗"),
+                    info=f"ERROR: {msg}",
+                    info_color=_RED,
+                    bar_color=_RED,
+                    time_text=f"{self._elapsed():.0f}s",
+                )
+                sys.stderr.write(f"{_CLR}{line}\n")
                 sys.stderr.flush()
         else:
             print(
