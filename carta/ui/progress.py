@@ -75,8 +75,8 @@ def _fit_to_terminal(line: str) -> str:
 
 _VISION_STRATEGY_LABELS = {
     "skip":    ("pure-text",   ""),
-    "glm-ocr": ("structured",  "  (GLM-OCR)"),
-    "llava":   ("image",       "  (LLaVA)"),
+    "glm-ocr": ("structured",  ""),
+    "llava":   ("image",       ""),
 }
 
 

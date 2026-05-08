@@ -250,7 +250,7 @@ class TestVisionDonePlainMode:
         assert "2 pages" in captured.out
         assert "1-2" in captured.out
 
-    def test_glm_ocr_label_and_suffix(self, capsys):
+    def test_glm_ocr_label(self, capsys):
         p = self._make_plain()
         events = [
             {"page": 5, "page_class": "structured_text", "model_used": "glm-ocr", "char_count": 400},
@@ -260,9 +260,10 @@ class TestVisionDonePlainMode:
         assert "structured" in captured.out
         assert "1 page" in captured.out
         assert "5" in captured.out
-        assert "GLM-OCR" in captured.out
+        # Model-name suffix removed in 0.4.6 to avoid mislabeling after model swaps.
+        assert "GLM-OCR" not in captured.out
 
-    def test_llava_label_and_suffix(self, capsys):
+    def test_llava_label(self, capsys):
         p = self._make_plain()
         events = [
             {"page": 3, "page_class": "text_with_images", "model_used": "llava", "char_count": 250},
@@ -270,7 +271,7 @@ class TestVisionDonePlainMode:
         p.vision_done(events)
         captured = capsys.readouterr()
         assert "image" in captured.out
-        assert "LLaVA" in captured.out
+        assert "LLaVA" not in captured.out
 
     def test_mixed_strategies_all_present(self, capsys):
         p = self._make_plain()

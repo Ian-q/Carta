@@ -20,6 +20,71 @@ from carta import __version__
 from carta.config import find_config
 
 
+def _detect_ram_gb():
+    """Best-effort total system RAM in GB. POSIX-only (Linux/macOS); None elsewhere."""
+    try:
+        if (hasattr(os, "sysconf")
+                and "SC_PAGE_SIZE" in os.sysconf_names
+                and "SC_PHYS_PAGES" in os.sysconf_names):
+            return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+    except (ValueError, OSError):
+        pass
+    return None
+
+
+def _recommend_vision_workers(ram_gb: float) -> int:
+    """Heuristic: parallel qwen2.5vl:7b slots that fit without thrashing.
+
+    Reserves ~17 GB (≈8 GB OS + ≈9 GB OCR model resident) and assumes each
+    additional vision-model parallel slot needs ~8 GB. Capped at 4 to keep
+    the Ollama server from saturating regardless of RAM.
+    """
+    available = ram_gb - 17.0
+    if available <= 0:
+        return 1
+    return max(1, min(4, int(available / 8.0)))
+
+
+def _maybe_tune_workers(cfg: dict, skip: bool) -> dict:
+    """Prompt to use RAM-recommended vision_workers if config differs.
+
+    Quiet no-op when skipping, non-TTY, RAM detection fails, or already at
+    the recommended value. Mutates cfg in-place for the current run only;
+    does not write back to .carta/config.yaml.
+    """
+    if skip or os.environ.get("CARTA_NO_TUNE") == "1":
+        return cfg
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return cfg
+    ram_gb = _detect_ram_gb()
+    if ram_gb is None:
+        return cfg
+    embed_cfg = cfg.setdefault("embed", {})
+    current = int(embed_cfg.get("vision_workers", 4))
+    recommended = _recommend_vision_workers(ram_gb)
+    if current == recommended:
+        return cfg
+
+    print(
+        f"\n  Detected {ram_gb:.0f} GB RAM. Recommended vision_workers={recommended} "
+        f"(config has {current}).",
+        flush=True,
+    )
+    sys.stdout.write(f"  Use {recommended} for this run? [Y/n] ")
+    sys.stdout.flush()
+    try:
+        response = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return cfg
+    if response in ("", "y", "yes"):
+        embed_cfg["vision_workers"] = recommended
+        print(f"  → Using vision_workers={recommended}\n", flush=True)
+    else:
+        print(f"  → Keeping vision_workers={current}\n", flush=True)
+    return cfg
+
+
 def _notify_if_update(cfg_path=None, cfg=None):
     """Call maybe_notify if we have a config context. Silently skips on error."""
     try:
@@ -127,6 +192,9 @@ def cmd_embed(args):
     timeout_override = getattr(args, "timeout", None)
     if timeout_override is not None:
         cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
+
+    # Suggest a vision_workers value that fits this machine's RAM (interactive only).
+    cfg = _maybe_tune_workers(cfg, skip=getattr(args, "no_tune", False))
 
     # Targeted embed: one or more specific files, no lock, no discovery scan.
     if getattr(args, "files", None):
@@ -408,6 +476,11 @@ def main():
         type=int,
         metavar="SECONDS",
         help="Per-file timeout for embedding. Overrides embed.file_timeout_s in config.",
+    )
+    embed_p.add_argument(
+        "--no-tune",
+        action="store_true",
+        help="Skip the RAM-based vision_workers tuning prompt.",
     )
 
     audit_p = sub.add_parser(

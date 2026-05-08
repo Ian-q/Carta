@@ -175,7 +175,7 @@ class SmartRouter:
             )
         except Exception as exc:
             print(
-                f"Warning: GLM-OCR failed for page {page_num}: {exc}",
+                f"Warning: {self.ocr_model} failed for page {page_num}: {exc}",
                 file=sys.stderr, flush=True,
             )
             return []
@@ -198,7 +198,7 @@ class SmartRouter:
                     )
                 except Exception as exc:
                     print(
-                        f"Warning: LLaVA failed page {page_num} image {idx}: {exc}",
+                        f"Warning: {self.vision_model} failed page {page_num} image {idx}: {exc}",
                         file=sys.stderr, flush=True,
                     )
         else:
@@ -215,7 +215,7 @@ class SmartRouter:
                 )
             except Exception as exc:
                 print(
-                    f"Warning: LLaVA failed for page {page_num}: {exc}",
+                    f"Warning: {self.vision_model} failed for page {page_num}: {exc}",
                     file=sys.stderr, flush=True,
                 )
         return chunks
@@ -230,7 +230,7 @@ class SmartRouter:
             )
         except Exception as exc:
             print(
-                f"Warning: GLM-OCR failed for flattened page {page_num}: {exc}",
+                f"Warning: {self.ocr_model} failed for flattened page {page_num}: {exc}",
                 file=sys.stderr, flush=True,
             )
             return []
@@ -244,7 +244,7 @@ class SmartRouter:
             return [self._make_chunk(page_num, 0, vision_text, "llava", "flattened")]
         except Exception as exc:
             print(
-                f"Warning: LLaVA fallback failed for flattened page {page_num}: {exc}",
+                f"Warning: {self.vision_model} fallback failed for flattened page {page_num}: {exc}",
                 file=sys.stderr, flush=True,
             )
             # Return the low-yield OCR result rather than discarding it

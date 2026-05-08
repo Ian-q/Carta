@@ -34,7 +34,10 @@ _PERF_LOG_ENV = "CARTA_PERF_LOG"
 
 
 def _resolve_perf_log_path(repo_root: Path) -> Optional[Path]:
-    """Resolve CARTA_PERF_LOG to an absolute path, or None if unset."""
+    """Resolve CARTA_PERF_LOG to an absolute path, or None if unset.
+
+    Also touches the file so `tail -f` can attach before the first row lands.
+    """
     raw = os.environ.get(_PERF_LOG_ENV)
     if not raw:
         return None
@@ -43,8 +46,9 @@ def _resolve_perf_log_path(repo_root: Path) -> Optional[Path]:
         path = repo_root / path
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
     except Exception as exc:
-        print(f"Warning: cannot create perf log directory {path.parent}: {exc}",
+        print(f"Warning: cannot create perf log file {path}: {exc}",
               file=sys.stderr, flush=True)
         return None
     return path
