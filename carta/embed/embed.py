@@ -1,5 +1,6 @@
 """Ollama embedding and Qdrant upsert for carta embed."""
 
+import concurrent.futures
 import hashlib
 import uuid
 
@@ -110,66 +111,81 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
         Number of points upserted.
     """
     coll_name = collection_name(cfg, "doc")
-    ollama_url = cfg["embed"]["ollama_url"]
-    model = cfg["embed"]["ollama_model"]
+    embed_cfg = cfg["embed"]
+    ollama_url = embed_cfg["ollama_url"]
+    model = embed_cfg["ollama_model"]
+    workers = max(1, int(embed_cfg.get("embedding_workers", 8)))
 
     if client is None:
         qdrant_url = cfg["qdrant_url"]
         client = QdrantClient(url=qdrant_url, timeout=5)
     ensure_collection(client, coll_name)
 
+    def build_point(chunk: dict, vec: list[float]) -> PointStruct:
+        payload = {k: v for k, v in chunk.items() if k != "text"}
+        payload["text"] = chunk["text"]
+        payload["doc_generation"] = chunk.get("doc_generation", 1)
+        payload["stale_as_of"] = None
+        payload["superseded_at"] = None
+        payload["orphaned_at"] = None
+        payload["sidecar_id"] = chunk.get("sidecar_id", "")
+        payload["chunk_source_hash"] = chunk.get("chunk_source_hash", "")
+
+        if chunk.get("doc_generation") is not None:
+            point_id = _point_id_versioned(
+                chunk["slug"], chunk["chunk_index"], chunk["doc_generation"]
+            )
+        else:
+            point_id = _point_id(chunk["slug"], chunk["chunk_index"])
+        return PointStruct(id=point_id, vector=vec, payload=payload)
+
+    def flush(batch: list[PointStruct]) -> int:
+        if not batch:
+            return 0
+        try:
+            client.upsert(collection_name=coll_name, points=batch)
+            return len(batch)
+        except Exception as e:
+            print(f"Warning: batch upsert failed — {e}", flush=True)
+            return 0
+
     upserted = 0
     batch: list[PointStruct] = []
 
-    for chunk in chunks:
-        chunk_id = f"{chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}]"
-        try:
-            vec = get_embedding(chunk["text"], ollama_url=ollama_url, model=model)
-            payload = {k: v for k, v in chunk.items() if k != "text"}
-            payload["text"] = chunk["text"]
-
-            # Add lifecycle fields to payload (Plan 999.1-02)
-            payload["doc_generation"] = chunk.get("doc_generation", 1)
-            payload["stale_as_of"] = None
-            payload["superseded_at"] = None
-            payload["orphaned_at"] = None
-            payload["sidecar_id"] = chunk.get("sidecar_id", "")
-            payload["chunk_source_hash"] = chunk.get("chunk_source_hash", "")
-
-            # Use versioned ID if doc_generation present, else fall back to legacy ID
-            if chunk.get("doc_generation") is not None:
-                point_id = _point_id_versioned(
-                    chunk["slug"], chunk["chunk_index"], chunk["doc_generation"]
-                )
-            else:
-                point_id = _point_id(chunk["slug"], chunk["chunk_index"])
-
-            point = PointStruct(
-                id=point_id,
-                vector=vec,
-                payload=payload,
-            )
-            batch.append(point)
-        except Exception as e:
-            print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
-            continue
-
-        if len(batch) >= BATCH_SIZE:
+    if workers == 1:
+        for chunk in chunks:
+            chunk_id = f"{chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}]"
             try:
-                client.upsert(collection_name=coll_name, points=batch)
-                upserted += len(batch)
+                vec = get_embedding(chunk["text"], ollama_url=ollama_url, model=model)
+                batch.append(build_point(chunk, vec))
             except Exception as e:
-                print(f"Warning: batch upsert failed — {e}", flush=True)
-            batch = []
+                print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
+                continue
+            if len(batch) >= BATCH_SIZE:
+                upserted += flush(batch)
+                batch = []
+    else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="carta-embed"
+        ) as ex:
+            future_to_chunk = {
+                ex.submit(get_embedding, c["text"], ollama_url=ollama_url, model=model): c
+                for c in chunks
+            }
+            for fut in concurrent.futures.as_completed(future_to_chunk):
+                chunk = future_to_chunk[fut]
+                chunk_id = f"{chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}]"
+                try:
+                    vec = fut.result()
+                    batch.append(build_point(chunk, vec))
+                except Exception as e:
+                    print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
+                    continue
+                if len(batch) >= BATCH_SIZE:
+                    upserted += flush(batch)
+                    batch = []
 
-    # Flush remaining points
-    if batch:
-        try:
-            client.upsert(collection_name=coll_name, points=batch)
-            upserted += len(batch)
-        except Exception as e:
-            print(f"Warning: batch upsert failed — {e}", flush=True)
-
+    upserted += flush(batch)
     return upserted
 
 

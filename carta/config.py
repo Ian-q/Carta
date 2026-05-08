@@ -37,6 +37,8 @@ DEFAULTS = {
         "vision_flattened_min_yield": 50,  # GLM-OCR chars below this → LLaVA fallback
         "vision_max_images_per_page": 4,   # cap LLaVA calls per page (largest first)
         "vision_image_min_area_fraction": 0.05,  # images smaller than 5% of page area are decorative
+        "vision_workers": 4,               # parallel vision/OCR HTTP calls per PDF (1 = serial)
+        "embedding_workers": 8,            # parallel text-embedding HTTP calls (1 = serial)
         "file_timeout_s": 600,  # seconds allowed per file; raise for large/dense PDFs
         "chunking": {
             "max_tokens": 800,
