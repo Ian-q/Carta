@@ -481,6 +481,44 @@ def test_upsert_chunks_uses_cfg_ollama_url(mock_embed, mock_qdrant_cls):
     assert kwargs.get("ollama_url") == "http://custom-ollama:11434"
 
 
+@patch("carta.embed.embed.QdrantClient")
+@patch("carta.embed.embed.get_embedding")
+def test_upsert_chunks_serial_when_workers_is_1(mock_embed, mock_qdrant_cls):
+    """embedding_workers=1 must use serial path and embed every chunk in order."""
+    seen_order: list[int] = []
+
+    def embed_side_effect(text, **kwargs):
+        seen_order.append(int(text.split()[-1]))
+        return [0.1] * 768
+
+    mock_embed.side_effect = embed_side_effect
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    cfg = {**MINIMAL_CFG, "embed": {**MINIMAL_CFG["embed"], "embedding_workers": 1}}
+    count = upsert_chunks(_make_chunks(5), cfg)
+
+    assert count == 5
+    assert seen_order == [0, 1, 2, 3, 4]  # serial path preserves submit order
+
+
+@patch("carta.embed.embed.QdrantClient")
+@patch("carta.embed.embed.get_embedding")
+def test_upsert_chunks_parallel_embeds_all_chunks(mock_embed, mock_qdrant_cls):
+    """embedding_workers>1 must call get_embedding for every chunk (any order)."""
+    mock_embed.return_value = [0.1] * 768
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    cfg = {**MINIMAL_CFG, "embed": {**MINIMAL_CFG["embed"], "embedding_workers": 4}}
+    count = upsert_chunks(_make_chunks(10), cfg)
+
+    assert count == 10
+    assert mock_embed.call_count == 10
+
+
 # ---------------------------------------------------------------------------
 # pipeline.py — is_lfs_pointer
 # ---------------------------------------------------------------------------
