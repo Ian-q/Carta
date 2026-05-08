@@ -113,7 +113,7 @@ def cmd_scan(args):
 
 def cmd_embed(args):
     from carta.config import load_config
-    from carta.embed.pipeline import run_embed, discover_pending_files, run_embed_file
+    from carta.embed.pipeline import run_embed, run_embed_file
     from carta.ui import Progress
     import time
 
@@ -175,13 +175,9 @@ def cmd_embed(args):
     for _sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(_sig, _signal_handler)
 
-    # Discover pending count upfront so Progress knows the total.
-    # run_embed will also call discover_pending_files internally — that's fine,
-    # it's a cheap filesystem scan.
     repo_root = cfg_path.parent.parent
-    pending = discover_pending_files(repo_root)
 
-    with Progress(total=len(pending)) as progress:
+    with Progress() as progress:
         summary = run_embed(repo_root, cfg, verbose=False, progress=progress)
     progress.summary(
         embedded=summary["embedded"],

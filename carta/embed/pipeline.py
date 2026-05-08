@@ -723,6 +723,8 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
     pending = discover_pending_files(repo_root)
     total = len(pending)
+    if progress is not None:
+        progress.set_total(total)
     if verbose:
         print(f"carta embed: {total} file(s) pending.", flush=True)
 
