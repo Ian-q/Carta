@@ -39,8 +39,9 @@ ollama pull nomic-embed-text
 # Set proactive_recall.ollama_model in .carta/config.yaml to swap in a larger model.
 ollama pull qwen3.5:0.8b
 
-# Optional — visual embedding (only needed for carta embed --visual)
-ollama pull llava
+# Vision describer — used by carta embed for PDF pages with figures, tables, or images.
+# Default is qwen2.5vl:7b (~5GB). Override via embed.ollama_vision_model in .carta/config.yaml.
+ollama pull qwen2.5vl:7b
 ```
 
 ### Verify

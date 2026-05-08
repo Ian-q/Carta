@@ -322,7 +322,7 @@ class PreflightChecker:
         )
         if ollama_check and ollama_check.status == "pass":
             self.checks.append(self._check_ollama_model("nomic-embed-text"))
-            self.checks.append(self._check_ollama_model("llava"))
+            self.checks.append(self._check_ollama_model("qwen2.5vl:7b"))
             self.checks.append(self._check_ollama_model("qwen3.5:0.8b"))
         else:
             self.checks.append(

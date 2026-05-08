@@ -25,7 +25,7 @@ DEFAULTS = {
         "audio_path": "docs/audio/",
         "ollama_url": "http://localhost:11434",
         "ollama_model": "nomic-embed-text:latest",
-        "ollama_vision_model": "llava:latest",
+        "ollama_vision_model": "qwen2.5vl:7b",
         "ocr_model": "glm-ocr:latest",  # NEW: for text/table extraction
         "classification": {  # NEW: content classification thresholds
             "text_threshold": 0.70,

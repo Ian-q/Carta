@@ -112,7 +112,7 @@ docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdr
 # 2. Ollama — install from ollama.ai, then pull required models
 ollama pull nomic-embed-text   # text embeddings
 ollama pull qwen3.5:0.8b       # hook judge (swap for larger model if preferred)
-ollama pull llava               # optional: visual embedding only
+ollama pull qwen2.5vl:7b       # vision describer for PDFs with figures/diagrams
 ```
 
 Both services are optional if you only want structural audit without embedding or search. See **[docs/install.md](docs/install.md)** for the full setup walkthrough and `carta doctor` to verify your environment.
