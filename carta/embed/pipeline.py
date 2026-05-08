@@ -1,6 +1,7 @@
 """Top-level pipeline orchestration for carta embed."""
 
 import concurrent.futures
+import json
 import os
 import shutil
 import sys
@@ -14,6 +15,7 @@ import yaml
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter
 
+from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding, upsert_visual_pages
@@ -25,6 +27,65 @@ _SUPPORTED_EXTENSIONS = [".pdf", ".md"]
 
 # Maximum seconds to allow a single file's embed processing to run
 FILE_TIMEOUT_S = 300
+
+# Env var that, when set, points run_embed at a JSONL log it appends one row
+# to per processed file. Useful for profiling long batch runs.
+_PERF_LOG_ENV = "CARTA_PERF_LOG"
+
+
+def _resolve_perf_log_path(repo_root: Path) -> Optional[Path]:
+    """Resolve CARTA_PERF_LOG to an absolute path, or None if unset."""
+    raw = os.environ.get(_PERF_LOG_ENV)
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        print(f"Warning: cannot create perf log directory {path.parent}: {exc}",
+              file=sys.stderr, flush=True)
+        return None
+    return path
+
+
+def _build_perf_context(cfg: dict) -> dict:
+    """Static fields included on every perf-log row for a single embed session."""
+    embed_cfg = cfg.get("embed", {}) or {}
+    return {
+        "carta_version": _CARTA_VERSION,
+        "models": {
+            "embedding": embed_cfg.get("ollama_model"),
+            "vision":    embed_cfg.get("ollama_vision_model"),
+            "ocr":       embed_cfg.get("ocr_model"),
+        },
+        "workers": {
+            "vision":    int(embed_cfg.get("vision_workers", 4)),
+            "embedding": int(embed_cfg.get("embedding_workers", 8)),
+        },
+    }
+
+
+def _summarize_vision_strategies(events: list[dict]) -> dict[str, int]:
+    """Count vision-router events by model_used (e.g. {'glm-ocr': 30, 'llava': 5})."""
+    counts: dict[str, int] = {}
+    for e in events or []:
+        m = e.get("model_used", "unknown")
+        counts[m] = counts.get(m, 0) + 1
+    return counts
+
+
+def _write_perf_log_entry(path: Optional[Path], entry: dict) -> None:
+    """Append one JSONL row. Logging failures must never abort the embed."""
+    if path is None:
+        return
+    entry = {"ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), **entry}
+    try:
+        with path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        print(f"Warning: perf log write failed: {exc}", file=sys.stderr, flush=True)
 
 
 def is_lfs_pointer(file_path: Path) -> bool:
@@ -721,6 +782,9 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     overlap_fraction = chunking.get("overlap_fraction", 0.15)
     file_timeout_s = cfg.get("embed", {}).get("file_timeout_s", FILE_TIMEOUT_S)
 
+    perf_log_path = _resolve_perf_log_path(repo_root)
+    perf_context = _build_perf_context(cfg)
+
     pending = discover_pending_files(repo_root)
     total = len(pending)
     if progress is not None:
@@ -731,6 +795,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     for idx, file_info in enumerate(pending, start=1):
         file_path: Path = file_info["file_path"]
         sc_path: Path = file_info["sidecar_path"]
+        rel_file = str(file_path.relative_to(repo_root)) if file_path.is_relative_to(repo_root) else str(file_path)
 
         # LFS guard
         if is_lfs_pointer(file_path):
@@ -740,6 +805,10 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             elif verbose:
                 print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
             summary["skipped"] += 1
+            _write_perf_log_entry(perf_log_path, {
+                **perf_context, "file": rel_file, "status": "skip",
+                "skip_reason": "lfs_pointer", "chunks": 0, "elapsed_s": 0.0,
+            })
             continue
 
         if progress:
@@ -769,9 +838,15 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             elif verbose:
                 print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
             summary["embedded"] += 1
+            _write_perf_log_entry(perf_log_path, {
+                **perf_context, "file": rel_file, "status": "ok",
+                "chunks": count, "elapsed_s": round(elapsed, 2),
+                "vision_strategies": _summarize_vision_strategies(vision_events),
+            })
         except concurrent.futures.TimeoutError:
             cancel_event.set()
             executor.shutdown(wait=False)
+            elapsed = time.monotonic() - t0
             if progress:
                 progress.skip(f"timeout after {file_timeout_s}s")
             elif verbose:
@@ -785,6 +860,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             )
             summary["skipped"] += 1
             summary["timed_out"].append(file_path.name)
+            _write_perf_log_entry(perf_log_path, {
+                **perf_context, "file": rel_file, "status": "timeout",
+                "chunks": 0, "elapsed_s": round(elapsed, 2),
+                "timeout_s": file_timeout_s,
+            })
         except Exception as e:
             cancel_event.set()
             executor.shutdown(wait=False)
@@ -796,6 +876,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 file=sys.stderr, flush=True,
             )
             summary["errors"].append(f"Error processing {file_path.name}: {e}")
+            _write_perf_log_entry(perf_log_path, {
+                **perf_context, "file": rel_file, "status": "error",
+                "chunks": 0, "elapsed_s": round(elapsed, 2),
+                "error": str(e)[:200],
+            })
 
     # Emit stale alert after embed loop
     stale_count = len(discover_stale_files(repo_root))

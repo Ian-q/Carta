@@ -1143,3 +1143,94 @@ def test_visual_point_id_unique_per_page():
     a = _visual_point_id("datasheet", 1)
     b = _visual_point_id("datasheet", 2)
     assert a != b
+
+
+# ---------------------------------------------------------------------------
+# pipeline.py — perf log helpers
+# ---------------------------------------------------------------------------
+
+import json as _json
+import os as _os
+
+from carta.embed.pipeline import (
+    _resolve_perf_log_path,
+    _build_perf_context,
+    _summarize_vision_strategies,
+    _write_perf_log_entry,
+)
+
+
+def test_resolve_perf_log_path_unset_returns_none(tmp_path, monkeypatch):
+    monkeypatch.delenv("CARTA_PERF_LOG", raising=False)
+    assert _resolve_perf_log_path(tmp_path) is None
+
+
+def test_resolve_perf_log_path_relative_resolves_under_repo_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARTA_PERF_LOG", ".carta/perf.jsonl")
+    resolved = _resolve_perf_log_path(tmp_path)
+    assert resolved == tmp_path / ".carta" / "perf.jsonl"
+    assert resolved.parent.is_dir()  # parent created
+
+
+def test_resolve_perf_log_path_absolute_kept(tmp_path, monkeypatch):
+    target = tmp_path / "custom" / "perf.jsonl"
+    monkeypatch.setenv("CARTA_PERF_LOG", str(target))
+    resolved = _resolve_perf_log_path(tmp_path)
+    assert resolved == target
+    assert resolved.parent.is_dir()
+
+
+def test_summarize_vision_strategies_counts_by_model_used():
+    events = [
+        {"model_used": "glm-ocr"},
+        {"model_used": "glm-ocr"},
+        {"model_used": "llava"},
+        {"model_used": "skip"},
+        {"model_used": "skip"},
+        {"model_used": "skip"},
+    ]
+    assert _summarize_vision_strategies(events) == {"glm-ocr": 2, "llava": 1, "skip": 3}
+
+
+def test_summarize_vision_strategies_empty_returns_empty_dict():
+    assert _summarize_vision_strategies([]) == {}
+    assert _summarize_vision_strategies(None) == {}
+
+
+def test_build_perf_context_picks_up_models_and_workers():
+    cfg = {
+        "embed": {
+            "ollama_model": "nomic-embed-text:latest",
+            "ollama_vision_model": "qwen2.5vl:7b",
+            "ocr_model": "glm-ocr:latest",
+            "vision_workers": 4,
+            "embedding_workers": 8,
+        }
+    }
+    ctx = _build_perf_context(cfg)
+    assert ctx["models"] == {
+        "embedding": "nomic-embed-text:latest",
+        "vision":    "qwen2.5vl:7b",
+        "ocr":       "glm-ocr:latest",
+    }
+    assert ctx["workers"] == {"vision": 4, "embedding": 8}
+    assert "carta_version" in ctx
+
+
+def test_write_perf_log_entry_appends_jsonl(tmp_path):
+    path = tmp_path / "perf.jsonl"
+    _write_perf_log_entry(path, {"file": "a.pdf", "status": "ok", "chunks": 12})
+    _write_perf_log_entry(path, {"file": "b.pdf", "status": "skip", "chunks": 0})
+
+    rows = [_json.loads(line) for line in path.read_text().splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["file"] == "a.pdf" and rows[0]["status"] == "ok"
+    assert rows[1]["file"] == "b.pdf" and rows[1]["status"] == "skip"
+    # ts is auto-injected
+    assert all("ts" in r for r in rows)
+
+
+def test_write_perf_log_entry_none_path_is_noop(tmp_path):
+    # Must not raise and must not create files
+    _write_perf_log_entry(None, {"file": "x"})
+    assert list(tmp_path.iterdir()) == []
