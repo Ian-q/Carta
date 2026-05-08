@@ -426,3 +426,99 @@ class TestExtractPdfProgressCallback:
                 # Must not raise
                 result = router.extract_pdf(MagicMock(), progress_callback=bad_cb)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Parallel page extraction (vision_workers > 1)
+# ---------------------------------------------------------------------------
+
+class TestParallelExtraction:
+    def test_workers_1_processes_all_pages_serially(self):
+        """vision_workers=1 must still call _route for every page."""
+        router = SmartRouter(_cfg(vision_workers=1))
+        profile = _profile(PageClass.STRUCTURED_TEXT)
+        pages = [MagicMock(name=f"p{i}") for i in range(5)]
+        chunks_seen = []
+
+        def fake_route(page, page_num, profile, doc):
+            chunks_seen.append(page_num)
+            return [{"doc_type": "image_description", "page_num": page_num,
+                     "image_index": 0, "text": f"page {page_num}", "model_used": "glm-ocr",
+                     "page_class": "structured_text", "content_type": "structured_text"}]
+
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", side_effect=fake_route):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter(pages))
+                doc.__len__ = MagicMock(return_value=len(pages))
+                mock_fitz.open.return_value = doc
+                results = router.extract_pdf(MagicMock())
+
+        assert sorted(chunks_seen) == [1, 2, 3, 4, 5]
+        # Results must come back in page order regardless of completion order
+        assert [r["page_num"] for r in results] == [1, 2, 3, 4, 5]
+
+    def test_workers_4_processes_all_pages_and_preserves_order(self):
+        """vision_workers=4 must call _route once per page; results returned in page order."""
+        router = SmartRouter(_cfg(vision_workers=4))
+        profile = _profile(PageClass.STRUCTURED_TEXT)
+        pages = [MagicMock(name=f"p{i}") for i in range(8)]
+        seen = set()
+        seen_lock = __import__("threading").Lock()
+
+        def fake_route(page, page_num, profile, doc):
+            with seen_lock:
+                seen.add(page_num)
+            return [{"doc_type": "image_description", "page_num": page_num,
+                     "image_index": 0, "text": f"page {page_num}", "model_used": "glm-ocr",
+                     "page_class": "structured_text", "content_type": "structured_text"}]
+
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", side_effect=fake_route):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter(pages))
+                doc.__len__ = MagicMock(return_value=len(pages))
+                mock_fitz.open.return_value = doc
+                results = router.extract_pdf(MagicMock())
+
+        assert seen == {1, 2, 3, 4, 5, 6, 7, 8}
+        assert [r["page_num"] for r in results] == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    def test_parallel_calls_overlap_in_time(self):
+        """vision_workers=4 must execute _route concurrently, not serially."""
+        import threading
+        import time
+
+        router = SmartRouter(_cfg(vision_workers=4))
+        profile = _profile(PageClass.STRUCTURED_TEXT)
+        pages = [MagicMock(name=f"p{i}") for i in range(4)]
+
+        in_flight = 0
+        peak_in_flight = 0
+        lock = threading.Lock()
+
+        def slow_route(page, page_num, profile, doc):
+            nonlocal in_flight, peak_in_flight
+            with lock:
+                in_flight += 1
+                peak_in_flight = max(peak_in_flight, in_flight)
+            time.sleep(0.05)
+            with lock:
+                in_flight -= 1
+            return []
+
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", side_effect=slow_route):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter(pages))
+                doc.__len__ = MagicMock(return_value=len(pages))
+                mock_fitz.open.return_value = doc
+                router.extract_pdf(MagicMock())
+
+        assert peak_in_flight >= 2, f"expected concurrent _route calls, got peak={peak_in_flight}"

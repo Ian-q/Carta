@@ -4,6 +4,7 @@ Routes each PDF page to the appropriate extraction strategy based on
 PageAnalyzer classification. PURE_TEXT pages produce zero model calls.
 """
 import base64
+import concurrent.futures
 import json
 import sys
 import threading
@@ -60,7 +61,12 @@ class SmartRouter:
         self.ollama_url: str = embed.get("ollama_url", "http://localhost:11434")
         self.flattened_min_yield: int = embed.get("vision_flattened_min_yield", 50)
         self.max_images_per_page: int = embed.get("vision_max_images_per_page", 4)
+        self.vision_workers: int = max(1, int(embed.get("vision_workers", 4)))
         self.analyzer = PageAnalyzer(cfg)
+        # PyMuPDF (fitz) is not thread-safe. Workers must serialize all fitz
+        # operations through this lock; Ollama HTTP calls run unlocked so they
+        # can overlap across worker threads.
+        self._fitz_lock = threading.Lock()
 
     def extract_pdf(
         self,
@@ -92,24 +98,61 @@ class SmartRouter:
                 )
                 return []
 
-            results = []
             total_pages = len(doc)
+
+            page_specs: list[tuple[int, Any, PageProfile]] = []
             for page_num, page in enumerate(doc, start=1):
                 if cancel_event is not None and cancel_event.is_set():
                     break
-                profile = self.analyzer.analyze(page)
+                with self._fitz_lock:
+                    profile = self.analyzer.analyze(page)
+                page_specs.append((page_num, page, profile))
+
+            results_by_page: dict[int, list[dict]] = {}
+
+            def route_one(spec):
+                page_num, page, profile = spec
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
                 chunks = self._route(page, page_num, profile, doc)
-                results.extend(chunks)
-                if progress_callback:
-                    try:
-                        char_count = sum(len(c.get("text", "")) for c in chunks)
-                        model_used = chunks[0]["model_used"] if chunks else "skip"
-                        page_class = profile.page_class.name.lower()
-                        progress_callback(page_num, total_pages, page_class, model_used, char_count)
-                    except Exception:
-                        pass
+                return page_num, profile, chunks
+
+            def fire_progress(page_num, profile, chunks):
+                if not progress_callback:
+                    return
+                try:
+                    char_count = sum(len(c.get("text", "")) for c in chunks)
+                    model_used = chunks[0]["model_used"] if chunks else "skip"
+                    page_class = profile.page_class.name.lower()
+                    progress_callback(page_num, total_pages, page_class, model_used, char_count)
+                except Exception:
+                    pass
+
+            if self.vision_workers <= 1 or len(page_specs) <= 1:
+                for spec in page_specs:
+                    result = route_one(spec)
+                    if result is None:
+                        break
+                    p, profile, chunks = result
+                    results_by_page[p] = chunks
+                    fire_progress(p, profile, chunks)
+            else:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.vision_workers,
+                    thread_name_prefix="carta-vision",
+                ) as ex:
+                    futures = [ex.submit(route_one, s) for s in page_specs]
+                    for fut in concurrent.futures.as_completed(futures):
+                        result = fut.result()
+                        if result is None:
+                            continue
+                        p, profile, chunks = result
+                        results_by_page[p] = chunks
+                        fire_progress(p, profile, chunks)
+
             doc.close()
-            return results
+
+            return [c for p in sorted(results_by_page) for c in results_by_page[p]]
 
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
@@ -123,8 +166,9 @@ class SmartRouter:
         return self._route_flattened(page, page_num)
 
     def _route_structured(self, page: Any, page_num: int) -> list[dict]:
-        pix = page.get_pixmap(dpi=150)
-        png_bytes = pix.tobytes("png")
+        with self._fitz_lock:
+            pix = page.get_pixmap(dpi=150)
+            png_bytes = pix.tobytes("png")
         try:
             text = self._call_ollama_vision(
                 png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT
@@ -140,7 +184,8 @@ class SmartRouter:
     def _route_text_with_images(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
     ) -> list[dict]:
-        crops = self._extract_image_crops(page, doc)
+        with self._fitz_lock:
+            crops = self._extract_image_crops(page, doc)
         chunks = []
         if crops:
             for idx, png_bytes in crops:
@@ -158,8 +203,9 @@ class SmartRouter:
                     )
         else:
             # Caption fallback: likely a vector graphic not listed by get_images()
-            pix = page.get_pixmap(dpi=150)
-            png_bytes = pix.tobytes("png")
+            with self._fitz_lock:
+                pix = page.get_pixmap(dpi=150)
+                png_bytes = pix.tobytes("png")
             try:
                 text = self._call_ollama_vision(
                     png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT
@@ -175,8 +221,9 @@ class SmartRouter:
         return chunks
 
     def _route_flattened(self, page: Any, page_num: int) -> list[dict]:
-        pix = page.get_pixmap(dpi=150)
-        png_bytes = pix.tobytes("png")
+        with self._fitz_lock:
+            pix = page.get_pixmap(dpi=150)
+            png_bytes = pix.tobytes("png")
         try:
             ocr_text = self._call_ollama_vision(
                 png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT
