@@ -6,8 +6,11 @@ PageAnalyzer classification. PURE_TEXT pages produce zero model calls.
 import base64
 import concurrent.futures
 import json
+import os
 import sys
+import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,6 +23,85 @@ except ImportError:
 
 from carta.mupdf_util import mupdf_quiet
 from carta.vision.classifier import PageAnalyzer, PageClass, PageProfile
+
+
+_CHECKPOINT_SCHEMA_VERSION = 1
+
+
+def load_vision_checkpoint(
+    path: Optional[Path],
+    vision_model: str,
+    ocr_model: str,
+) -> dict[int, list[dict]]:
+    """Read completed-page chunks from a checkpoint file.
+
+    Returns ``{page_num: [chunk, ...]}`` for pages already processed in a prior
+    run. Returns an empty dict if the file is missing, unreadable, the schema
+    version doesn't match, or the configured models have changed since the
+    checkpoint was written (in which case the stale checkpoint is removed).
+    """
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if data.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION:
+        return {}
+    if data.get("vision_model") != vision_model or data.get("ocr_model") != ocr_model:
+        # Model swap invalidates prior partial work.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {}
+    out: dict[int, list[dict]] = {}
+    for entry in data.get("completed_pages", []):
+        page_num = entry.get("page_num")
+        chunks = entry.get("chunks", [])
+        if isinstance(page_num, int) and isinstance(chunks, list):
+            out[page_num] = chunks
+    return out
+
+
+def save_vision_checkpoint(
+    path: Optional[Path],
+    file_path: Path,
+    vision_model: str,
+    ocr_model: str,
+    completed_chunks: list[dict],
+) -> None:
+    """Atomically persist the running list of completed-page chunks.
+
+    Writes to a sibling tempfile then renames into place so a partial write
+    can never corrupt a checkpoint mid-run. Logging errors (disk full, etc.)
+    are intentionally swallowed — checkpointing is best-effort.
+    """
+    if path is None:
+        return
+    payload = {
+        "schema_version": _CHECKPOINT_SCHEMA_VERSION,
+        "file_path": str(file_path),
+        "vision_model": vision_model,
+        "ocr_model": ocr_model,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "completed_pages": completed_chunks,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass
 
 
 GLM_OCR_PROMPT = """Extract all text content from this document page.
@@ -73,6 +155,7 @@ class SmartRouter:
         pdf_path: Path,
         progress_callback: Optional[Any] = None,
         cancel_event: Optional[threading.Event] = None,
+        checkpoint_path: Optional[Path] = None,
     ) -> list[dict]:
         """Extract vision chunks from all pages of a PDF.
 
@@ -82,6 +165,10 @@ class SmartRouter:
                                page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
                                model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                                char_count: total chars extracted for this page; 0 for skipped pages.
+            checkpoint_path: Optional path to a JSON file persisting per-page progress
+                             so a re-run can resume mid-PDF. The file is updated after
+                             each page completes; the caller is responsible for deleting
+                             it once the file is fully embedded.
 
         Returns:
             List of chunk dicts compatible with pipeline.py expectations.
@@ -100,15 +187,44 @@ class SmartRouter:
 
             total_pages = len(doc)
 
+            # Load resume state. completed[page_num] -> list of chunks already done.
+            completed = load_vision_checkpoint(
+                checkpoint_path, self.vision_model, self.ocr_model
+            )
+            checkpoint_lock = threading.Lock()
+
+            def persist_checkpoint():
+                """Snapshot ``completed`` to disk (caller holds checkpoint_lock)."""
+                save_vision_checkpoint(
+                    checkpoint_path,
+                    pdf_path,
+                    self.vision_model,
+                    self.ocr_model,
+                    [{"page_num": p, "chunks": completed[p]} for p in sorted(completed)],
+                )
+
             page_specs: list[tuple[int, Any, PageProfile]] = []
             for page_num, page in enumerate(doc, start=1):
                 if cancel_event is not None and cancel_event.is_set():
                     break
+                if page_num in completed:
+                    # Resumed page — skip fitz analysis too; we already have chunks.
+                    continue
                 with self._fitz_lock:
                     profile = self.analyzer.analyze(page)
                 page_specs.append((page_num, page, profile))
 
-            results_by_page: dict[int, list[dict]] = {}
+            if completed and progress_callback:
+                # Tell the caller about resumed pages so the perf log + UI reflect them.
+                for p in sorted(completed):
+                    chunks = completed[p]
+                    try:
+                        char_count = sum(len(c.get("text", "")) for c in chunks)
+                        model_used = chunks[0]["model_used"] if chunks else "skip"
+                        page_class = chunks[0].get("page_class", "pure_text") if chunks else "pure_text"
+                        progress_callback(p, total_pages, page_class, model_used, char_count)
+                    except Exception:
+                        pass
 
             def route_one(spec):
                 page_num, page, profile = spec
@@ -117,16 +233,18 @@ class SmartRouter:
                 chunks = self._route(page, page_num, profile, doc)
                 return page_num, profile, chunks
 
-            def fire_progress(page_num, profile, chunks):
-                if not progress_callback:
-                    return
-                try:
-                    char_count = sum(len(c.get("text", "")) for c in chunks)
-                    model_used = chunks[0]["model_used"] if chunks else "skip"
-                    page_class = profile.page_class.name.lower()
-                    progress_callback(page_num, total_pages, page_class, model_used, char_count)
-                except Exception:
-                    pass
+            def record_page(page_num, profile, chunks):
+                with checkpoint_lock:
+                    completed[page_num] = chunks
+                    persist_checkpoint()
+                if progress_callback:
+                    try:
+                        char_count = sum(len(c.get("text", "")) for c in chunks)
+                        model_used = chunks[0]["model_used"] if chunks else "skip"
+                        page_class = profile.page_class.name.lower()
+                        progress_callback(page_num, total_pages, page_class, model_used, char_count)
+                    except Exception:
+                        pass
 
             if self.vision_workers <= 1 or len(page_specs) <= 1:
                 for spec in page_specs:
@@ -134,8 +252,7 @@ class SmartRouter:
                     if result is None:
                         break
                     p, profile, chunks = result
-                    results_by_page[p] = chunks
-                    fire_progress(p, profile, chunks)
+                    record_page(p, profile, chunks)
             else:
                 with concurrent.futures.ThreadPoolExecutor(
                     max_workers=self.vision_workers,
@@ -147,12 +264,11 @@ class SmartRouter:
                         if result is None:
                             continue
                         p, profile, chunks = result
-                        results_by_page[p] = chunks
-                        fire_progress(p, profile, chunks)
+                        record_page(p, profile, chunks)
 
             doc.close()
 
-            return [c for p in sorted(results_by_page) for c in results_by_page[p]]
+            return [c for p in sorted(completed) for c in completed[p]]
 
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
@@ -347,6 +463,7 @@ def extract_image_descriptions_intelligent(
     cfg: dict,
     progress_callback: Optional[Any] = None,
     cancel_event: Optional[threading.Event] = None,
+    checkpoint_path: Optional[Path] = None,
 ) -> list[dict]:
     """Extract image descriptions from PDF using smart page routing.
 
@@ -361,10 +478,16 @@ def extract_image_descriptions_intelligent(
                            model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                            char_count: total chars extracted for this page; 0 for skipped pages.
         cancel_event: Optional threading.Event; if set, stops page iteration early.
+        checkpoint_path: Optional path for per-page resume state (see SmartRouter.extract_pdf).
 
     Returns:
         List of dicts with keys: doc_type, page_num, image_index, text,
         model_used, page_class.
     """
     router = SmartRouter(cfg)
-    return router.extract_pdf(pdf_path, progress_callback, cancel_event)
+    return router.extract_pdf(
+        pdf_path,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+        checkpoint_path=checkpoint_path,
+    )

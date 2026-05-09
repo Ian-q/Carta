@@ -522,3 +522,128 @@ class TestParallelExtraction:
                 router.extract_pdf(MagicMock())
 
         assert peak_in_flight >= 2, f"expected concurrent _route calls, got peak={peak_in_flight}"
+
+
+# ---------------------------------------------------------------------------
+# Vision checkpoint helpers + per-page resume
+# ---------------------------------------------------------------------------
+
+class TestCheckpointHelpers:
+    def test_load_returns_empty_when_path_is_none(self):
+        from carta.vision.router import load_vision_checkpoint
+        assert load_vision_checkpoint(None, "vm", "om") == {}
+
+    def test_load_returns_empty_when_file_missing(self, tmp_path):
+        from carta.vision.router import load_vision_checkpoint
+        assert load_vision_checkpoint(tmp_path / "nope.json", "vm", "om") == {}
+
+    def test_load_returns_empty_on_corrupt_file(self, tmp_path):
+        from carta.vision.router import load_vision_checkpoint
+        p = tmp_path / "cp.json"
+        p.write_text("{not-json")
+        assert load_vision_checkpoint(p, "vm", "om") == {}
+
+    def test_load_drops_stale_checkpoint_on_model_swap(self, tmp_path):
+        from carta.vision.router import save_vision_checkpoint, load_vision_checkpoint
+        p = tmp_path / "cp.json"
+        save_vision_checkpoint(p, Path("/x.pdf"), "old-vision", "old-ocr",
+                               [{"page_num": 1, "chunks": [{"text": "x"}]}])
+        # Reload with different model — checkpoint is invalidated and removed.
+        out = load_vision_checkpoint(p, "new-vision", "old-ocr")
+        assert out == {}
+        assert not p.exists()
+
+    def test_save_then_load_roundtrip(self, tmp_path):
+        from carta.vision.router import save_vision_checkpoint, load_vision_checkpoint
+        p = tmp_path / "cp.json"
+        chunks = [{"text": "page 1 text", "model_used": "glm-ocr"}]
+        save_vision_checkpoint(p, Path("/x.pdf"), "qwen2.5vl:7b", "glm-ocr:latest",
+                               [{"page_num": 1, "chunks": chunks}])
+        out = load_vision_checkpoint(p, "qwen2.5vl:7b", "glm-ocr:latest")
+        assert out == {1: chunks}
+
+    def test_save_is_atomic_no_temp_files_left(self, tmp_path):
+        from carta.vision.router import save_vision_checkpoint
+        p = tmp_path / "cp.json"
+        save_vision_checkpoint(p, Path("/x.pdf"), "v", "o",
+                               [{"page_num": 1, "chunks": []}])
+        # Only the final file should exist; tempfiles must be renamed away.
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["cp.json"]
+
+
+class TestExtractPdfResume:
+    def test_resume_skips_pages_in_checkpoint(self, tmp_path):
+        from carta.vision.router import SmartRouter, save_vision_checkpoint
+
+        router = SmartRouter(_cfg(ollama_vision_model="qwen2.5vl:7b",
+                                  ocr_model="glm-ocr:latest"))
+        cp = tmp_path / "cp.json"
+        prior = [
+            {"doc_type": "image_description", "page_num": 1, "image_index": 0,
+             "text": "cached p1", "model_used": "glm-ocr",
+             "page_class": "structured_text", "content_type": "structured_text"},
+        ]
+        save_vision_checkpoint(cp, Path("/x.pdf"), "qwen2.5vl:7b", "glm-ocr:latest",
+                               [{"page_num": 1, "chunks": prior}])
+
+        new_chunk = {"doc_type": "image_description", "page_num": 2, "image_index": 0,
+                     "text": "fresh p2", "model_used": "glm-ocr",
+                     "page_class": "structured_text", "content_type": "structured_text"}
+
+        page1 = MagicMock(name="p1")
+        page2 = MagicMock(name="p2")
+        profile = _profile(PageClass.STRUCTURED_TEXT)
+        route_calls = []
+
+        def fake_route(page, page_num, profile, doc):
+            route_calls.append(page_num)
+            return [new_chunk] if page_num == 2 else []
+
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", side_effect=fake_route):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter([page1, page2]))
+                doc.__len__ = MagicMock(return_value=2)
+                mock_fitz.open.return_value = doc
+                results = router.extract_pdf(Path("/x.pdf"), checkpoint_path=cp)
+
+        # Page 1 was loaded from checkpoint; only page 2 was re-routed.
+        assert route_calls == [2]
+        # Output preserves both pages in order.
+        assert [r["page_num"] for r in results] == [1, 2]
+        assert results[0]["text"] == "cached p1"
+        assert results[1]["text"] == "fresh p2"
+
+    def test_checkpoint_is_updated_after_each_page(self, tmp_path):
+        from carta.vision.router import SmartRouter, load_vision_checkpoint
+
+        router = SmartRouter(_cfg(ollama_vision_model="qwen2.5vl:7b",
+                                  ocr_model="glm-ocr:latest",
+                                  vision_workers=1))
+        cp = tmp_path / "cp.json"
+        page1 = MagicMock(name="p1")
+        page2 = MagicMock(name="p2")
+        profile = _profile(PageClass.STRUCTURED_TEXT)
+
+        def fake_route(page, page_num, profile, doc):
+            return [{"doc_type": "image_description", "page_num": page_num,
+                     "image_index": 0, "text": f"page {page_num}",
+                     "model_used": "glm-ocr",
+                     "page_class": "structured_text",
+                     "content_type": "structured_text"}]
+
+        with patch.object(router, "analyzer") as mock_analyzer, \
+             patch.object(router, "_route", side_effect=fake_route):
+            mock_analyzer.analyze.return_value = profile
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                doc = MagicMock()
+                doc.__iter__ = MagicMock(return_value=iter([page1, page2]))
+                doc.__len__ = MagicMock(return_value=2)
+                mock_fitz.open.return_value = doc
+                router.extract_pdf(Path("/x.pdf"), checkpoint_path=cp)
+
+        # After successful extraction, both pages are recorded in checkpoint.
+        out = load_vision_checkpoint(cp, "qwen2.5vl:7b", "glm-ocr:latest")
+        assert sorted(out.keys()) == [1, 2]
