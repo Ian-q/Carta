@@ -1,6 +1,5 @@
 """Top-level pipeline orchestration for carta embed."""
 
-import concurrent.futures
 import json
 import os
 import shutil
@@ -78,6 +77,16 @@ def _summarize_vision_strategies(events: list[dict]) -> dict[str, int]:
         m = e.get("model_used", "unknown")
         counts[m] = counts.get(m, 0) + 1
     return counts
+
+
+def _vision_checkpoint_path(repo_root: Path, slug: str) -> Path:
+    """Path used to persist mid-PDF vision-extraction progress for resume.
+
+    Cleared on full file completion; left in place when a run is interrupted
+    (timeout, error, ^C) so the next ``carta embed`` can pick up where it
+    stopped instead of redoing every already-OCR'd page.
+    """
+    return repo_root / ".carta" / "checkpoints" / f"{slug}.json"
 
 
 def _write_perf_log_entry(path: Optional[Path], entry: dict) -> None:
@@ -284,11 +293,13 @@ def _embed_one_file(
         # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
         if progress:
             progress.step("extracting image descriptions")
+        checkpoint_path = _vision_checkpoint_path(repo_root, slug)
         try:
             from carta.vision.router import extract_image_descriptions_intelligent
             img_descs = extract_image_descriptions_intelligent(
                 file_path, cfg, progress_callback=_vision_callback,
                 cancel_event=cancel_event,
+                checkpoint_path=checkpoint_path,
             )
             image_count = len(img_descs)
 
@@ -371,6 +382,15 @@ def _embed_one_file(
         }
     
     sidecar_updates["_vision_events"] = _page_events
+
+    # File fully embedded — clear any per-page resume checkpoint.
+    if file_path.suffix == ".pdf":
+        cp = _vision_checkpoint_path(repo_root, slug)
+        try:
+            cp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     return count + image_chunk_count, sidecar_updates
 
 
@@ -821,36 +841,34 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
         t0 = time.monotonic()
 
+        # Per-file watchdog: a daemon thread runs the work; main thread waits
+        # up to file_timeout_s. Daemon thread dies cleanly at interpreter exit,
+        # avoiding the "cannot schedule new futures after interpreter shutdown"
+        # races a ThreadPoolExecutor-based watchdog left behind on timeout.
         cancel_event = threading.Event()
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(
-            _embed_one_file,
-            file_path, file_info, cfg, client, repo_root,
-            max_tokens, overlap_fraction, verbose, progress,
-            cancel_event,
+        result_holder: dict = {}
+
+        def _worker():
+            try:
+                result_holder["value"] = _embed_one_file(
+                    file_path, file_info, cfg, client, repo_root,
+                    max_tokens, overlap_fraction, verbose, progress,
+                    cancel_event,
+                )
+            except BaseException as exc:
+                result_holder["error"] = exc
+
+        worker = threading.Thread(
+            target=_worker, daemon=True, name=f"carta-embed-{file_path.name}"
         )
-        try:
-            count, sidecar_updates = future.result(timeout=file_timeout_s)
-            executor.shutdown(wait=False)
-            vision_events = sidecar_updates.pop("_vision_events", [])
-            _update_sidecar(sc_path, sidecar_updates)
-            elapsed = time.monotonic() - t0
-            if progress:
-                progress.done(chunks=count, elapsed=elapsed)
-                if vision_events:
-                    progress.vision_done(vision_events)
-            elif verbose:
-                print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-            summary["embedded"] += 1
-            _write_perf_log_entry(perf_log_path, {
-                **perf_context, "file": rel_file, "status": "ok",
-                "chunks": count, "elapsed_s": round(elapsed, 2),
-                "vision_strategies": _summarize_vision_strategies(vision_events),
-            })
-        except concurrent.futures.TimeoutError:
+        worker.start()
+        worker.join(timeout=file_timeout_s)
+        elapsed = time.monotonic() - t0
+
+        if worker.is_alive():
+            # Timeout — signal cancel and move on. Daemon thread will be killed
+            # at process exit; we do not block here.
             cancel_event.set()
-            executor.shutdown(wait=False)
-            elapsed = time.monotonic() - t0
             if progress:
                 progress.skip(f"timeout after {file_timeout_s}s")
             elif verbose:
@@ -869,21 +887,35 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 "chunks": 0, "elapsed_s": round(elapsed, 2),
                 "timeout_s": file_timeout_s,
             })
-        except Exception as e:
-            cancel_event.set()
-            executor.shutdown(wait=False)
-            elapsed = time.monotonic() - t0
+        elif "error" in result_holder:
+            exc = result_holder["error"]
             if progress:
-                progress.error(str(e))
+                progress.error(str(exc))
             print(
-                f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {e}",
+                f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {exc}",
                 file=sys.stderr, flush=True,
             )
-            summary["errors"].append(f"Error processing {file_path.name}: {e}")
+            summary["errors"].append(f"Error processing {file_path.name}: {exc}")
             _write_perf_log_entry(perf_log_path, {
                 **perf_context, "file": rel_file, "status": "error",
                 "chunks": 0, "elapsed_s": round(elapsed, 2),
-                "error": str(e)[:200],
+                "error": str(exc)[:200],
+            })
+        else:
+            count, sidecar_updates = result_holder["value"]
+            vision_events = sidecar_updates.pop("_vision_events", [])
+            _update_sidecar(sc_path, sidecar_updates)
+            if progress:
+                progress.done(chunks=count, elapsed=elapsed)
+                if vision_events:
+                    progress.vision_done(vision_events)
+            elif verbose:
+                print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
+            summary["embedded"] += 1
+            _write_perf_log_entry(perf_log_path, {
+                **perf_context, "file": rel_file, "status": "ok",
+                "chunks": count, "elapsed_s": round(elapsed, 2),
+                "vision_strategies": _summarize_vision_strategies(vision_events),
             })
 
     # Emit stale alert after embed loop
