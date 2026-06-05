@@ -1116,5 +1116,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
             model_name=rr_cfg.get("model", "BAAI/bge-reranker-base"),
             top_n=top_n,
         )
+        # Strip transient keys so returned dicts have a stable shape
+        # regardless of whether reranking ran.
+        for _h in all_results:
+            _h.pop("text", None)
+            _h.pop("rerank_score", None)
 
     return all_results[:top_n]
