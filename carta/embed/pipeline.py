@@ -12,12 +12,22 @@ from typing import Optional
 
 import yaml
 from qdrant_client import QdrantClient
+from qdrant_client import models as qmodels
 from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, find_config
 from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text, _estimate_tokens
-from carta.embed.embed import ensure_collection, upsert_chunks, get_embedding, upsert_visual_pages
+from carta.embed.embed import (
+    ensure_collection,
+    upsert_chunks,
+    get_embedding,
+    upsert_visual_pages,
+    collection_is_hybrid,
+    DENSE_VECTOR_NAME,
+    SPARSE_VECTOR_NAME,
+)
+from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
 
@@ -929,6 +939,30 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     return summary
 
 
+def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
+                              prefetch_limit, bm25_model):
+    """Run a hybrid BM25+dense query with Qdrant RRF fusion.
+
+    Fetches `prefetch_limit` candidates from each of the dense and sparse
+    indexes, then fuses them with Reciprocal Rank Fusion and returns the
+    top `top_n` results.
+    """
+    sv = embed_sparse_query(query, model_name=bm25_model)
+    return client.query_points(
+        collection_name=coll_name,
+        prefetch=[
+            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME, limit=prefetch_limit),
+            qmodels.Prefetch(
+                query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
+                using=SPARSE_VECTOR_NAME, limit=prefetch_limit,
+            ),
+        ],
+        query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+        limit=top_n,
+        with_payload=True,
+    )
+
+
 def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
@@ -1014,13 +1048,34 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                 ollama_url = cfg["embed"]["ollama_url"]
                 model = cfg["embed"]["ollama_model"]
                 query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
-                
-                response = client.query_points(
-                    collection_name=coll_name,
-                    query=query_vec,
-                    limit=top_n,
-                    with_payload=True,
-                )
+
+                hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
+                is_hybrid = collection_is_hybrid(client, coll_name)
+
+                if hybrid_cfg.get("enabled", False) and is_hybrid:
+                    # Hybrid BM25+dense with RRF fusion
+                    response = _hybrid_query_collection(
+                        client, coll_name, query, query_vec, top_n,
+                        prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
+                        bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
+                    )
+                elif is_hybrid:
+                    # Hybrid collection schema but hybrid search disabled — use named dense vector
+                    response = client.query_points(
+                        collection_name=coll_name,
+                        query=query_vec,
+                        using=DENSE_VECTOR_NAME,
+                        limit=top_n,
+                        with_payload=True,
+                    )
+                else:
+                    # Legacy unnamed-dense collection
+                    response = client.query_points(
+                        collection_name=coll_name,
+                        query=query_vec,
+                        limit=top_n,
+                        with_payload=True,
+                    )
                 
                 for r in response.points:
                     payload = r.payload or {}
@@ -1046,4 +1101,25 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     
     # Sort by score descending and take top_n
     all_results.sort(key=lambda x: x["score"], reverse=True)
+
+    # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
+    rr_cfg = cfg.get("search", {}).get("rerank", {})
+    if rr_cfg.get("enabled", False) and all_results:
+        from carta.search.rerank import rerank_hits
+        pool = all_results[: rr_cfg.get("candidate_pool", 30)]
+        # rerank_hits reads chunk text from key "text"; run_search stores it as "excerpt"
+        for h in pool:
+            h["text"] = h.get("excerpt", "")
+        all_results = rerank_hits(
+            query,
+            pool,
+            model_name=rr_cfg.get("model", "BAAI/bge-reranker-base"),
+            top_n=top_n,
+        )
+        # Strip transient keys so returned dicts have a stable shape
+        # regardless of whether reranking ran.
+        for _h in all_results:
+            _h.pop("text", None)
+            _h.pop("rerank_score", None)
+
     return all_results[:top_n]

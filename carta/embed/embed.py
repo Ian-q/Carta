@@ -9,9 +9,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     HnswConfigDiff,
+    Modifier,
     MultiVectorConfig,
     MultiVectorComparator,
     PointStruct,
+    SparseVector,
+    SparseVectorParams,
     VectorParams,
 )
 
@@ -19,6 +22,10 @@ from carta.config import collection_name
 
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
+
+# Named vector keys for hybrid collections
+DENSE_VECTOR_NAME = "dense"
+SPARSE_VECTOR_NAME = "bm25"
 
 # ColPali produces 128-dimensional patch vectors
 COLPALI_VECTOR_DIM = 128
@@ -32,6 +39,14 @@ VISUAL_BATCH_SIZE = 4
 
 
 _CONTEXT_OVERFLOW = "the input length exceeds the context length"
+
+
+def _fastembed_available() -> bool:
+    try:
+        import fastembed  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def get_embedding(
@@ -72,12 +87,68 @@ def get_embedding(
 
 
 def ensure_collection(client: QdrantClient, coll_name: str) -> None:
-    """Create Qdrant collection if it doesn't exist."""
-    if not client.collection_exists(coll_name):
+    """Create Qdrant collection if it doesn't exist.
+
+    Schema selection is driven by fastembed availability so that the collection
+    schema always matches what upsert_chunks can actually write:
+
+    - fastembed present: named-vector hybrid schema (dense + bm25 sparse) for
+      BM25+RRF retrieval.
+    - fastembed absent: legacy unnamed-dense schema, consistent with the legacy
+      upsert path so batches are never silently dropped.
+
+    Existing collections (any schema) are left untouched; collection_is_hybrid()
+    distinguishes them at upsert and query time.
+    """
+    if client.collection_exists(coll_name):
+        return
+    if _fastembed_available():
+        client.create_collection(
+            collection_name=coll_name,
+            vectors_config={
+                DENSE_VECTOR_NAME: VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            },
+            sparse_vectors_config={
+                SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF),
+            },
+        )
+    else:
+        # fastembed absent: legacy unnamed-dense schema, consistent with legacy upsert
         client.create_collection(
             collection_name=coll_name,
             vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
         )
+
+
+def collection_is_hybrid(client: QdrantClient, coll_name: str) -> bool:
+    """Return True if the collection has the named dense+sparse hybrid schema.
+
+    Used to gate hybrid query logic: legacy unnamed-dense collections return
+    False and fall through to the classic single-vector query path.
+
+    Only a 404 / collection-not-found response is silently treated as False.
+    Any other error (connectivity, SDK, etc.) is re-raised so callers see real
+    failures instead of silently getting the wrong schema.
+    """
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    try:
+        info = client.get_collection(coll_name)
+    except UnexpectedResponse as e:
+        if getattr(e, "status_code", None) == 404:
+            return False
+        raise
+    except Exception:
+        # Some qdrant-client builds wrap 404 in a plain ValueError/RuntimeError;
+        # treat those as "not found" only when the message looks like a missing
+        # collection.  All other exceptions propagate.
+        raise
+
+    vectors = info.config.params.vectors
+    has_named_dense = isinstance(vectors, dict) and DENSE_VECTOR_NAME in vectors
+    sparse = getattr(info.config.params, "sparse_vectors", None)
+    has_sparse = bool(sparse) and SPARSE_VECTOR_NAME in sparse
+    return has_named_dense and has_sparse
 
 
 def _point_id(slug: str, chunk_index: int) -> str:
@@ -121,6 +192,10 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
         client = QdrantClient(url=qdrant_url, timeout=5)
     ensure_collection(client, coll_name)
 
+    # Determine schema ONCE before the chunk loop so every point in this batch
+    # is written in the format that matches the collection.  No per-point guessing.
+    is_hybrid = collection_is_hybrid(client, coll_name)
+
     def build_point(chunk: dict, vec: list[float]) -> PointStruct:
         payload = {k: v for k, v in chunk.items() if k != "text"}
         payload["text"] = chunk["text"]
@@ -137,7 +212,19 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             )
         else:
             point_id = _point_id(chunk["slug"], chunk["chunk_index"])
-        return PointStruct(id=point_id, vector=vec, payload=payload)
+
+        if is_hybrid:
+            from carta.embed.sparse import embed_sparse_document
+            sv = embed_sparse_document(chunk["text"])
+            vector: dict | list = {
+                DENSE_VECTOR_NAME: vec,
+                SPARSE_VECTOR_NAME: SparseVector(indices=sv.indices, values=sv.values),
+            }
+        else:
+            # Legacy unnamed-dense collection — write matching format
+            vector = vec
+
+        return PointStruct(id=point_id, vector=vector, payload=payload)
 
     def flush(batch: list[PointStruct]) -> int:
         if not batch:

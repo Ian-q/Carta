@@ -1,0 +1,10 @@
+# Carta retrieval eval set.
+# A query "hits" if any `expect` substring appears in a returned result's file_path
+# within top-k. Keep 15-40 queries that cover the documents you actually ask about.
+queries:
+  - q: "what baud rate does the serial bridge use"
+    expect: ["CLAUDE.md", "serial-bridge"]
+  - q: "load cell counts per pound sensitivity"
+    expect: ["bench-measurements", "loadcell"]
+  - q: "VCU torque versus speed mode bit on CAN 0x200"
+    expect: ["main.c", "torque"]

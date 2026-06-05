@@ -19,7 +19,19 @@ DEFAULTS = {
         "configuration values",
         "environment variable names",
     ],
-    "search": {"top_n": 5},
+    "search": {
+        "top_n": 5,
+        "hybrid": {
+            "enabled": True,
+            "bm25_model": "Qdrant/bm25",
+            "prefetch_limit": 40,
+        },
+        "rerank": {
+            "enabled": False,
+            "model": "BAAI/bge-reranker-base",
+            "candidate_pool": 30,
+        },
+    },
     "embed": {
         "reference_docs_path": "docs/reference/",
         "audio_path": "docs/audio/",
