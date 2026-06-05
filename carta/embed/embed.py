@@ -9,9 +9,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     HnswConfigDiff,
+    Modifier,
     MultiVectorConfig,
     MultiVectorComparator,
     PointStruct,
+    SparseVector,
+    SparseVectorParams,
     VectorParams,
 )
 
@@ -19,6 +22,10 @@ from carta.config import collection_name
 
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
+
+# Named vector keys for hybrid collections
+DENSE_VECTOR_NAME = "dense"
+SPARSE_VECTOR_NAME = "bm25"
 
 # ColPali produces 128-dimensional patch vectors
 COLPALI_VECTOR_DIM = 128
@@ -72,12 +79,40 @@ def get_embedding(
 
 
 def ensure_collection(client: QdrantClient, coll_name: str) -> None:
-    """Create Qdrant collection if it doesn't exist."""
+    """Create Qdrant collection if it doesn't exist.
+
+    New collections use a named-vector hybrid schema: a dense vector ("dense")
+    plus a server-side IDF-weighted sparse vector ("bm25") for BM25+RRF retrieval.
+    Legacy unnamed-dense collections created before this change are left untouched;
+    collection_is_hybrid() distinguishes them at query time.
+    """
     if not client.collection_exists(coll_name):
         client.create_collection(
             collection_name=coll_name,
-            vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            vectors_config={
+                DENSE_VECTOR_NAME: VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            },
+            sparse_vectors_config={
+                SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF),
+            },
         )
+
+
+def collection_is_hybrid(client: QdrantClient, coll_name: str) -> bool:
+    """Return True if the collection has the named dense+sparse hybrid schema.
+
+    Used to gate hybrid query logic: legacy unnamed-dense collections return
+    False and fall through to the classic single-vector query path.
+    """
+    try:
+        info = client.get_collection(coll_name)
+        vectors = info.config.params.vectors
+        has_named_dense = isinstance(vectors, dict) and DENSE_VECTOR_NAME in vectors
+        sparse = getattr(info.config.params, "sparse_vectors", None)
+        has_sparse = bool(sparse) and SPARSE_VECTOR_NAME in sparse
+        return has_named_dense and has_sparse
+    except Exception:
+        return False
 
 
 def _point_id(slug: str, chunk_index: int) -> str:
@@ -122,6 +157,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     ensure_collection(client, coll_name)
 
     def build_point(chunk: dict, vec: list[float]) -> PointStruct:
+        from carta.embed.sparse import embed_sparse_document
+
         payload = {k: v for k, v in chunk.items() if k != "text"}
         payload["text"] = chunk["text"]
         payload["doc_generation"] = chunk.get("doc_generation", 1)
@@ -137,7 +174,19 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             )
         else:
             point_id = _point_id(chunk["slug"], chunk["chunk_index"])
-        return PointStruct(id=point_id, vector=vec, payload=payload)
+
+        try:
+            sv = embed_sparse_document(chunk["text"])
+            vector: dict | list = {
+                DENSE_VECTOR_NAME: vec,
+                SPARSE_VECTOR_NAME: SparseVector(indices=sv.indices, values=sv.values),
+            }
+        except Exception:
+            # fastembed not installed or sparse encoding failed: fall back to
+            # legacy unnamed-dense format so upserts still work.
+            vector = vec
+
+        return PointStruct(id=point_id, vector=vector, payload=payload)
 
     def flush(batch: list[PointStruct]) -> int:
         if not batch:
