@@ -144,6 +144,10 @@ class SmartRouter:
         self.flattened_min_yield: int = embed.get("vision_flattened_min_yield", 50)
         self.max_images_per_page: int = embed.get("vision_max_images_per_page", 4)
         self.vision_workers: int = max(1, int(embed.get("vision_workers", 4)))
+        # vision_routing: "auto" | "ocr" | "vision" | "off"
+        self.vision_routing: str = embed.get("vision_routing", "auto")
+        # Configurable per-call timeout (seconds); replaces the old hardcoded 120
+        self.vision_call_timeout: int = int(embed.get("vision_call_timeout_s", 300))
         self.analyzer = PageAnalyzer(cfg)
         # PyMuPDF (fitz) is not thread-safe. Workers must serialize all fitz
         # operations through this lock; Ollama HTTP calls run unlocked so they
@@ -273,6 +277,21 @@ class SmartRouter:
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
     ) -> list[dict]:
+        # vision_routing override modes — checked before auto dispatch
+        if self.vision_routing == "off":
+            # Never call any model; treat every page as text-only
+            return []
+        if self.vision_routing == "ocr":
+            # Every non-PURE_TEXT page goes through OCR only — never call VLM
+            if profile.page_class == PageClass.PURE_TEXT:
+                return []
+            return self._route_structured(page, page_num)
+        if self.vision_routing == "vision":
+            # Every non-PURE_TEXT page goes through VLM only — never call OCR
+            if profile.page_class == PageClass.PURE_TEXT:
+                return []
+            return self._route_text_with_images(page, page_num, profile, doc)
+        # mode == "auto" (default): original heuristic dispatch
         if profile.page_class == PageClass.PURE_TEXT:
             return []
         if profile.page_class == PageClass.STRUCTURED_TEXT:
@@ -287,7 +306,8 @@ class SmartRouter:
             png_bytes = pix.tobytes("png")
         try:
             text = self._call_ollama_vision(
-                png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT
+                png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT,
+                timeout=self.vision_call_timeout,
             )
         except Exception as exc:
             print(
@@ -307,7 +327,8 @@ class SmartRouter:
             for idx, png_bytes in crops:
                 try:
                     text = self._call_ollama_vision(
-                        png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT
+                        png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT,
+                        timeout=self.vision_call_timeout,
                     )
                     chunks.append(
                         self._make_chunk(page_num, idx, text, "llava", "text_with_images")
@@ -324,7 +345,8 @@ class SmartRouter:
                 png_bytes = pix.tobytes("png")
             try:
                 text = self._call_ollama_vision(
-                    png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT
+                    png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT,
+                    timeout=self.vision_call_timeout,
                 )
                 chunks.append(
                     self._make_chunk(page_num, 0, text, "llava", "text_with_images")
@@ -342,7 +364,8 @@ class SmartRouter:
             png_bytes = pix.tobytes("png")
         try:
             ocr_text = self._call_ollama_vision(
-                png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT
+                png_bytes, model=self.ocr_model, prompt=GLM_OCR_PROMPT,
+                timeout=self.vision_call_timeout,
             )
         except Exception as exc:
             print(
@@ -355,7 +378,8 @@ class SmartRouter:
         # Low yield — page is likely a photo or decorative image, try LLaVA
         try:
             vision_text = self._call_ollama_vision(
-                png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT
+                png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT,
+                timeout=self.vision_call_timeout,
             )
             return [self._make_chunk(page_num, 0, vision_text, "llava", "flattened")]
         except Exception as exc:
@@ -429,7 +453,7 @@ class SmartRouter:
         image_png_bytes: bytes,
         model: str,
         prompt: str,
-        timeout: int = 120,
+        timeout: int = 300,
     ) -> str:
         """Call Ollama vision API using streaming to avoid response-length timeouts.
 

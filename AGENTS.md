@@ -122,3 +122,28 @@ with pytest.raises(ConfigError, match="field_name"):
 - `carta/config.py` - Config loading, validation, defaults
 - `carta/conftest.py` - Shared test fixtures
 - `pyproject.toml` - Package metadata, dependencies, entry points
+
+## Visual Embedding (ColPali) — Agent Guidance
+
+ColPali/ColQwen2 visual embedding (`colpali_enabled: true`) loads a ~5–8 GB model and
+runs on every PDF in the corpus. This is expensive and almost never appropriate corpus-wide.
+
+**Always scope ColPali to the directories that actually contain visual-rich content:**
+
+```yaml
+embed:
+  colpali_enabled: true
+  colpali_scoped_paths:
+    - "docs/reference/datasheets/"   # trailing slash = directory prefix
+    - "docs/diagrams/**/*.pdf"       # ** glob = recursive match
+```
+
+An empty `colpali_scoped_paths: []` (the default) means no restriction — all PDFs
+are processed. Only leave it empty if you have confirmed that the entire corpus is
+visual-rich enough to justify the cost.
+
+For the OCR/VLM text-extraction pipeline (separate from ColPali), use `vision_routing`
+to override the per-page routing heuristic: `auto` (default) | `ocr` | `vision` | `off`.
+Set `vision_call_timeout_s` if Ollama calls time out on dense pages (default: 300 s).
+
+See the "Scoping heavy visual models" section in README.md for full config reference.

@@ -172,6 +172,61 @@ def discover_stale_files(repo_root: Path) -> list[Path]:
     return results
 
 
+def _glob_scope_re(pattern: str):
+    """Compile a glob pattern (possibly with **) to a full-path anchored regex.
+
+    Rules:
+    - ``**`` between slashes matches zero or more path segments.
+    - ``**`` elsewhere matches anything (including slashes).
+    - ``*`` matches any chars except '/'.
+    - ``?`` matches any single char except '/'.
+    """
+    import re
+    escaped = re.escape(pattern)
+    # Use a placeholder so we can differentiate ** from single *
+    escaped = escaped.replace(r"\*\*", "\x00DSTAR\x00")
+    escaped = escaped.replace(r"\*", "[^/]*")
+    escaped = escaped.replace(r"\?", "[^/]")
+    # /**/ → allow zero or more intermediate segments
+    escaped = escaped.replace("/\x00DSTAR\x00/", "(?:/.*/|/)")
+    # Any remaining DSTAR (leading/trailing) → match anything
+    escaped = escaped.replace("\x00DSTAR\x00", ".*")
+    return re.compile("^" + escaped + "$")
+
+
+def _colpali_path_in_scope(rel_path: str, scopes: list[str]) -> bool:
+    """Return True if rel_path should receive ColPali visual embedding.
+
+    Empty scopes means no restriction — all paths are in scope (current behavior).
+
+    Matching rules (applied in order; first match wins True):
+    - A scope entry ending with '/' is treated as a directory prefix: any path
+      that starts with that prefix is in scope.
+    - All other entries are treated as a glob pattern supporting both ``*``
+      (single-segment wildcard) and ``**`` (cross-segment wildcard). Matching
+      is anchored to the full repo-relative path.
+    """
+    from pathlib import PurePath
+
+    if not scopes:
+        return True
+    p = PurePath(rel_path)
+    for scope in scopes:
+        if scope.endswith("/"):
+            # Directory-prefix match: rel_path must be inside the dir
+            dir_prefix = scope.rstrip("/")
+            try:
+                p.relative_to(dir_prefix)
+                return True
+            except ValueError:
+                pass
+        else:
+            # Glob pattern match — use regex engine for ** support
+            if _glob_scope_re(scope).match(rel_path):
+                return True
+    return False
+
+
 def _split_vision_text(text: str, max_tokens: int) -> list[str]:
     """Split oversized vision chunk text into word-window parts.
 
@@ -286,19 +341,31 @@ def _embed_one_file(
 
         # NEW: ColPali multimodal path for visual pages
         if colpali_enabled:
-            if progress:
-                progress.step("ColPali: embedding visual pages")
-            try:
-                visual_pages_count = _embed_visual_pages_colpali(
-                    file_path, file_info, cfg, client, repo_root, verbose
-                )
-            except Exception as exc:
-                # Fail-open: log error but continue with standard extraction
-                print(
-                    f"Warning: ColPali visual embedding failed for {file_path}: {exc}",
-                    file=sys.stderr,
-                    flush=True
-                )
+            # Directory/glob scoping: skip ColPali for files outside configured scope
+            embed_cfg = cfg.get("embed", {})
+            colpali_scoped_paths: list = embed_cfg.get("colpali_scoped_paths", [])
+            rel_path_str = str(file_path.relative_to(repo_root)) if file_path.is_relative_to(repo_root) else str(file_path)
+            _in_scope = _colpali_path_in_scope(rel_path_str, colpali_scoped_paths)
+            if not _in_scope:
+                if verbose:
+                    print(
+                        f"    ColPali: skipping {rel_path_str} (not in colpali_scoped_paths)",
+                        flush=True,
+                    )
+            else:
+                if progress:
+                    progress.step("ColPali: embedding visual pages")
+                try:
+                    visual_pages_count = _embed_visual_pages_colpali(
+                        file_path, file_info, cfg, client, repo_root, verbose
+                    )
+                except Exception as exc:
+                    # Fail-open: log error but continue with standard extraction
+                    print(
+                        f"Warning: ColPali visual embedding failed for {file_path}: {exc}",
+                        file=sys.stderr,
+                        flush=True
+                    )
 
         # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
         if progress:
