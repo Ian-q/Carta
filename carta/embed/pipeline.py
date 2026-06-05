@@ -12,6 +12,7 @@ from typing import Optional
 
 import yaml
 from qdrant_client import QdrantClient
+from qdrant_client import models as qmodels
 from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
@@ -27,7 +28,6 @@ from carta.embed.embed import (
     SPARSE_VECTOR_NAME,
 )
 from carta.embed.sparse import embed_sparse_query
-from qdrant_client import models as qmodels
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
 

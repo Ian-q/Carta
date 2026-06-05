@@ -12,7 +12,7 @@ from functools import lru_cache
 DEFAULT_BM25_MODEL = "Qdrant/bm25"
 
 
-@dataclass(frozen=True)
+@dataclass
 class SparseVec:
     indices: list[int]
     values: list[float]
