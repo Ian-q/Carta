@@ -130,6 +130,12 @@ class TestEdgeCases:
         # matches paths whose last component equals "docs/ref", which a .pdf file won't.
         assert result is False
 
+    def test_single_star_does_not_cross_slash(self):
+        assert _colpali_path_in_scope("docs/diagrams/sub/timing.pdf", ["docs/diagrams/*.pdf"]) is False
+
+    def test_double_star_matches_direct_child(self):
+        assert _colpali_path_in_scope("docs/diagrams/timing.pdf", ["docs/diagrams/**/*.pdf"]) is True
+
     def test_single_star_glob_in_scope(self):
         """'**' alone in scopes matches everything (degenerate case)."""
         assert _colpali_path_in_scope("anywhere/deep/file.pdf", ["**"]) is True

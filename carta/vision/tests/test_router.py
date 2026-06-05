@@ -742,6 +742,20 @@ class TestVisionRoutingVision:
         assert mock_call.call_count == 1
         assert mock_call.call_args[1]["model"] == "llava:latest"
 
+    def test_vision_routes_text_with_images_to_vlm_not_ocr(self):
+        """mode=vision: TEXT_WITH_IMAGES page uses VLM (_route_text_with_images), not OCR."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm desc") as mock_call:
+                result = router._route(
+                    page, 2, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock()
+                )
+        # Must route via VLM (_route_text_with_images), not OCR
+        assert mock_call.call_count == 1
+        assert mock_call.call_args[1]["model"] == "llava:latest"
+
     def test_vision_still_skips_pure_text(self):
         """mode=vision: PURE_TEXT pages are still skipped."""
         router = SmartRouter(_cfg_routing("vision"))

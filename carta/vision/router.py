@@ -458,7 +458,7 @@ class SmartRouter:
         """Call Ollama vision API using streaming to avoid response-length timeouts.
 
         With stream=True, the timeout applies per-read rather than per-complete-response,
-        so dense tables that generate thousands of tokens don't hit the 120s wall.
+        so dense tables that generate thousands of tokens don't hit the configured timeout wall.
         """
         b64 = base64.b64encode(image_png_bytes).decode("utf-8")
         resp = requests.post(

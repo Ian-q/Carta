@@ -2,12 +2,13 @@
 
 import json
 import os
+import re
 import shutil
 import sys
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Optional
 
 import yaml
@@ -181,7 +182,6 @@ def _glob_scope_re(pattern: str):
     - ``*`` matches any chars except '/'.
     - ``?`` matches any single char except '/'.
     """
-    import re
     escaped = re.escape(pattern)
     # Use a placeholder so we can differentiate ** from single *
     escaped = escaped.replace(r"\*\*", "\x00DSTAR\x00")
@@ -206,8 +206,6 @@ def _colpali_path_in_scope(rel_path: str, scopes: list[str]) -> bool:
       (single-segment wildcard) and ``**`` (cross-segment wildcard). Matching
       is anchored to the full repo-relative path.
     """
-    from pathlib import PurePath
-
     if not scopes:
         return True
     p = PurePath(rel_path)
