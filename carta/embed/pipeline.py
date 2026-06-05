@@ -1101,4 +1101,20 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     
     # Sort by score descending and take top_n
     all_results.sort(key=lambda x: x["score"], reverse=True)
+
+    # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
+    rr_cfg = cfg.get("search", {}).get("rerank", {})
+    if rr_cfg.get("enabled", False) and all_results:
+        from carta.search.rerank import rerank_hits
+        pool = all_results[: rr_cfg.get("candidate_pool", 30)]
+        # rerank_hits reads chunk text from key "text"; run_search stores it as "excerpt"
+        for h in pool:
+            h["text"] = h.get("excerpt", "")
+        all_results = rerank_hits(
+            query,
+            pool,
+            model_name=rr_cfg.get("model", "BAAI/bge-reranker-base"),
+            top_n=top_n,
+        )
+
     return all_results[:top_n]
