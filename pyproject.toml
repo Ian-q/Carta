@@ -17,6 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+hybrid = [
+    "fastembed>=0.4",
+]
 visual = [
     # colpali-engine dropped: its PEFT-based loader is broken on transformers>=5.x
     # (KeyError: 'llava' in _MOE_TARGET_MODULE_MAPPING).

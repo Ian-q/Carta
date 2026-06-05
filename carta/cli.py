@@ -453,6 +453,41 @@ def cmd_audit(args):
         print(f"Error: Audit failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+def cmd_eval(args):
+    """Score retrieval quality against an eval set (recall@k, MRR).
+
+    Eval is currently repo-scoped only. Scope-aware eval is a follow-up that
+    requires run_search to accept a scope parameter.
+    """
+    import copy
+    from carta.config import load_config
+    from carta.eval.harness import run_eval
+    from carta.embed.pipeline import run_search
+
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
+    k = args.k
+
+    # Deep-copy cfg once; the closure mutates top_n per call so each query
+    # uses the correct top_k cutoff. run_search reads cfg["search"]["top_n"]
+    # internally; results use "source" as the file path key (not "file_path"),
+    # so the closure remaps to "file_path".
+    eval_cfg = copy.deepcopy(cfg)
+
+    def _search(query: str, top_k: int) -> list:
+        eval_cfg.setdefault("search", {})["top_n"] = top_k
+        results = run_search(query, eval_cfg) or []
+        # run_search returns {"score", "source", "excerpt", "type"};
+        # run_eval expects dicts with "file_path".
+        return [{"file_path": r.get("source", ""), **r} for r in results]
+
+    metrics = run_eval(Path(args.eval_path), _search, k=k)
+    print(f"queries={metrics['n_queries']}  recall@{k}={metrics['recall_at_k']:.3f}  MRR={metrics['mrr']:.3f}")
+    for row in metrics["per_query"]:
+        mark = row["first_hit_rank"] if row["first_hit_rank"] is not None else "MISS"
+        print(f"  [{mark}] {row['q']}")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="carta")
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
@@ -514,6 +549,10 @@ def main():
         ),
     )
 
+    eval_p = sub.add_parser("eval", help="Score retrieval quality against an eval set")
+    eval_p.add_argument("eval_path", help="Path to eval-set YAML (see carta/eval/datasets/example.yaml)")
+    eval_p.add_argument("-k", type=int, default=5, help="top-k cutoff (default 5)")
+
     update_p = sub.add_parser("update", help="Update carta to the latest version")
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")
     update_p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
@@ -527,6 +566,7 @@ def main():
         "search": cmd_search,
         "audit": cmd_audit,
         "doctor": cmd_doctor,
+        "eval": cmd_eval,
         "update": cmd_update,
     }
 
