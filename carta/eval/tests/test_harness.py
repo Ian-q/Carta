@@ -1,3 +1,5 @@
+import pytest
+
 from carta.eval.harness import load_eval_set, compute_metrics, EvalQuery
 
 
@@ -38,3 +40,15 @@ def test_compute_metrics_respects_k_cutoff():
     results_per_query = [["x.md", "y.md", "alpha.md"]]  # hit at rank 3
     assert compute_metrics(eval_queries, results_per_query, k=2)["recall_at_k"] == 0.0
     assert compute_metrics(eval_queries, results_per_query, k=3)["recall_at_k"] == 1.0
+
+
+def test_compute_metrics_rejects_length_mismatch():
+    with pytest.raises(ValueError):
+        compute_metrics([EvalQuery(q="A", expect=["x"])], [], k=5)
+
+
+def test_compute_metrics_empty_eval_set():
+    m = compute_metrics([], [], k=5)
+    assert m["n_queries"] == 0
+    assert m["recall_at_k"] == 0.0
+    assert m["mrr"] == 0.0

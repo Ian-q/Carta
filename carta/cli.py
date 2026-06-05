@@ -454,9 +454,12 @@ def cmd_audit(args):
         sys.exit(1)
 
 def cmd_eval(args):
-    """Score retrieval quality against an eval set (recall@k, MRR)."""
+    """Score retrieval quality against an eval set (recall@k, MRR).
+
+    Eval is currently repo-scoped only. Scope-aware eval is a follow-up that
+    requires run_search to accept a scope parameter.
+    """
     import copy
-    from pathlib import Path
     from carta.config import load_config
     from carta.eval.harness import run_eval
     from carta.embed.pipeline import run_search
@@ -465,13 +468,14 @@ def cmd_eval(args):
     cfg = load_config(cfg_path)
     k = args.k
 
-    # Inject top_n into a copy of cfg so run_search uses the requested k.
-    # run_search reads cfg["search"]["top_n"] internally; results use "source" as the
-    # file path key (not "file_path"), so the closure remaps to "file_path".
+    # Deep-copy cfg once; the closure mutates top_n per call so each query
+    # uses the correct top_k cutoff. run_search reads cfg["search"]["top_n"]
+    # internally; results use "source" as the file path key (not "file_path"),
+    # so the closure remaps to "file_path".
     eval_cfg = copy.deepcopy(cfg)
-    eval_cfg.setdefault("search", {})["top_n"] = k
 
     def _search(query: str, top_k: int) -> list:
+        eval_cfg.setdefault("search", {})["top_n"] = top_k
         results = run_search(query, eval_cfg) or []
         # run_search returns {"score", "source", "excerpt", "type"};
         # run_eval expects dicts with "file_path".
@@ -482,7 +486,6 @@ def cmd_eval(args):
     for row in metrics["per_query"]:
         mark = row["first_hit_rank"] if row["first_hit_rank"] is not None else "MISS"
         print(f"  [{mark}] {row['q']}")
-    return 0
 
 
 def main():
@@ -549,7 +552,6 @@ def main():
     eval_p = sub.add_parser("eval", help="Score retrieval quality against an eval set")
     eval_p.add_argument("eval_path", help="Path to eval-set YAML (see carta/eval/datasets/example.yaml)")
     eval_p.add_argument("-k", type=int, default=5, help="top-k cutoff (default 5)")
-    eval_p.add_argument("--scope", default="repo", choices=["repo", "shared", "global"])
 
     update_p = sub.add_parser("update", help="Update carta to the latest version")
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")

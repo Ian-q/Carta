@@ -19,7 +19,7 @@ from typing import Callable, Optional
 import yaml
 
 
-@dataclass(frozen=True)
+@dataclass
 class EvalQuery:
     q: str
     expect: list[str]
@@ -45,6 +45,11 @@ def _first_hit_rank(expect: list[str], file_paths: list[str], k: int) -> Optiona
 def compute_metrics(eval_queries: list[EvalQuery],
                     results_per_query: list[list[str]],
                     k: int) -> dict:
+    if len(eval_queries) != len(results_per_query):
+        raise ValueError(
+            f"eval_queries ({len(eval_queries)}) and results_per_query "
+            f"({len(results_per_query)}) must have the same length"
+        )
     per_query = []
     recall_hits = 0
     rr_sum = 0.0
