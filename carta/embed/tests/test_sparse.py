@@ -1,3 +1,10 @@
+import pytest
+
+# These tests exercise the real fastembed BM25 model, which ships in the optional
+# `[hybrid]` extra. Skip cleanly when it is not installed (e.g. base CI) rather
+# than failing — mirrors the optional-dependency handling in test_colpali.py.
+pytest.importorskip("fastembed", reason="hybrid extra (fastembed) not installed")
+
 from carta.embed.sparse import embed_sparse_document, embed_sparse_query, SparseVec
 
 
