@@ -171,3 +171,29 @@ class TestMaybeTuneWorkers:
         cfg = {"embed": {"vision_workers": 4}}
         out = _maybe_tune_workers(cfg, skip=False)
         assert out["embed"]["vision_workers"] == 4
+
+
+def test_statusline_print_segment_smoke(tmp_path, monkeypatch, capsys):
+    """`carta statusline` (no flags) prints the segment for cwd, never errors."""
+    import io, json, os, socket
+    import pytest
+    from carta import cli
+
+    (tmp_path / ".carta").mkdir()
+    status = {
+        "schema": 1, "phase": "running", "host": socket.gethostname(),
+        "pid": os.getpid(), "total": 5, "current_idx": 2,
+        "current_file": "x.md", "current_file_started_at": 0.0,
+        "updated_at": 0.0, "finished_at": None, "embedded": 1,
+        "skipped": 0, "errors": 0, "chunks": 3,
+    }
+    (tmp_path / ".carta" / "embed-status.json").write_text(json.dumps(status))
+    monkeypatch.setattr(__import__("sys"), "stdin",
+                        io.StringIO(json.dumps({"cwd": str(tmp_path)})))
+
+    args = type("A", (), {"install": False, "uninstall": False})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_statusline(args)
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "carta 2/5" in out.replace("\x1b", "")  # ANSI-tolerant
