@@ -33,6 +33,7 @@ from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sideca
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
+from carta.embed.status import StatusWriter
 from carta.vision.classifier import PageClass, PageAnalyzer
 
 _IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
@@ -1194,114 +1195,129 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     perf_log_path = _resolve_perf_log_path(repo_root)
     perf_context = _build_perf_context(cfg)
 
+    status = StatusWriter(
+        repo_root, enabled=cfg.get("embed", {}).get("status_file", True)
+    )
+
     pending = discover_pending_files(repo_root)
     total = len(pending)
     if progress is not None:
         progress.set_total(total)
     if verbose:
         print(f"carta embed: {total} file(s) pending.", flush=True)
+    status.start(total)
 
-    for idx, file_info in enumerate(pending, start=1):
-        file_path: Path = file_info["file_path"]
-        sc_path: Path = file_info["sidecar_path"]
-        rel_file = str(file_path.relative_to(repo_root)) if file_path.is_relative_to(repo_root) else str(file_path)
+    try:
+        for idx, file_info in enumerate(pending, start=1):
+            file_path: Path = file_info["file_path"]
+            sc_path: Path = file_info["sidecar_path"]
+            rel_file = str(file_path.relative_to(repo_root)) if file_path.is_relative_to(repo_root) else str(file_path)
 
-        # LFS guard
-        if is_lfs_pointer(file_path):
+            status.file_start(idx, file_path.name)
+
+            # LFS guard
+            if is_lfs_pointer(file_path):
+                if progress:
+                    progress.file(idx, file_path.name)
+                    progress.skip("LFS pointer")
+                elif verbose:
+                    print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
+                summary["skipped"] += 1
+                _write_perf_log_entry(perf_log_path, {
+                    **perf_context, "file": rel_file, "status": "skip",
+                    "skip_reason": "lfs_pointer", "chunks": 0, "elapsed_s": 0.0,
+                })
+                status.file_done(skipped=1)
+                continue
+
             if progress:
                 progress.file(idx, file_path.name)
-                progress.skip("LFS pointer")
             elif verbose:
-                print(f"  [{idx}/{total}] SKIP (LFS pointer): {file_path.name}", flush=True)
-            summary["skipped"] += 1
-            _write_perf_log_entry(perf_log_path, {
-                **perf_context, "file": rel_file, "status": "skip",
-                "skip_reason": "lfs_pointer", "chunks": 0, "elapsed_s": 0.0,
-            })
-            continue
+                print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
+            t0 = time.monotonic()
 
-        if progress:
-            progress.file(idx, file_path.name)
-        elif verbose:
-            print(f"  [{idx}/{total}] Embedding: {file_path.name} ...", flush=True)
-        t0 = time.monotonic()
+            # Per-file watchdog: a daemon thread runs the work; main thread waits
+            # up to file_timeout_s. Daemon thread dies cleanly at interpreter exit,
+            # avoiding the "cannot schedule new futures after interpreter shutdown"
+            # races a ThreadPoolExecutor-based watchdog left behind on timeout.
+            cancel_event = threading.Event()
+            result_holder: dict = {}
 
-        # Per-file watchdog: a daemon thread runs the work; main thread waits
-        # up to file_timeout_s. Daemon thread dies cleanly at interpreter exit,
-        # avoiding the "cannot schedule new futures after interpreter shutdown"
-        # races a ThreadPoolExecutor-based watchdog left behind on timeout.
-        cancel_event = threading.Event()
-        result_holder: dict = {}
+            def _worker():
+                try:
+                    result_holder["value"] = _embed_one_file(
+                        file_path, file_info, cfg, client, repo_root,
+                        max_tokens, overlap_fraction, verbose, progress,
+                        cancel_event,
+                    )
+                except BaseException as exc:
+                    result_holder["error"] = exc
 
-        def _worker():
-            try:
-                result_holder["value"] = _embed_one_file(
-                    file_path, file_info, cfg, client, repo_root,
-                    max_tokens, overlap_fraction, verbose, progress,
-                    cancel_event,
-                )
-            except BaseException as exc:
-                result_holder["error"] = exc
+            worker = threading.Thread(
+                target=_worker, daemon=True, name=f"carta-embed-{file_path.name}"
+            )
+            worker.start()
+            worker.join(timeout=file_timeout_s)
+            elapsed = time.monotonic() - t0
 
-        worker = threading.Thread(
-            target=_worker, daemon=True, name=f"carta-embed-{file_path.name}"
-        )
-        worker.start()
-        worker.join(timeout=file_timeout_s)
-        elapsed = time.monotonic() - t0
-
-        if worker.is_alive():
-            # Timeout — signal cancel and move on. Daemon thread will be killed
-            # at process exit; we do not block here.
-            cancel_event.set()
-            if progress:
-                progress.skip(f"timeout after {file_timeout_s}s")
-            elif verbose:
+            if worker.is_alive():
+                # Timeout — signal cancel and move on. Daemon thread will be killed
+                # at process exit; we do not block here.
+                cancel_event.set()
+                if progress:
+                    progress.skip(f"timeout after {file_timeout_s}s")
+                elif verbose:
+                    print(
+                        f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {file_timeout_s}s -- skipping",
+                        flush=True,
+                    )
                 print(
-                    f"  [{idx}/{total}] TIMEOUT: {file_path.name} exceeded {file_timeout_s}s -- skipping",
-                    flush=True,
+                    f"  TIMEOUT: {file_path.name} exceeded {file_timeout_s}s",
+                    file=sys.stderr, flush=True,
                 )
-            print(
-                f"  TIMEOUT: {file_path.name} exceeded {file_timeout_s}s",
-                file=sys.stderr, flush=True,
-            )
-            summary["skipped"] += 1
-            summary["timed_out"].append(file_path.name)
-            _write_perf_log_entry(perf_log_path, {
-                **perf_context, "file": rel_file, "status": "timeout",
-                "chunks": 0, "elapsed_s": round(elapsed, 2),
-                "timeout_s": file_timeout_s,
-            })
-        elif "error" in result_holder:
-            exc = result_holder["error"]
-            if progress:
-                progress.error(str(exc))
-            print(
-                f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {exc}",
-                file=sys.stderr, flush=True,
-            )
-            summary["errors"].append(f"Error processing {file_path.name}: {exc}")
-            _write_perf_log_entry(perf_log_path, {
-                **perf_context, "file": rel_file, "status": "error",
-                "chunks": 0, "elapsed_s": round(elapsed, 2),
-                "error": str(exc)[:200],
-            })
-        else:
-            count, sidecar_updates = result_holder["value"]
-            vision_events = sidecar_updates.pop("_vision_events", [])
-            _update_sidecar(sc_path, sidecar_updates)
-            if progress:
-                progress.done(chunks=count, elapsed=elapsed)
-                if vision_events:
-                    progress.vision_done(vision_events)
-            elif verbose:
-                print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-            summary["embedded"] += 1
-            _write_perf_log_entry(perf_log_path, {
-                **perf_context, "file": rel_file, "status": "ok",
-                "chunks": count, "elapsed_s": round(elapsed, 2),
-                "vision_strategies": _summarize_vision_strategies(vision_events),
-            })
+                summary["skipped"] += 1
+                summary["timed_out"].append(file_path.name)
+                _write_perf_log_entry(perf_log_path, {
+                    **perf_context, "file": rel_file, "status": "timeout",
+                    "chunks": 0, "elapsed_s": round(elapsed, 2),
+                    "timeout_s": file_timeout_s,
+                })
+                status.file_done(skipped=1)
+            elif "error" in result_holder:
+                exc = result_holder["error"]
+                if progress:
+                    progress.error(str(exc))
+                print(
+                    f"  [{idx}/{total}] ERROR: {file_path.name} ({elapsed:.1f}s): {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                summary["errors"].append(f"Error processing {file_path.name}: {exc}")
+                _write_perf_log_entry(perf_log_path, {
+                    **perf_context, "file": rel_file, "status": "error",
+                    "chunks": 0, "elapsed_s": round(elapsed, 2),
+                    "error": str(exc)[:200],
+                })
+                status.file_done(errors=1)
+            else:
+                count, sidecar_updates = result_holder["value"]
+                vision_events = sidecar_updates.pop("_vision_events", [])
+                _update_sidecar(sc_path, sidecar_updates)
+                if progress:
+                    progress.done(chunks=count, elapsed=elapsed)
+                    if vision_events:
+                        progress.vision_done(vision_events)
+                elif verbose:
+                    print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
+                summary["embedded"] += 1
+                _write_perf_log_entry(perf_log_path, {
+                    **perf_context, "file": rel_file, "status": "ok",
+                    "chunks": count, "elapsed_s": round(elapsed, 2),
+                    "vision_strategies": _summarize_vision_strategies(vision_events),
+                })
+                status.file_done(embedded=1, chunks=count)
+    except BaseException:
+        status.finish("failed")
+        raise
 
     # Emit stale alert after embed loop
     stale_count = len(discover_stale_files(repo_root))
@@ -1325,6 +1341,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
         print(vq_line, flush=True)
     summary["visual_queue"] = vq_summary
 
+    status.finish("done")
     return summary
 
 
