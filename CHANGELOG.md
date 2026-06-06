@@ -2,6 +2,26 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] — 2026-06-06
+
+### Added
+- **Hybrid retrieval**: BM25 sparse + dense vectors fused via Qdrant Reciprocal Rank Fusion (`search.hybrid`). Sparse encoding via fastembed (`Qdrant/bm25`). New `[hybrid]` extra. (#14)
+- **Local cross-encoder reranker** second stage (`search.rerank`, opt-in) via fastembed `TextCrossEncoder` (`BAAI/bge-reranker-base`). (#14)
+- **Retrieval eval harness** + `carta eval` CLI — recall@k / MRR against a query→expected-doc YAML set. (#14)
+- **ColPali directory scoping** (`embed.colpali_scoped_paths`) — restrict visual embedding to globbed paths instead of all PDFs. (#17)
+- **Live `vision_routing` modes** (`auto`/`ocr`/`vision`/`off`) — previously a no-op key. (#17)
+- **Configurable vision/OCR call timeout** (`embed.vision_call_timeout_s`, default 300; was hardcoded 120). (#17)
+- README/AGENTS guidance on relegating heavy visual models to specific directories. (#17)
+
+### Changed
+- Default vision model `qwen2.5vl:7b` → `qwen3-vl:8b` (requires Ollama ≥0.12.7). (#16)
+
+### Fixed
+- Schema-coherent hybrid upsert — never silently drops a batch into a schema-mismatched collection; `collection_is_hybrid` narrowed to 404-only. (#14)
+- Sparse tests skip cleanly when the `[hybrid]` extra is absent (`pytest.importorskip`); base CI green. (#15)
+
+> Note: 0.4.x was tagged without changelog entries; 0.5.0 consolidates the retrieval-quality + routing-control work merged since 0.4.7.
+
 ## [0.3.2] — 2026-04-05
 
 ### Fixed
