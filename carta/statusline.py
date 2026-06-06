@@ -98,3 +98,71 @@ def format_segment(status: dict, state: str, *, now: float, color: bool = True) 
         errs = status.get("errors", 0)
         return c(_RED, f"✗ carta {idx}/{total} · {errs} errors")
     return ""
+
+
+# ---------------------------------------------------------------------------
+# IO functions (Task 5)
+# ---------------------------------------------------------------------------
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except OSError:
+        return False
+    return True
+
+
+def read_status(start) -> "dict | None":
+    """Walk up from *start* for .carta/embed-status.json; return parsed dict or None."""
+    try:
+        cur = Path(start).resolve()
+    except Exception:
+        return None
+    while True:
+        candidate = cur / ".carta" / STATUS_FILENAME
+        if candidate.exists():
+            try:
+                return json.loads(candidate.read_text())
+            except Exception:
+                return None
+        parent = cur.parent
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _cwd_from_stdin() -> str:
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return os.getcwd()
+    data = json.loads(raw)
+    return (
+        (data.get("workspace") or {}).get("current_dir")
+        or data.get("cwd")
+        or os.getcwd()
+    )
+
+
+def print_segment() -> None:
+    """Read session JSON from stdin, print the embed segment (or nothing).
+
+    Never raises: any failure results in empty output.
+    """
+    try:
+        cwd = _cwd_from_stdin()
+        status = read_status(cwd)
+        if not status:
+            return
+        now = time.time()
+        state = resolve_state(
+            status, now=now, hostname=socket.gethostname(), pid_alive_fn=_pid_alive
+        )
+        seg = format_segment(status, state, now=now, color=True)
+        if seg:
+            sys.stdout.write(seg)
+    except Exception:
+        return

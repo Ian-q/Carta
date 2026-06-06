@@ -102,3 +102,69 @@ def test_format_color_includes_ansi():
     out = sl.format_segment(st, "running", now=1000.0, color=True)
     assert "\x1b[" in out
     assert "carta 24/47" in _plain(out)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: IO functions
+# ---------------------------------------------------------------------------
+import io
+import json as _json
+import os
+import socket
+import sys
+
+
+def test_read_status_walks_up(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    (tmp_path / ".carta" / "embed-status.json").write_text('{"phase": "running"}')
+    sub = tmp_path / "a" / "b"
+    sub.mkdir(parents=True)
+    assert sl.read_status(sub) == {"phase": "running"}
+
+
+def test_read_status_missing_returns_none(tmp_path):
+    assert sl.read_status(tmp_path) is None
+
+
+def test_read_status_corrupt_returns_none(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    (tmp_path / ".carta" / "embed-status.json").write_text("{not json")
+    assert sl.read_status(tmp_path) is None
+
+
+def test_pid_alive_self_true():
+    assert sl._pid_alive(os.getpid()) is True
+
+
+def test_pid_alive_dead_false():
+    # PID 2**31-1 is essentially never a live process
+    assert sl._pid_alive(2**31 - 1) is False
+
+
+def test_print_segment_running(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".carta").mkdir()
+    status = {
+        "schema": 1, "phase": "running", "host": socket.gethostname(),
+        "pid": os.getpid(), "total": 47, "current_idx": 24,
+        "current_file": "big.pdf", "current_file_started_at": 0.0,
+        "updated_at": 0.0, "finished_at": None, "embedded": 0,
+        "skipped": 0, "errors": 0, "chunks": 0,
+    }
+    (tmp_path / ".carta" / "embed-status.json").write_text(_json.dumps(status))
+    stdin = io.StringIO(_json.dumps({"workspace": {"current_dir": str(tmp_path)}}))
+    monkeypatch.setattr(sys, "stdin", stdin)
+    sl.print_segment()
+    assert "carta 24/47" in _STRIP.sub("", capsys.readouterr().out)
+
+
+def test_print_segment_no_status_is_empty(tmp_path, monkeypatch, capsys):
+    stdin = io.StringIO(_json.dumps({"cwd": str(tmp_path)}))
+    monkeypatch.setattr(sys, "stdin", stdin)
+    sl.print_segment()
+    assert capsys.readouterr().out == ""
+
+
+def test_print_segment_never_raises_on_garbage(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("this is not json"))
+    sl.print_segment()  # must not raise
+    assert capsys.readouterr().out == ""
