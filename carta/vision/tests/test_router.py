@@ -647,3 +647,193 @@ class TestExtractPdfResume:
         # After successful extraction, both pages are recorded in checkpoint.
         out = load_vision_checkpoint(cp, "qwen2.5vl:7b", "glm-ocr:latest")
         assert sorted(out.keys()) == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# vision_routing mode tests (CHANGE 2)
+# ---------------------------------------------------------------------------
+
+def _cfg_routing(mode: str, **extra) -> dict:
+    """Build a cfg dict with a specific vision_routing mode."""
+    base = {
+        "ollama_url": "http://localhost:11434",
+        "vision_routing": mode,
+        "ocr_model": "glm-ocr:latest",
+        "ollama_vision_model": "llava:latest",
+    }
+    base.update(extra)
+    return {"embed": base}
+
+
+class TestVisionRoutingOff:
+    def test_off_returns_empty_for_non_pure_text(self):
+        """mode=off: _route always returns [] regardless of page class."""
+        router = SmartRouter(_cfg_routing("off"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+    def test_off_returns_empty_for_text_with_images(self):
+        router = SmartRouter(_cfg_routing("off"))
+        page = MagicMock()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 2, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+    def test_off_returns_empty_for_flattened(self):
+        router = SmartRouter(_cfg_routing("off"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 3, _profile(PageClass.FLATTENED), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+
+class TestVisionRoutingOcr:
+    def test_ocr_routes_text_with_images_to_ocr_not_vlm(self):
+        """mode=ocr: TEXT_WITH_IMAGES page uses OCR model, not vision model."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="ocr text") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock())
+        # Should have called OCR via _route_structured (OCR path, not VLM)
+        assert mock_call.call_count == 1
+        assert mock_call.call_args[1]["model"] == "glm-ocr:latest"
+        assert len(result) == 1
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_ocr_routes_flattened_to_ocr(self):
+        """mode=ocr: FLATTENED page also goes through OCR only."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 100) as mock_call:
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        # OCR mode forces _route_structured — one OCR call
+        assert mock_call.call_count == 1
+        assert mock_call.call_args[1]["model"] == "glm-ocr:latest"
+
+    def test_ocr_still_skips_pure_text(self):
+        """mode=ocr: PURE_TEXT pages are still skipped (zero model calls)."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.PURE_TEXT), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+
+class TestVisionRoutingVision:
+    def test_vision_routes_structured_to_vlm_not_ocr(self):
+        """mode=vision: STRUCTURED_TEXT page uses VLM, not OCR model."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm text") as mock_call:
+                result = router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        # Should have called VLM via _route_text_with_images
+        assert mock_call.call_count == 1
+        assert mock_call.call_args[1]["model"] == "llava:latest"
+
+    def test_vision_routes_text_with_images_to_vlm_not_ocr(self):
+        """mode=vision: TEXT_WITH_IMAGES page uses VLM (_route_text_with_images), not OCR."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm desc") as mock_call:
+                result = router._route(
+                    page, 2, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock()
+                )
+        # Must route via VLM (_route_text_with_images), not OCR
+        assert mock_call.call_count == 1
+        assert mock_call.call_args[1]["model"] == "llava:latest"
+
+    def test_vision_still_skips_pure_text(self):
+        """mode=vision: PURE_TEXT pages are still skipped."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.PURE_TEXT), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+
+class TestVisionRoutingAuto:
+    def test_auto_preserves_structured_text_ocr(self):
+        """mode=auto: STRUCTURED_TEXT → OCR (unchanged from original behavior)."""
+        router = SmartRouter(_cfg_routing("auto"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="table text") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert mock_call.call_args[1]["model"] == "glm-ocr:latest"
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_auto_preserves_text_with_images_vlm(self):
+        """mode=auto: TEXT_WITH_IMAGES → VLM (unchanged from original behavior)."""
+        router = SmartRouter(_cfg_routing("auto"))
+        page = MagicMock()
+        with patch.object(router, "_extract_image_crops", return_value=[(0, b"img")]):
+            with patch.object(router, "_call_ollama_vision", return_value="img desc") as mock_call:
+                result = router._route(page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock())
+        assert mock_call.call_args[1]["model"] == "llava:latest"
+        assert result[0]["model_used"] == "llava"
+
+    def test_auto_pure_text_still_zero_calls(self):
+        """mode=auto: PURE_TEXT → [] with no model calls (unchanged)."""
+        router = SmartRouter(_cfg_routing("auto"))
+        page = MagicMock()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(page, 1, _profile(PageClass.PURE_TEXT), MagicMock())
+        assert result == []
+        mock_call.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# vision_call_timeout_s threading tests (CHANGE 3)
+# ---------------------------------------------------------------------------
+
+class TestVisionCallTimeout:
+    def test_default_timeout_is_300(self):
+        """_call_ollama_vision signature default must be 300 (not 120)."""
+        import inspect
+        from carta.vision.router import SmartRouter as _SR
+        sig = inspect.signature(_SR._call_ollama_vision)
+        assert sig.parameters["timeout"].default == 300
+
+    def test_configured_timeout_passed_to_call(self):
+        """When vision_call_timeout_s=450, _call_ollama_vision receives timeout=450."""
+        cfg = {"embed": {
+            "ollama_url": "http://localhost:11434",
+            "ocr_model": "glm-ocr:latest",
+            "vision_call_timeout_s": 450,
+        }}
+        router = SmartRouter(cfg)
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="text") as mock_call:
+            router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert mock_call.call_args[1]["timeout"] == 450
+
+    def test_default_config_uses_300_timeout(self):
+        """When vision_call_timeout_s is not set, router defaults to 300."""
+        cfg = {"embed": {
+            "ollama_url": "http://localhost:11434",
+            "ocr_model": "glm-ocr:latest",
+        }}
+        router = SmartRouter(cfg)
+        assert router.vision_call_timeout == 300
+
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="text") as mock_call:
+            router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert mock_call.call_args[1]["timeout"] == 300

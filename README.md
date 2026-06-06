@@ -214,6 +214,67 @@ embed:
 - Visual collections are separate: `{project_name}_visual` (multi-vector) vs `{project_name}_doc` (text)
 - Search returns both text and visual results; visual hits include base64-encoded PNGs
 
+### Scoping heavy visual models
+
+ColPali and the OCR/VLM vision pipeline are expensive. Several config knobs let you control exactly where and how they run.
+
+**`colpali_scoped_paths` — restrict ColPali to specific directories or globs**
+
+By default (`colpali_scoped_paths: []`) ColPali runs on every PDF once `colpali_enabled: true`. Set a non-empty list to restrict it to the directories or file patterns that actually contain visual-rich content:
+
+```yaml
+embed:
+  colpali_enabled: true
+  colpali_scoped_paths:
+    - "docs/reference/datasheets/"   # trailing slash = directory prefix
+    - "docs/diagrams/**/*.pdf"       # ** glob = recursive match
+```
+
+Matching rules:
+- Entries ending with `/` match any file whose path starts with that directory prefix.
+- All other entries are glob patterns: `*` matches within a single path segment; `**` matches across segments (including zero).
+- Empty list (`[]`, the default) means no restriction — all PDFs receive ColPali embedding.
+
+Files outside the configured scopes are silently skipped for ColPali; the normal text-extraction pipeline still runs on them.
+
+**`colpali_device: mps` — Apple Silicon acceleration**
+
+Set `colpali_device: "mps"` on Apple Silicon Macs to run ColPali on the GPU via Metal. Falls back to `cpu` automatically if MPS is unavailable.
+
+**`vision_routing` — OCR/VLM routing mode**
+
+Controls which model pipeline the smart router uses for non-pure-text pages:
+
+| Mode | Behaviour |
+|------|-----------|
+| `auto` (default) | Heuristic routing: STRUCTURED_TEXT→OCR, TEXT_WITH_IMAGES→VLM, FLATTENED→OCR→VLM fallback |
+| `ocr` | Force every non-pure-text page through OCR only; never call the VLM |
+| `vision` | Force every non-pure-text page through the VLM only; never call OCR |
+| `off` | No model calls at all — every page is treated as text-only |
+
+```yaml
+embed:
+  vision_routing: "ocr"   # good default when glm-ocr handles your content well
+```
+
+**`vision_call_timeout_s` — per-call timeout**
+
+The default is 300 seconds (raised from the old 120 s hardcoded value). Dense OCR tables can take several minutes on slower hardware; raise this if you see timeout errors:
+
+```yaml
+embed:
+  vision_call_timeout_s: 600   # 10 minutes for very dense pages
+```
+
+**Recommended ColQwen successor model**
+
+`vidore/colqwen2.5-v0.2` is the current recommended ColQwen successor. It loads via the same native `ColQwen2` transformers path and generally outperforms `colqwen2-v1.0-hf` on technical documents. Swap it in without any other config changes:
+
+```yaml
+embed:
+  colpali_model: "vidore/colqwen2.5-v0.2"
+```
+
 ---
 
 ## Issue lifecycle
