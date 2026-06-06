@@ -56,7 +56,7 @@ class TestConfigVisionModelDefault:
     def test_config_vision_model_default(self):
         """DEFAULTS['embed']['ollama_vision_model'] must point at the current vision model."""
         from carta.config import DEFAULTS
-        assert DEFAULTS["embed"]["ollama_vision_model"] == "qwen2.5vl:7b"
+        assert DEFAULTS["embed"]["ollama_vision_model"] == "qwen3-vl:8b"
 
 
 # ---------------------------------------------------------------------------

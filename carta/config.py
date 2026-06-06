@@ -67,6 +67,8 @@ DEFAULTS = {
         "colpali_device": "cpu",  # "cpu", "cuda", "mps"
         "colpali_batch_size": 1,  # pages per batch (1 for CPU)
         "colpali_sidecar_path": ".carta/visual_cache/",  # where to store page PNGs
+        "colpali_scoped_paths": [],  # restrict ColPali to these repo-relative globs/dirs; [] = all PDFs
+        "vision_call_timeout_s": 300,  # seconds per Ollama vision/OCR call (was hardcoded 120)
     },
     "proactive_recall": {
         "high_threshold": 0.85,
