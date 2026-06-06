@@ -260,3 +260,24 @@ def uninstall_from_script(script_path: Path) -> str:
     trailing = "\n" if text.endswith("\n") else ""
     script_path.write_text("\n".join(out) + trailing)
     return "removed"
+
+
+def offer_install(settings_path=None, *, interactive: bool = True) -> str:
+    """Locate the user's status-line script and offer to wire in the segment.
+
+    Returns 'installed' | 'already' | 'declined' | 'unsupported' | 'unavailable'.
+    'unavailable' means no wireable script was found (nothing changed).
+    """
+    if settings_path is None:
+        settings_path = Path.home() / ".claude" / "settings.json"
+    script = find_statusline_script(settings_path)
+    if script is None:
+        return "unavailable"
+
+    if not interactive:
+        return "declined"
+
+    def _confirm(msg):
+        return input(f"{msg} [y/N] ").strip().lower() == "y"
+
+    return install_into_script(script, confirm=_confirm)

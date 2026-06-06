@@ -91,3 +91,22 @@ def test_find_statusline_script_missing_key_returns_none(tmp_path):
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({}))
     assert sl.find_statusline_script(settings) is None
+
+
+def test_offer_install_declined_noop(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(
+        {"statusLine": {"type": "command", "command": f"bash {script}"}}
+    ))
+    # auto-decline the prompt
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    result = sl.offer_install(settings_path=settings, interactive=True)
+    assert result == "declined"
+    assert sl.MARKER_START not in script.read_text()
+
+
+def test_offer_install_no_script_returns_unavailable(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({}))
+    assert sl.offer_install(settings_path=settings, interactive=True) == "unavailable"

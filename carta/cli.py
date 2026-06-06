@@ -383,6 +383,23 @@ def cmd_init(args):
     _check_path_conflict()
     from carta.install.bootstrap import run_bootstrap
     run_bootstrap(Path.cwd(), skip_skills=getattr(args, "skip_skills", False))
+
+    # Offer to wire the embed-progress segment into the user's status line.
+    try:
+        from carta import statusline
+        result = statusline.offer_install(interactive=sys.stdin.isatty())
+        if result == "installed":
+            print("✓ Wired carta embed-progress into your status line.")
+        elif result == "unsupported":
+            print(
+                "Note: couldn't auto-wire the status line; add this before your "
+                'script prints $parts:\n'
+                '  seg=$(command -v carta >/dev/null && carta statusline <<<"$input" 2>/dev/null)\n'
+                '  [ -n "$seg" ] && parts="$parts │ $seg"'
+            )
+    except Exception:
+        pass  # status-line wiring is a convenience, never block init
+
     _notify_if_update()
 
 def cmd_statusline(args):
