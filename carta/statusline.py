@@ -9,6 +9,8 @@ nothing.
 
 import json
 import os
+import re
+import shlex
 import socket
 import sys
 import time
@@ -166,3 +168,95 @@ def print_segment() -> None:
             sys.stdout.write(seg)
     except Exception:
         return
+
+
+# ---------------------------------------------------------------------------
+# Wiring helpers (Task 6): install / uninstall / find
+# ---------------------------------------------------------------------------
+
+MARKER_START = "# >>> carta statusline >>>"
+MARKER_END = "# <<< carta statusline <<<"
+
+_SNIPPET_LINES = [
+    MARKER_START,
+    'seg=$(command -v carta >/dev/null && carta statusline <<<"$input" 2>/dev/null)',
+    '[ -n "$seg" ] && parts="$parts │ $seg"',
+    MARKER_END,
+]
+
+_OUTPUT_RE = re.compile(r"^\s*(echo|printf)\b.*\bparts\b")
+
+
+def find_statusline_script(settings_path: Path):
+    """Return the Path to a wireable status-line script, or None.
+
+    Only command-type statusLines that reference an existing .sh/.bash file
+    are wireable; inline commands and missing files return None.
+    """
+    try:
+        data = json.loads(Path(settings_path).read_text())
+    except Exception:
+        return None
+    sl_cfg = data.get("statusLine") or {}
+    if sl_cfg.get("type") != "command":
+        return None
+    cmd = sl_cfg.get("command", "")
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+    for tok in tokens:
+        p = Path(os.path.expanduser(tok))
+        if p.suffix in (".sh", ".bash") and p.exists():
+            return p
+    return None
+
+
+def install_into_script(script_path: Path, *, confirm) -> str:
+    """Insert the carta segment block before the script's output line.
+
+    Returns one of: 'installed', 'already', 'declined', 'unsupported'.
+    confirm(message)->bool gates the edit (prompt in real use, lambda in tests).
+    """
+    script_path = Path(script_path)
+    text = script_path.read_text()
+    if MARKER_START in text:
+        return "already"
+    if not re.search(r"\binput\b", text) or "parts" not in text:
+        return "unsupported"
+    lines = text.splitlines()
+    out_idx = None
+    for i, line in enumerate(lines):
+        if _OUTPUT_RE.match(line):
+            out_idx = i  # take the LAST matching output line
+    if out_idx is None:
+        return "unsupported"
+    if not confirm(f"Wire carta progress segment into {script_path}?"):
+        return "declined"
+    script_path.with_name(script_path.name + ".bak").write_text(text)
+    new_lines = lines[:out_idx] + _SNIPPET_LINES + lines[out_idx:]
+    trailing = "\n" if text.endswith("\n") else ""
+    script_path.write_text("\n".join(new_lines) + trailing)
+    return "installed"
+
+
+def uninstall_from_script(script_path: Path) -> str:
+    """Remove the carta marker block. Returns 'removed' or 'absent'."""
+    script_path = Path(script_path)
+    text = script_path.read_text()
+    if MARKER_START not in text:
+        return "absent"
+    out, skipping = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == MARKER_START:
+            skipping = True
+            continue
+        if stripped == MARKER_END:
+            skipping = False
+            continue
+        if not skipping:
+            out.append(line)
+    trailing = "\n" if text.endswith("\n") else ""
+    script_path.write_text("\n".join(out) + trailing)
+    return "removed"
