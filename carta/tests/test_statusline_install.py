@@ -110,3 +110,14 @@ def test_offer_install_no_script_returns_unavailable(tmp_path):
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({}))
     assert sl.offer_install(settings_path=settings, interactive=True) == "unavailable"
+
+
+def test_offer_install_non_interactive_declines(tmp_path):
+    script = _write_script(tmp_path)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps(
+        {"statusLine": {"type": "command", "command": f"bash {script}"}}
+    ))
+    result = sl.offer_install(settings_path=settings, interactive=False)
+    assert result == "declined"
+    assert sl.MARKER_START not in script.read_text()

@@ -405,7 +405,6 @@ def cmd_init(args):
 def cmd_statusline(args):
     """Print the embed-progress status-line segment, or install/uninstall wiring."""
     from carta import statusline
-    from pathlib import Path
 
     if getattr(args, "install", False) or getattr(args, "uninstall", False):
         settings_path = Path.home() / ".claude" / "settings.json"
@@ -635,11 +634,12 @@ def main():
         "statusline",
         help="Print the embed-progress status-line segment (or --install/--uninstall wiring)",
     )
-    statusline_p.add_argument(
+    statusline_grp = statusline_p.add_mutually_exclusive_group()
+    statusline_grp.add_argument(
         "--install", action="store_true",
         help="Wire the carta segment into your Claude Code status-line script",
     )
-    statusline_p.add_argument(
+    statusline_grp.add_argument(
         "--uninstall", action="store_true",
         help="Remove the carta segment from your status-line script",
     )

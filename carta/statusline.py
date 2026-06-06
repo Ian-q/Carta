@@ -22,7 +22,7 @@ from carta.embed.status import STATUS_FILENAME
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _NAME_W = 28
 FLASH_WINDOW_S = 30
-STALE_WINDOW_S = 60
+STALE_WINDOW_S = 180
 
 # ANSI (kept dim/subtle to match typical status lines)
 _RESET = "\033[0m"
@@ -89,7 +89,7 @@ def format_segment(status: dict, state: str, *, now: float, color: bool = True) 
         started = status.get("current_file_started_at") or now
         elapsed = _fmt_elapsed(now - float(started))
         body = f"carta {idx}/{total}  {name}  {elapsed}"
-        return f"{c(_CYAN, spin)} {body}"
+        return f"{c(_CYAN, spin)} {c(_DIM, body)}"
     if state == "done":
         files = status.get("embedded", 0) + status.get("skipped", 0)
         chunks = _fmt_chunks(status.get("chunks", 0))

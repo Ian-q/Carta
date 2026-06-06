@@ -1007,3 +1007,30 @@ class TestRunEmbedStatusWriter:
                "modules": {}, "docs_root": "docs/"}
         pipeline.run_embed(tmp_path, cfg, verbose=False, progress=None)
         assert not (tmp_path / ".carta" / STATUS_FILENAME).exists()
+
+    def test_run_embed_status_failed_on_exception(self, tmp_path, monkeypatch):
+        """run_embed should write phase=failed when an exception escapes the loop body."""
+        import json
+        from pathlib import Path
+        from carta.embed import pipeline
+        from carta.embed.status import STATUS_FILENAME
+
+        (tmp_path / ".carta").mkdir()
+        self._stub_pipeline(monkeypatch)
+        # One pending file so the loop body is entered.
+        monkeypatch.setattr(
+            pipeline, "discover_pending_files",
+            lambda *a, **k: [{"file_path": tmp_path / "doc.md",
+                              "sidecar_path": tmp_path / "doc.embed-meta.yaml"}],
+        )
+        # Raise inside the loop body at is_lfs_pointer — first call after file_start.
+        monkeypatch.setattr(
+            pipeline, "is_lfs_pointer",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        cfg = {"qdrant_url": "http://x", "embed": {"status_file": True},
+               "modules": {}, "docs_root": "docs/"}
+        with pytest.raises(RuntimeError):
+            pipeline.run_embed(tmp_path, cfg, verbose=False, progress=None)
+        data = json.loads((tmp_path / ".carta" / STATUS_FILENAME).read_text())
+        assert data["phase"] == "failed"
