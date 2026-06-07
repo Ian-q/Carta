@@ -31,7 +31,8 @@ from carta.embed.embed import (
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
-from carta.embed.visual_queue import add_pending_pages, VISUAL_PENDING_KEY, queue_summary, format_summary_line
+from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
+from carta.embed.colpali import is_colpali_available
 from carta.vision.classifier import PageClass, PageAnalyzer
 
 _IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
@@ -712,6 +713,194 @@ def _embed_visual_pages_colpali(
             flush=True,
         )
         raise
+
+
+def _discover_visual_pending(repo_root: Path) -> list[tuple]:
+    """Return [(sidecar_path, sidecar_dict)] for sidecars with non-empty visual_pending."""
+    out = []
+    sidecars_dir = repo_root / ".carta" / "sidecars"
+    if not sidecars_dir.is_dir():
+        return out
+    for sc_path in sidecars_dir.rglob("*.embed-meta.yaml"):
+        sc = read_sidecar(sc_path)
+        if sc and (sc.get(VISUAL_PENDING_KEY) or []):
+            out.append((sc_path, sc))
+    return out
+
+
+def _visual_embed_one_page(
+    sidecar: dict,
+    page: int,
+    cfg: dict,
+    client,
+    repo_root: Path,
+    verbose: bool = False,
+) -> bool:
+    """OCR text + ColPali for a single 1-indexed page. Raise on failure.
+
+    (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
+    (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
+        → upsert_visual_pages (_visual collection).
+
+    Raises on any failure so the caller leaves the page in visual_pending.
+    """
+    from carta.vision.router import SmartRouter
+    from carta.embed.colpali import ColPaliEmbedder
+
+    try:
+        import fitz as _fitz
+    except ImportError as e:
+        raise RuntimeError("PyMuPDF (fitz) is required for visual drainer") from e
+
+    current_path = sidecar.get("current_path", "")
+    file_path = repo_root / current_path
+    slug = sidecar.get("slug", file_path.stem)
+    embed_cfg = cfg.get("embed", {}) or {}
+    chunking = cfg.get("embed", {}).get("chunking", {}) or {}
+    max_tokens = chunking.get("max_tokens", 400)
+
+    # ── (a) GLM-OCR text → hybrid text index ─────────────────────────────────
+    router = SmartRouter(cfg)
+    from carta.mupdf_util import mupdf_quiet
+    with mupdf_quiet():
+        try:
+            doc = _fitz.open(str(file_path))
+        except Exception as exc:
+            raise RuntimeError(f"Cannot open PDF {file_path}: {exc}") from exc
+        try:
+            if page < 1 or page > len(doc):
+                raise RuntimeError(
+                    f"Page {page} out of range (PDF has {len(doc)} pages)"
+                )
+            fitz_page = doc[page - 1]
+            profile = router.analyzer.analyze(fitz_page)
+            chunks = router._route(fitz_page, page, profile, doc)
+        finally:
+            doc.close()
+
+    if chunks:
+        image_chunks = []
+        for chunk in chunks:
+            for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
+                image_chunks.append({
+                    "slug": slug,
+                    "file_path": current_path,
+                    "doc_type": "image_description",
+                    "page_num": page,
+                    "image_index": chunk.get("image_index", 0),
+                    "chunk_index": len(image_chunks),
+                    "text": part_text,
+                    "model_used": chunk.get("model_used", "glm-ocr"),
+                    "content_type": chunk.get("content_type", "visual"),
+                    "source": "visual_drainer",
+                })
+        upsert_chunks(image_chunks, cfg, client=client)
+        if verbose:
+            print(
+                f"    visual: page {page} OCR → {len(image_chunks)} chunk(s)",
+                flush=True,
+            )
+
+    # ── (b) ColPali → _visual collection ─────────────────────────────────────
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
+    device = embed_cfg.get("colpali_device", "cpu")
+    batch_size = embed_cfg.get("colpali_batch_size", 1)
+    cache_dir_raw = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
+    cache_dir_path = Path(cache_dir_raw)
+    if not cache_dir_path.is_absolute():
+        cache_dir_path = repo_root / cache_dir_path
+
+    embedder = ColPaliEmbedder(
+        model_name=model_name,
+        device=device,
+        batch_size=batch_size,
+        cache_dir=str(cache_dir_path),
+    )
+    page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
+    if page_results:
+        result = page_results[0]
+        png_path = embedder.save_page_cache(file_path, page, result["png_bytes"])
+        try:
+            png_rel = str(png_path.relative_to(repo_root))
+        except ValueError:
+            png_rel = str(png_path)
+        visual_pages = [{
+            "slug": slug,
+            "file_path": current_path,
+            "page_num": page,
+            "vectors": result["vectors"],
+            "png_path": png_rel,
+            "doc_type": "visual_page",
+            "extraction_model": model_name,
+            "source": "visual_drainer",
+        }]
+        upsert_visual_pages(visual_pages, cfg, client=client)
+        if verbose:
+            print(f"    visual: page {page} ColPali → upserted", flush=True)
+
+    return True
+
+
+def run_visual_embed(
+    repo_root: Path,
+    cfg: dict,
+    verbose: bool = False,
+    progress=None,
+) -> dict:
+    """Drain the visual_pending queue: OCR text + ColPali per page, one at a time.
+
+    Discovers every sidecar with a non-empty ``visual_pending`` list, then for
+    each pending page runs (a) glm-ocr text extraction → hybrid text index and
+    (b) ColPali page-image embedding → ``_visual`` collection.  Each page is
+    checkpointed immediately after success (``visual_pending → visual_done``);
+    a page that errors is left pending for the next run.
+
+    Args:
+        repo_root: Repo root (``Path``).
+        cfg: Carta config dict.
+        verbose: Print per-page progress when True.
+        progress: Optional Progress UI object (unused; reserved for future TUI).
+
+    Returns:
+        Summary dict: ``{"pages_embedded": int, "pages_failed": int, "files": int}``
+        When ColPali is unavailable the dict also contains ``"status": "visual_unavailable"``.
+    """
+    summary: dict = {"pages_embedded": 0, "pages_failed": 0, "files": 0}
+
+    if not is_colpali_available():
+        print(
+            "carta embed --visual: the [visual] extra (torch+transformers) is not "
+            "installed. Install with: pip install 'carta-cc[visual]'  (may require a "
+            "Python 3.12 venv if torch wheels are unavailable for the current "
+            "interpreter).",
+            flush=True,
+        )
+        summary["status"] = "visual_unavailable"
+        return summary
+
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+    queued = _discover_visual_pending(repo_root)
+    summary["files"] = len(queued)
+
+    for sc_path, sc in queued:
+        for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
+            try:
+                _visual_embed_one_page(sc, page, cfg, client, repo_root, verbose)
+                move_to_done(sc, page)
+                _update_sidecar(sc_path, {
+                    VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
+                    VISUAL_DONE_KEY: sc[VISUAL_DONE_KEY],
+                })
+                summary["pages_embedded"] += 1
+            except Exception as e:
+                summary["pages_failed"] += 1
+                print(
+                    f"  visual: page {page} of {sc.get('current_path')} failed: {e} "
+                    f"(left pending)",
+                    flush=True,
+                )
+
+    return summary
 
 
 def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
