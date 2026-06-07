@@ -1011,6 +1011,11 @@ def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
     Fetches `prefetch_limit` candidates from each of the dense and sparse
     indexes, then fuses them with Reciprocal Rank Fusion and returns the
     top `top_n` results.
+
+    `top_n` controls the Qdrant fusion `limit` (i.e. how many fused results
+    to return).  When reranking is enabled, callers should pass `fetch_limit`
+    (= candidate_pool) here so that the reranker has a wide enough pool to
+    promote lower-ranked relevant documents.
     """
     sv = embed_sparse_query(query, model_name=bm25_model)
     return client.query_points(
@@ -1045,7 +1050,16 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
 
     top_n = cfg.get("search", {}).get("top_n", 5)
     repo_root = Path(find_config()).parent
-    
+
+    # Compute effective retrieval depth.
+    # When reranking is enabled, fetch candidate_pool docs per collection so
+    # the cross-encoder has a wide enough pool to promote lower-ranked relevant
+    # documents.  When reranking is off, fetch exactly top_n (unchanged).
+    rr_cfg = cfg.get("search", {}).get("rerank", {})
+    rerank_enabled = rr_cfg.get("enabled", False)
+    candidate_pool = rr_cfg.get("candidate_pool", 30)
+    fetch_limit = max(candidate_pool, top_n) if rerank_enabled else top_n
+
     # Get all collections to search
     try:
         collections = get_search_collections(cfg, "repo")
@@ -1092,7 +1106,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                         collection_name=coll_name,
                         query=query_vector_list,
                         using="colpali",
-                        limit=top_n,
+                        limit=fetch_limit,
                         with_payload=True,
                     )
                     
@@ -1118,9 +1132,11 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                 is_hybrid = collection_is_hybrid(client, coll_name)
 
                 if hybrid_cfg.get("enabled", False) and is_hybrid:
-                    # Hybrid BM25+dense with RRF fusion
+                    # Hybrid BM25+dense with RRF fusion.
+                    # Pass fetch_limit as the fusion limit so the reranker
+                    # receives a full candidate_pool rather than just top_n.
                     response = _hybrid_query_collection(
-                        client, coll_name, query, query_vec, top_n,
+                        client, coll_name, query, query_vec, fetch_limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
                     )
@@ -1130,7 +1146,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                         collection_name=coll_name,
                         query=query_vec,
                         using=DENSE_VECTOR_NAME,
-                        limit=top_n,
+                        limit=fetch_limit,
                         with_payload=True,
                     )
                 else:
@@ -1138,7 +1154,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                     response = client.query_points(
                         collection_name=coll_name,
                         query=query_vec,
-                        limit=top_n,
+                        limit=fetch_limit,
                         with_payload=True,
                     )
                 
@@ -1168,10 +1184,9 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     all_results.sort(key=lambda x: x["score"], reverse=True)
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
-    rr_cfg = cfg.get("search", {}).get("rerank", {})
-    if rr_cfg.get("enabled", False) and all_results:
+    if rerank_enabled and all_results:
         from carta.search.rerank import rerank_hits
-        pool = all_results[: rr_cfg.get("candidate_pool", 30)]
+        pool = all_results[:candidate_pool]
         # rerank_hits reads chunk text from key "text"; run_search stores it as "excerpt"
         for h in pool:
             h["text"] = h.get("excerpt", "")
