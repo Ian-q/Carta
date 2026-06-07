@@ -107,3 +107,10 @@ def test_update_check_can_be_disabled(tmp_path):
     cfg_path.write_text(yaml.dump(config))
     cfg = load_config(cfg_path)
     assert cfg["update_check"] is False
+
+
+def test_two_pass_visual_defaults():
+    from carta.config import DEFAULTS
+    e = DEFAULTS["embed"]
+    assert e["two_pass_visual"] is True
+    assert e["visual_timeout_s"] == 3600

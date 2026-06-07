@@ -275,6 +275,70 @@ embed:
   colpali_model: "vidore/colqwen2.5-v0.2"
 ```
 
+### Two-pass visual embedding
+
+Running glm-ocr and ColPali inline during a normal `carta embed` adds minutes per image-heavy page and blocks the fast text-extraction pass. The two-pass workflow separates these concerns:
+
+**Pass 1 — fast text:**
+
+```bash
+carta embed
+```
+
+Extracts text from all files as normal. Pages classified as `TEXT_WITH_IMAGES` or `FLATTENED` are recorded in the sidecar's `visual_pending` list instead of being processed inline. At the end of the run, Carta prints a nudge:
+
+```
+Visual queue: 42 page(s) across 18 file(s) await visual embedding. Run carta embed --visual to process them.
+```
+
+**Pass 2 — slow, resumable visual processing:**
+
+```bash
+carta embed --visual
+```
+
+Drains the visual queue. For each pending page it runs:
+1. glm-ocr text extraction → ingested into the hybrid text index
+2. ColPali page-image embedding → stored in the `_visual` collection
+
+Each page is checkpointed (`visual_pending → visual_done`) as it completes, so the pass is resumable — interrupt at any time and re-run; only unfinished pages are retried.
+
+**Typical workflow:**
+
+```bash
+carta embed              # fast text; queues image-heavy pages, prints the nudge
+carta embed --visual     # slow, resumable: OCR text + ColPali for queued pages
+```
+
+**Configuration:**
+
+```yaml
+embed:
+  two_pass_visual: true      # default true — set false to revert to inline visual processing
+  visual_timeout_s: 3600     # per-file timeout for the --visual pass (default: 3600 s)
+```
+
+**Requirements for `--visual`:**
+
+The `--visual` pass requires the optional `[visual]` extra (torch + transformers for ColPali):
+
+```bash
+pip install 'carta-cc[visual]'
+```
+
+If the extra is absent, `carta embed --visual` prints install guidance and exits cleanly — the text corpus is unaffected.
+
+> **Python version note:** torch wheels may not be available for all Python versions. If installation fails, try a Python 3.12 venv: `python3.12 -m venv .venv && source .venv/bin/activate && pip install 'carta-cc[visual]'`
+
+**Scoping and memory:**
+
+Use `colpali_scoped_paths` (see above) to restrict which directories receive visual treatment. To avoid memory pressure from glm-ocr and ColPali loading simultaneously, set the Ollama concurrency limit before running the visual pass:
+
+```bash
+export OLLAMA_MAX_LOADED_MODELS=1
+carta embed --visual
+```
+
 ---
 
 ## Issue lifecycle

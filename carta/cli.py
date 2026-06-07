@@ -193,6 +193,23 @@ def cmd_embed(args):
     if timeout_override is not None:
         cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
 
+    # --visual: slow pass-2 drainer — OCR text + ColPali per pending page, then exit.
+    # `is True` (not `if args.visual`) — rejects truthy MagicMocks in tests.
+    if getattr(args, "visual", False) is True:
+        from carta.embed.pipeline import run_visual_embed
+        repo_root = cfg_path.parent.parent
+        summary = run_visual_embed(repo_root, cfg, verbose=True)
+        status = summary.get("status", "")
+        if status == "visual_unavailable":
+            sys.exit(1)
+        print(
+            f"carta embed --visual: {summary['pages_embedded']} page(s) embedded, "
+            f"{summary['pages_failed']} failed, across {summary['files']} file(s).",
+            flush=True,
+        )
+        _notify_if_update(cfg_path, cfg)
+        sys.exit(1 if summary["pages_failed"] else 0)
+
     # Suggest a vision_workers value that fits this machine's RAM (interactive only).
     cfg = _maybe_tune_workers(cfg, skip=getattr(args, "no_tune", False))
 
@@ -516,6 +533,11 @@ def main():
         "--no-tune",
         action="store_true",
         help="Skip the RAM-based vision_workers tuning prompt.",
+    )
+    embed_p.add_argument(
+        "--visual",
+        action="store_true",
+        help="Run the slow visual pass: drain visual_pending pages (OCR text + ColPali).",
     )
 
     audit_p = sub.add_parser(
