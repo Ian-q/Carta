@@ -194,6 +194,7 @@ def cmd_embed(args):
         cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
 
     # --visual: slow pass-2 drainer — OCR text + ColPali per pending page, then exit.
+    # `is True` (not `if args.visual`) — rejects truthy MagicMocks in tests.
     if getattr(args, "visual", False) is True:
         from carta.embed.pipeline import run_visual_embed
         repo_root = cfg_path.parent.parent

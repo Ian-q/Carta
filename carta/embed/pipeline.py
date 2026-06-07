@@ -632,7 +632,7 @@ def _embed_visual_pages_colpali(
 
     # Get ColPali config
     embed_cfg = cfg.get("embed", {})
-    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0")
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
     device = embed_cfg.get("colpali_device", "cpu")
     batch_size = embed_cfg.get("colpali_batch_size", 1)
     cache_dir = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
@@ -728,25 +728,48 @@ def _discover_visual_pending(repo_root: Path) -> list[tuple]:
     return out
 
 
+def _visual_chunk_index_pass2(page: int, i: int) -> str:
+    """Return the chunk_index token used for pass-2 visual/OCR text chunks.
+
+    Pass-2 chunks set ``chunk_index`` to this string (e.g. ``"visual:1:0"``).
+    ``upsert_chunks`` then derives the Qdrant point ID via
+    ``_point_id(slug, chunk_index)`` → ``md5("{slug}:visual:{page}:{i}")``.
+
+    This namespace is structurally disjoint from pass-1 text chunks, which
+    always use integer chunk_index values (e.g. ``md5("{slug}:0")``).  An
+    integer can never equal the string ``"visual:{page}:{i}"``, so collision
+    between pass-1 and pass-2 chunks for the same slug is impossible by
+    construction.
+    """
+    return f"visual:{page}:{i}"
+
+
 def _visual_embed_one_page(
     sidecar: dict,
     page: int,
     cfg: dict,
     client,
     repo_root: Path,
+    router,
+    embedder,
     verbose: bool = False,
 ) -> bool:
     """OCR text + ColPali for a single 1-indexed page. Raise on failure.
 
     (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
+        Pass-2 chunks receive point IDs from _visual_point_id_pass2() so they are
+        disjoint from pass-1 text chunks for the same slug.
     (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
         → upsert_visual_pages (_visual collection).
 
+    ``router`` and ``embedder`` are constructed ONCE by run_visual_embed and
+    passed in; this function must NOT re-construct them.
+
+    NOTE: the PDF is opened twice per page (once for OCR, once for ColPali
+    rasterisation) — a known inefficiency acceptable for this slow pass.
+
     Raises on any failure so the caller leaves the page in visual_pending.
     """
-    from carta.vision.router import SmartRouter
-    from carta.embed.colpali import ColPaliEmbedder
-
     try:
         import fitz as _fitz
     except ImportError as e:
@@ -760,7 +783,6 @@ def _visual_embed_one_page(
     max_tokens = chunking.get("max_tokens", 400)
 
     # ── (a) GLM-OCR text → hybrid text index ─────────────────────────────────
-    router = SmartRouter(cfg)
     from carta.mupdf_util import mupdf_quiet
     with mupdf_quiet():
         try:
@@ -782,13 +804,17 @@ def _visual_embed_one_page(
         image_chunks = []
         for chunk in chunks:
             for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
+                i = len(image_chunks)
                 image_chunks.append({
                     "slug": slug,
                     "file_path": current_path,
                     "doc_type": "image_description",
                     "page_num": page,
                     "image_index": chunk.get("image_index", 0),
-                    "chunk_index": len(image_chunks),
+                    # Use a pass-2-specific chunk_index token so the Qdrant point
+                    # ID (derived by upsert_chunks as md5("{slug}:{chunk_index}"))
+                    # is disjoint from pass-1 text chunks (which use integer indices).
+                    "chunk_index": _visual_chunk_index_pass2(page, i),
                     "text": part_text,
                     "model_used": chunk.get("model_used", "glm-ocr"),
                     "content_type": chunk.get("content_type", "visual"),
@@ -803,19 +829,11 @@ def _visual_embed_one_page(
 
     # ── (b) ColPali → _visual collection ─────────────────────────────────────
     model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
-    device = embed_cfg.get("colpali_device", "cpu")
-    batch_size = embed_cfg.get("colpali_batch_size", 1)
     cache_dir_raw = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
     cache_dir_path = Path(cache_dir_raw)
     if not cache_dir_path.is_absolute():
         cache_dir_path = repo_root / cache_dir_path
 
-    embedder = ColPaliEmbedder(
-        model_name=model_name,
-        device=device,
-        batch_size=batch_size,
-        cache_dir=str(cache_dir_path),
-    )
     page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
     if page_results:
         result = page_results[0]
@@ -882,10 +900,29 @@ def run_visual_embed(
     queued = _discover_visual_pending(repo_root)
     summary["files"] = len(queued)
 
+    # Construct router and embedder ONCE for the entire drain — not per page.
+    from carta.vision.router import SmartRouter
+    from carta.embed.colpali import ColPaliEmbedder
+    embed_cfg = cfg.get("embed", {}) or {}
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
+    device = embed_cfg.get("colpali_device", "cpu")
+    batch_size = embed_cfg.get("colpali_batch_size", 1)
+    cache_dir_raw = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
+    cache_dir_path = Path(cache_dir_raw)
+    if not cache_dir_path.is_absolute():
+        cache_dir_path = repo_root / cache_dir_path
+    router = SmartRouter(cfg)
+    embedder = ColPaliEmbedder(
+        model_name=model_name,
+        device=device,
+        batch_size=batch_size,
+        cache_dir=str(cache_dir_path),
+    )
+
     for sc_path, sc in queued:
         for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
             try:
-                _visual_embed_one_page(sc, page, cfg, client, repo_root, verbose)
+                _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
                 move_to_done(sc, page)
                 _update_sidecar(sc_path, {
                     VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
