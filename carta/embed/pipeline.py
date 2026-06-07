@@ -1414,7 +1414,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                 if not embed_cfg.get("colpali_enabled", False):
                     continue
                     
-                model_name = embed_cfg.get("colpali_model", "vidore/colpali-v1.3-hf")
+                model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
                 device = embed_cfg.get("colpali_device", "cpu")
                 
                 try:
