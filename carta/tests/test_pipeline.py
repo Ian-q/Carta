@@ -477,6 +477,11 @@ class TestVisionIntegration:
         """_embed_one_file calls extract_image_descriptions_intelligent for PDF files."""
         repo_root, cfg = temp_repo
 
+        # Disable two_pass_visual so the inline VLM/vision path is exercised.
+        # (two_pass_visual=True routes image-heavy pages to deferred pass-2 and skips
+        # inline vision entirely — that behaviour is tested in test_pass1_marking.py.)
+        cfg["embed"]["two_pass_visual"] = False
+
         # Create a test PDF file
         docs_dir = repo_root / "docs"
         docs_dir.mkdir()

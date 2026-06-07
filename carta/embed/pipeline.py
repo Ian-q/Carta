@@ -18,7 +18,7 @@ from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, find_config
-from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text, _estimate_tokens
+from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import (
     ensure_collection,
     upsert_chunks,
@@ -301,8 +301,27 @@ def _embed_one_file(
         progress.step(f"extracting {file_path.suffix} text")
     elif verbose:
         print(f"    extracting {file_path.suffix} text...", flush=True)
+    # For PDFs with two_pass_visual enabled, classify pages in the SAME fitz pass as
+    # text extraction — avoid opening the PDF twice.
+    _page_classes_from_extraction: list | None = None  # populated for PDFs when two_pass_visual is on
     if file_path.suffix == ".md":
         pages, frontmatter_meta = extract_markdown_text(file_path)
+    elif file_path.suffix == ".pdf" and cfg.get("embed", {}).get("two_pass_visual", True):
+        try:
+            analyzer = PageAnalyzer(cfg)
+            pages, _page_classes_from_extraction = extract_pdf_text_and_classify(file_path, analyzer)
+        except Exception as _cls_exc:
+            # Classification failed: fall back to text-only extraction and skip inline vision
+            # (fail closed — do not escalate to the heavy VLM path).
+            print(
+                f"Warning: two_pass_visual page classification failed for {file_path}: {_cls_exc}; "
+                f"pages left unclassified — skipping inline vision for this file",
+                file=sys.stderr,
+                flush=True,
+            )
+            pages = extract_pdf_text(file_path)
+            _page_classes_from_extraction = None  # signals: skip both inline vision AND two-pass queue
+        frontmatter_meta = {}
     else:
         pages = extract_pdf_text(file_path)
         frontmatter_meta = {}
@@ -359,32 +378,29 @@ def _embed_one_file(
     _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
 
     if file_path.suffix == ".pdf":
-        # Two-pass visual: when enabled, classify pages cheaply and queue image-heavy
-        # ones for deferred visual embedding instead of running inline VLM/ColPali.
-        # Pure-text / structured-text pages still embed as normal today.
-        # Text extraction (extract_pdf_text above) already ran for all pages — no data lost.
+        # Two-pass visual: classify pages cheaply and queue image-heavy ones for deferred
+        # visual embedding instead of running inline VLM/ColPali.
+        # Classification was already performed during text extraction above (single fitz pass).
+        # _page_classes_from_extraction is:
+        #   - a list[PageClass]  → classification succeeded; use two-pass path
+        #   - None               → two_pass_visual is off OR classification failed (fail closed:
+        #                          skip inline vision; no heavy path for this file)
         two_pass_visual = cfg.get("embed", {}).get("two_pass_visual", True)
-        if two_pass_visual:
-            try:
-                import fitz
-                from carta.mupdf_util import mupdf_quiet
-                analyzer = PageAnalyzer(cfg)
-                with mupdf_quiet():
-                    _fitz_doc = fitz.open(str(file_path))
-                    _page_classes = [analyzer.analyze(p).page_class for p in _fitz_doc]
-                    _fitz_doc.close()
-                _visual_queue_updates = _mark_or_collect_visual_pages(_page_classes, cfg)
-            except Exception as _exc:
-                # Fail-open: if classification errors, fall through to inline vision
-                print(
-                    f"Warning: two_pass_visual page classification failed for {file_path}: {_exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                two_pass_visual = False
-                _visual_queue_updates = {}
+        # _skip_inline_vision: True when we must NOT fall through to ColPali/VLM.
+        # Set True when two_pass_visual queued pages normally, OR when classification
+        # failed (fail closed — never escalate to the heavy path on error).
+        _skip_inline_vision = False
 
-        if two_pass_visual:
+        if two_pass_visual and _page_classes_from_extraction is not None:
+            _visual_queue_updates = _mark_or_collect_visual_pages(_page_classes_from_extraction, cfg)
+            _skip_inline_vision = True  # two-pass queued; inline path not needed
+        elif two_pass_visual and _page_classes_from_extraction is None:
+            # Classification error was already logged during extraction; fail closed.
+            # Do NOT run the heavy inline vision path for this file.
+            _visual_queue_updates = {}
+            _skip_inline_vision = True
+
+        if two_pass_visual and _page_classes_from_extraction is not None:
             # Skip inline ColPali + VLM entirely — image-heavy pages are queued for pass-2
             if verbose and _visual_queue_updates:
                 pending_pages = _visual_queue_updates.get(VISUAL_PENDING_KEY, [])
@@ -393,11 +409,11 @@ def _embed_one_file(
                     f"for deferred visual embedding",
                     flush=True,
                 )
-        else:
+        elif not two_pass_visual:
             _visual_queue_updates = {}
 
         # Check if ColPali multimodal embedding is enabled (Issue #1)
-        colpali_enabled = (not two_pass_visual) and cfg.get("embed", {}).get("colpali_enabled", False)
+        colpali_enabled = (not _skip_inline_vision) and cfg.get("embed", {}).get("colpali_enabled", False)
 
         # NEW: ColPali multimodal path for visual pages
         if colpali_enabled:
@@ -428,8 +444,8 @@ def _embed_one_file(
                     )
 
         # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
-        # Skipped entirely when two_pass_visual is on — image-heavy pages are queued above.
-        if not two_pass_visual:
+        # Skipped when two_pass_visual queued pages OR when classification failed (fail closed).
+        if not _skip_inline_vision:
             if progress:
                 progress.step("extracting image descriptions")
             checkpoint_path = _vision_checkpoint_path(repo_root, slug)

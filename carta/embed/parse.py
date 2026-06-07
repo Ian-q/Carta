@@ -3,8 +3,37 @@
 import re
 import yaml
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import fitz  # pymupdf — hard dependency; import at module level
 
 from carta.mupdf_util import mupdf_quiet
+
+if TYPE_CHECKING:
+    from carta.vision.classifier import PageClass
+
+
+def _extract_page_text(page: fitz.Page) -> tuple[list[str], list[str]]:
+    """Extract (text_parts, headings) from a single fitz.Page using the dict mode."""
+    blocks = page.get_text("dict")["blocks"]
+    text_parts: list[str] = []
+    headings: list[str] = []
+    for block in blocks:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            line_text = ""
+            max_size = 0
+            for span in line.get("spans", []):
+                line_text += span["text"]
+                max_size = max(max_size, span["size"])
+            line_text = line_text.strip()
+            if not line_text:
+                continue
+            text_parts.append(line_text)
+            if max_size >= 13:
+                headings.append(line_text)
+    return text_parts, headings
 
 
 def extract_pdf_text(pdf_path: Path) -> list[dict]:
@@ -13,41 +42,51 @@ def extract_pdf_text(pdf_path: Path) -> list[dict]:
     Each dict: {"page": int, "text": str, "headings": list[str]}
     Headings are detected via font-size heuristic (>= 13pt).
     """
-    import fitz  # pymupdf
-
     with mupdf_quiet():
-        doc = fitz.open(str(pdf_path))
-        pages = []
-
-        for page_num, page in enumerate(doc, start=1):
-            blocks = page.get_text("dict")["blocks"]
-            text_parts = []
-            headings = []
-
-            for block in blocks:
-                if block.get("type") != 0:
-                    continue
-                for line in block.get("lines", []):
-                    line_text = ""
-                    max_size = 0
-                    for span in line.get("spans", []):
-                        line_text += span["text"]
-                        max_size = max(max_size, span["size"])
-                    line_text = line_text.strip()
-                    if not line_text:
-                        continue
-                    text_parts.append(line_text)
-                    if max_size >= 13:
-                        headings.append(line_text)
-
-            pages.append({
-                "page": page_num,
-                "text": "\n".join(text_parts),
-                "headings": headings,
-            })
-
-        doc.close()
+        with fitz.open(str(pdf_path)) as doc:
+            pages = []
+            for page_num, page in enumerate(doc, start=1):
+                text_parts, headings = _extract_page_text(page)
+                pages.append({
+                    "page": page_num,
+                    "text": "\n".join(text_parts),
+                    "headings": headings,
+                })
     return pages
+
+
+def extract_pdf_text_and_classify(
+    pdf_path: Path,
+    analyzer: "PageAnalyzer",  # type: ignore[name-defined]  # noqa: F821
+) -> tuple[list[dict], list["PageClass"]]:
+    """Extract text AND classify each page in a single fitz.open pass.
+
+    Equivalent to calling extract_pdf_text then classifying pages separately,
+    but opens the PDF only once.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        analyzer: A PageAnalyzer instance used to classify each page.
+
+    Returns:
+        Tuple of (pages, page_classes) where:
+          - pages: same format as extract_pdf_text — list of
+            {"page": int, "text": str, "headings": list[str]}
+          - page_classes: list of PageClass values (0-indexed, parallel to pages)
+    """
+    with mupdf_quiet():
+        with fitz.open(str(pdf_path)) as doc:
+            pages = []
+            page_classes = []
+            for page_num, page in enumerate(doc, start=1):
+                text_parts, headings = _extract_page_text(page)
+                pages.append({
+                    "page": page_num,
+                    "text": "\n".join(text_parts),
+                    "headings": headings,
+                })
+                page_classes.append(analyzer.analyze(page).page_class)
+    return pages, page_classes
 
 
 def _strip_frontmatter(text: str) -> tuple[str, dict]:
