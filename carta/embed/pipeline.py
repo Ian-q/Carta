@@ -18,7 +18,7 @@ from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, find_config
-from carta.embed.parse import extract_pdf_text, extract_markdown_text, chunk_text, _estimate_tokens
+from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import (
     ensure_collection,
     upsert_chunks,
@@ -31,6 +31,31 @@ from carta.embed.embed import (
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
+from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
+from carta.embed.colpali import is_colpali_available
+from carta.vision.classifier import PageClass, PageAnalyzer
+
+_IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
+
+
+def _mark_or_collect_visual_pages(page_classes: list, cfg: dict) -> dict:
+    """Return sidecar updates queuing 1-indexed image-heavy pages when two_pass_visual is on.
+
+    Args:
+        page_classes: List of PageClass values, one per page (0-indexed position = page-1).
+        cfg: Carta config dict. Reads embed.two_pass_visual.
+
+    Returns:
+        Dict with VISUAL_PENDING_KEY → sorted list of 1-indexed page numbers, or {} when
+        two_pass_visual is off or no image-heavy pages exist.
+    """
+    if not cfg.get("embed", {}).get("two_pass_visual", True):
+        return {}
+    pending = [i + 1 for i, pc in enumerate(page_classes) if pc in _IMAGE_HEAVY]
+    updates: dict = {}
+    if pending:
+        add_pending_pages(updates, pending)  # writes updates[VISUAL_PENDING_KEY]
+    return updates
 
 
 _SUPPORTED_EXTENSIONS = [".pdf", ".md"]
@@ -277,8 +302,27 @@ def _embed_one_file(
         progress.step(f"extracting {file_path.suffix} text")
     elif verbose:
         print(f"    extracting {file_path.suffix} text...", flush=True)
+    # For PDFs with two_pass_visual enabled, classify pages in the SAME fitz pass as
+    # text extraction — avoid opening the PDF twice.
+    _page_classes_from_extraction: list | None = None  # populated for PDFs when two_pass_visual is on
     if file_path.suffix == ".md":
         pages, frontmatter_meta = extract_markdown_text(file_path)
+    elif file_path.suffix == ".pdf" and cfg.get("embed", {}).get("two_pass_visual", True):
+        try:
+            analyzer = PageAnalyzer(cfg)
+            pages, _page_classes_from_extraction = extract_pdf_text_and_classify(file_path, analyzer)
+        except Exception as _cls_exc:
+            # Classification failed: fall back to text-only extraction and skip inline vision
+            # (fail closed — do not escalate to the heavy VLM path).
+            print(
+                f"Warning: two_pass_visual page classification failed for {file_path}: {_cls_exc}; "
+                f"pages left unclassified — skipping inline vision for this file",
+                file=sys.stderr,
+                flush=True,
+            )
+            pages = extract_pdf_text(file_path)
+            _page_classes_from_extraction = None  # signals: skip both inline vision AND two-pass queue
+        frontmatter_meta = {}
     else:
         pages = extract_pdf_text(file_path)
         frontmatter_meta = {}
@@ -332,10 +376,45 @@ def _embed_one_file(
     image_chunk_count = 0
     vision_metadata = None
     visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
+    _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
 
     if file_path.suffix == ".pdf":
+        # Two-pass visual: classify pages cheaply and queue image-heavy ones for deferred
+        # visual embedding instead of running inline VLM/ColPali.
+        # Classification was already performed during text extraction above (single fitz pass).
+        # _page_classes_from_extraction is:
+        #   - a list[PageClass]  → classification succeeded; use two-pass path
+        #   - None               → two_pass_visual is off OR classification failed (fail closed:
+        #                          skip inline vision; no heavy path for this file)
+        two_pass_visual = cfg.get("embed", {}).get("two_pass_visual", True)
+        # _skip_inline_vision: True when we must NOT fall through to ColPali/VLM.
+        # Set True when two_pass_visual queued pages normally, OR when classification
+        # failed (fail closed — never escalate to the heavy path on error).
+        _skip_inline_vision = False
+
+        if two_pass_visual and _page_classes_from_extraction is not None:
+            _visual_queue_updates = _mark_or_collect_visual_pages(_page_classes_from_extraction, cfg)
+            _skip_inline_vision = True  # two-pass queued; inline path not needed
+        elif two_pass_visual and _page_classes_from_extraction is None:
+            # Classification error was already logged during extraction; fail closed.
+            # Do NOT run the heavy inline vision path for this file.
+            _visual_queue_updates = {}
+            _skip_inline_vision = True
+
+        if two_pass_visual and _page_classes_from_extraction is not None:
+            # Skip inline ColPali + VLM entirely — image-heavy pages are queued for pass-2
+            if verbose and _visual_queue_updates:
+                pending_pages = _visual_queue_updates.get(VISUAL_PENDING_KEY, [])
+                print(
+                    f"    two_pass_visual: queuing {len(pending_pages)} image-heavy page(s) "
+                    f"for deferred visual embedding",
+                    flush=True,
+                )
+        elif not two_pass_visual:
+            _visual_queue_updates = {}
+
         # Check if ColPali multimodal embedding is enabled (Issue #1)
-        colpali_enabled = cfg.get("embed", {}).get("colpali_enabled", False)
+        colpali_enabled = (not _skip_inline_vision) and cfg.get("embed", {}).get("colpali_enabled", False)
 
         # NEW: ColPali multimodal path for visual pages
         if colpali_enabled:
@@ -366,74 +445,76 @@ def _embed_one_file(
                     )
 
         # Use intelligent extraction with GLM-OCR/LLaVA routing (Phase 999.4)
-        if progress:
-            progress.step("extracting image descriptions")
-        checkpoint_path = _vision_checkpoint_path(repo_root, slug)
-        try:
-            from carta.vision.router import extract_image_descriptions_intelligent
-            img_descs = extract_image_descriptions_intelligent(
-                file_path, cfg, progress_callback=_vision_callback,
-                cancel_event=cancel_event,
-                checkpoint_path=checkpoint_path,
-            )
-            image_count = len(img_descs)
-
-            if img_descs:
-                image_chunks = []
-                for desc in img_descs:
-                    for part_text in _split_vision_text(desc["text"], max_tokens):
-                        image_chunks.append({
-                            "slug": slug,
-                            "file_path": str(file_path.relative_to(repo_root)),
-                            "doc_type": "image_description",
-                            "page_num": desc["page_num"],
-                            "image_index": desc["image_index"],
-                            "chunk_index": len(raw_chunks) + len(image_chunks),
-                            "text": part_text,
-                            # Phase 999.4: extraction provenance
-                            "model_used": desc.get("model_used", "llava"),
-                            "content_type": desc.get("content_type", "visual"),
-                        })
-                image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
-                if verbose:
-                    print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
-
-                # Build vision metadata for sidecar (Phase 999.4-04)
-                vision_metadata = _build_vision_metadata(img_descs)
-        except Exception as exc:
-            # Fail-open: log error but don't block embedding
-            print(
-                f"Warning: intelligent vision extraction failed for {file_path}: {exc}",
-                file=sys.stderr,
-                flush=True
-            )
-            # Fallback to legacy extraction if available
+        # Skipped when two_pass_visual queued pages OR when classification failed (fail closed).
+        if not _skip_inline_vision:
+            if progress:
+                progress.step("extracting image descriptions")
+            checkpoint_path = _vision_checkpoint_path(repo_root, slug)
             try:
-                from carta.embed.vision import extract_image_descriptions
-                img_descs = extract_image_descriptions(file_path, cfg)
+                from carta.vision.router import extract_image_descriptions_intelligent
+                img_descs = extract_image_descriptions_intelligent(
+                    file_path, cfg, progress_callback=_vision_callback,
+                    cancel_event=cancel_event,
+                    checkpoint_path=checkpoint_path,
+                )
                 image_count = len(img_descs)
 
                 if img_descs:
                     image_chunks = []
                     for desc in img_descs:
-                        image_chunks.append({
-                            "slug": slug,
-                            "file_path": str(file_path.relative_to(repo_root)),
-                            "doc_type": "image_description",
-                            "page_num": desc["page_num"],
-                            "image_index": desc["image_index"],
-                            "chunk_index": len(raw_chunks) + len(image_chunks),
-                            "text": desc["text"],
-                        })
+                        for part_text in _split_vision_text(desc["text"], max_tokens):
+                            image_chunks.append({
+                                "slug": slug,
+                                "file_path": str(file_path.relative_to(repo_root)),
+                                "doc_type": "image_description",
+                                "page_num": desc["page_num"],
+                                "image_index": desc["image_index"],
+                                "chunk_index": len(raw_chunks) + len(image_chunks),
+                                "text": part_text,
+                                # Phase 999.4: extraction provenance
+                                "model_used": desc.get("model_used", "llava"),
+                                "content_type": desc.get("content_type", "visual"),
+                            })
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                     if verbose:
-                        print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
-            except Exception as legacy_exc:
+                        print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
+
+                    # Build vision metadata for sidecar (Phase 999.4-04)
+                    vision_metadata = _build_vision_metadata(img_descs)
+            except Exception as exc:
+                # Fail-open: log error but don't block embedding
                 print(
-                    f"Warning: legacy vision extraction also failed: {legacy_exc}",
+                    f"Warning: intelligent vision extraction failed for {file_path}: {exc}",
                     file=sys.stderr,
                     flush=True
                 )
+                # Fallback to legacy extraction if available
+                try:
+                    from carta.embed.vision import extract_image_descriptions
+                    img_descs = extract_image_descriptions(file_path, cfg)
+                    image_count = len(img_descs)
+
+                    if img_descs:
+                        image_chunks = []
+                        for desc in img_descs:
+                            image_chunks.append({
+                                "slug": slug,
+                                "file_path": str(file_path.relative_to(repo_root)),
+                                "doc_type": "image_description",
+                                "page_num": desc["page_num"],
+                                "image_index": desc["image_index"],
+                                "chunk_index": len(raw_chunks) + len(image_chunks),
+                                "text": desc["text"],
+                            })
+                        image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                        if verbose:
+                            print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
+                except Exception as legacy_exc:
+                    print(
+                        f"Warning: legacy vision extraction also failed: {legacy_exc}",
+                        file=sys.stderr,
+                        flush=True
+                    )
 
     sidecar_updates = {
         "status": "embedded",
@@ -444,18 +525,22 @@ def _embed_one_file(
         "file_mtime": os.path.getmtime(str(file_path)),
         "visual_pages": visual_pages_count,  # NEW: ColPali visual pages
     }
-    
+
     # Add vision metadata if available (Phase 999.4-04)
     if vision_metadata:
         sidecar_updates["vision"] = vision_metadata
-        
+
     # Add ColPali metadata if visual pages were embedded (Issue #1)
     if visual_pages_count > 0:
         sidecar_updates["colpali"] = {
             "enabled": True,
             "visual_pages_embedded": visual_pages_count,
         }
-    
+
+    # Merge deferred visual-queue updates (two_pass_visual pass-1: visual_pending pages)
+    if _visual_queue_updates:
+        sidecar_updates.update(_visual_queue_updates)
+
     sidecar_updates["_vision_events"] = _page_events
 
     # File fully embedded — clear any per-page resume checkpoint.
@@ -547,7 +632,7 @@ def _embed_visual_pages_colpali(
 
     # Get ColPali config
     embed_cfg = cfg.get("embed", {})
-    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0")
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
     device = embed_cfg.get("colpali_device", "cpu")
     batch_size = embed_cfg.get("colpali_batch_size", 1)
     cache_dir = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
@@ -628,6 +713,231 @@ def _embed_visual_pages_colpali(
             flush=True,
         )
         raise
+
+
+def _discover_visual_pending(repo_root: Path) -> list[tuple]:
+    """Return [(sidecar_path, sidecar_dict)] for sidecars with non-empty visual_pending."""
+    out = []
+    sidecars_dir = repo_root / ".carta" / "sidecars"
+    if not sidecars_dir.is_dir():
+        return out
+    for sc_path in sidecars_dir.rglob("*.embed-meta.yaml"):
+        sc = read_sidecar(sc_path)
+        if sc and (sc.get(VISUAL_PENDING_KEY) or []):
+            out.append((sc_path, sc))
+    return out
+
+
+def _visual_chunk_index_pass2(page: int, i: int) -> str:
+    """Return the chunk_index token used for pass-2 visual/OCR text chunks.
+
+    Pass-2 chunks set ``chunk_index`` to this string (e.g. ``"visual:1:0"``).
+    ``upsert_chunks`` then derives the Qdrant point ID via
+    ``_point_id(slug, chunk_index)`` → ``md5("{slug}:visual:{page}:{i}")``.
+
+    This namespace is structurally disjoint from pass-1 text chunks, which
+    always use integer chunk_index values (e.g. ``md5("{slug}:0")``).  An
+    integer can never equal the string ``"visual:{page}:{i}"``, so collision
+    between pass-1 and pass-2 chunks for the same slug is impossible by
+    construction.
+    """
+    return f"visual:{page}:{i}"
+
+
+def _visual_embed_one_page(
+    sidecar: dict,
+    page: int,
+    cfg: dict,
+    client,
+    repo_root: Path,
+    router,
+    embedder,
+    verbose: bool = False,
+) -> bool:
+    """OCR text + ColPali for a single 1-indexed page. Raise on failure.
+
+    (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
+        Pass-2 chunks receive point IDs from _visual_point_id_pass2() so they are
+        disjoint from pass-1 text chunks for the same slug.
+    (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
+        → upsert_visual_pages (_visual collection).
+
+    ``router`` and ``embedder`` are constructed ONCE by run_visual_embed and
+    passed in; this function must NOT re-construct them.
+
+    NOTE: the PDF is opened twice per page (once for OCR, once for ColPali
+    rasterisation) — a known inefficiency acceptable for this slow pass.
+
+    Raises on any failure so the caller leaves the page in visual_pending.
+    """
+    try:
+        import fitz as _fitz
+    except ImportError as e:
+        raise RuntimeError("PyMuPDF (fitz) is required for visual drainer") from e
+
+    current_path = sidecar.get("current_path", "")
+    file_path = repo_root / current_path
+    slug = sidecar.get("slug", file_path.stem)
+    embed_cfg = cfg.get("embed", {}) or {}
+    chunking = cfg.get("embed", {}).get("chunking", {}) or {}
+    max_tokens = chunking.get("max_tokens", 400)
+
+    # ── (a) GLM-OCR text → hybrid text index ─────────────────────────────────
+    from carta.mupdf_util import mupdf_quiet
+    with mupdf_quiet():
+        try:
+            doc = _fitz.open(str(file_path))
+        except Exception as exc:
+            raise RuntimeError(f"Cannot open PDF {file_path}: {exc}") from exc
+        try:
+            if page < 1 or page > len(doc):
+                raise RuntimeError(
+                    f"Page {page} out of range (PDF has {len(doc)} pages)"
+                )
+            fitz_page = doc[page - 1]
+            profile = router.analyzer.analyze(fitz_page)
+            chunks = router._route(fitz_page, page, profile, doc)
+        finally:
+            doc.close()
+
+    if chunks:
+        image_chunks = []
+        for chunk in chunks:
+            for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
+                i = len(image_chunks)
+                image_chunks.append({
+                    "slug": slug,
+                    "file_path": current_path,
+                    "doc_type": "image_description",
+                    "page_num": page,
+                    "image_index": chunk.get("image_index", 0),
+                    # Use a pass-2-specific chunk_index token so the Qdrant point
+                    # ID (derived by upsert_chunks as md5("{slug}:{chunk_index}"))
+                    # is disjoint from pass-1 text chunks (which use integer indices).
+                    "chunk_index": _visual_chunk_index_pass2(page, i),
+                    "text": part_text,
+                    "model_used": chunk.get("model_used", "glm-ocr"),
+                    "content_type": chunk.get("content_type", "visual"),
+                    "source": "visual_drainer",
+                })
+        upsert_chunks(image_chunks, cfg, client=client)
+        if verbose:
+            print(
+                f"    visual: page {page} OCR → {len(image_chunks)} chunk(s)",
+                flush=True,
+            )
+
+    # ── (b) ColPali → _visual collection ─────────────────────────────────────
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
+    cache_dir_raw = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
+    cache_dir_path = Path(cache_dir_raw)
+    if not cache_dir_path.is_absolute():
+        cache_dir_path = repo_root / cache_dir_path
+
+    page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
+    if page_results:
+        result = page_results[0]
+        png_path = embedder.save_page_cache(file_path, page, result["png_bytes"])
+        try:
+            png_rel = str(png_path.relative_to(repo_root))
+        except ValueError:
+            png_rel = str(png_path)
+        visual_pages = [{
+            "slug": slug,
+            "file_path": current_path,
+            "page_num": page,
+            "vectors": result["vectors"],
+            "png_path": png_rel,
+            "doc_type": "visual_page",
+            "extraction_model": model_name,
+            "source": "visual_drainer",
+        }]
+        upsert_visual_pages(visual_pages, cfg, client=client)
+        if verbose:
+            print(f"    visual: page {page} ColPali → upserted", flush=True)
+
+    return True
+
+
+def run_visual_embed(
+    repo_root: Path,
+    cfg: dict,
+    verbose: bool = False,
+    progress=None,
+) -> dict:
+    """Drain the visual_pending queue: OCR text + ColPali per page, one at a time.
+
+    Discovers every sidecar with a non-empty ``visual_pending`` list, then for
+    each pending page runs (a) glm-ocr text extraction → hybrid text index and
+    (b) ColPali page-image embedding → ``_visual`` collection.  Each page is
+    checkpointed immediately after success (``visual_pending → visual_done``);
+    a page that errors is left pending for the next run.
+
+    Args:
+        repo_root: Repo root (``Path``).
+        cfg: Carta config dict.
+        verbose: Print per-page progress when True.
+        progress: Optional Progress UI object (unused; reserved for future TUI).
+
+    Returns:
+        Summary dict: ``{"pages_embedded": int, "pages_failed": int, "files": int}``
+        When ColPali is unavailable the dict also contains ``"status": "visual_unavailable"``.
+    """
+    summary: dict = {"pages_embedded": 0, "pages_failed": 0, "files": 0}
+
+    if not is_colpali_available():
+        print(
+            "carta embed --visual: the [visual] extra (torch+transformers) is not "
+            "installed. Install with: pip install 'carta-cc[visual]'  (may require a "
+            "Python 3.12 venv if torch wheels are unavailable for the current "
+            "interpreter).",
+            flush=True,
+        )
+        summary["status"] = "visual_unavailable"
+        return summary
+
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+    queued = _discover_visual_pending(repo_root)
+    summary["files"] = len(queued)
+
+    # Construct router and embedder ONCE for the entire drain — not per page.
+    from carta.vision.router import SmartRouter
+    from carta.embed.colpali import ColPaliEmbedder
+    embed_cfg = cfg.get("embed", {}) or {}
+    model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
+    device = embed_cfg.get("colpali_device", "cpu")
+    batch_size = embed_cfg.get("colpali_batch_size", 1)
+    cache_dir_raw = embed_cfg.get("colpali_sidecar_path", ".carta/visual_cache/")
+    cache_dir_path = Path(cache_dir_raw)
+    if not cache_dir_path.is_absolute():
+        cache_dir_path = repo_root / cache_dir_path
+    router = SmartRouter(cfg)
+    embedder = ColPaliEmbedder(
+        model_name=model_name,
+        device=device,
+        batch_size=batch_size,
+        cache_dir=str(cache_dir_path),
+    )
+
+    for sc_path, sc in queued:
+        for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
+            try:
+                _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
+                move_to_done(sc, page)
+                _update_sidecar(sc_path, {
+                    VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
+                    VISUAL_DONE_KEY: sc[VISUAL_DONE_KEY],
+                })
+                summary["pages_embedded"] += 1
+            except Exception as e:
+                summary["pages_failed"] += 1
+                print(
+                    f"  visual: page {page} of {sc.get('current_path')} failed: {e} "
+                    f"(left pending)",
+                    flush=True,
+                )
+
+    return summary
 
 
 def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
@@ -1001,6 +1311,20 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     if alert_msg:
         print(alert_msg, flush=True)
 
+    # Emit visual-queue nudge: scan all sidecars for pending visual pages (pass-1 → pass-2)
+    all_sidecar_dicts = []
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if sidecars_root.exists():
+        for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+            data = read_sidecar(sc_path)
+            if data is not None:
+                all_sidecar_dicts.append(data)
+    vq_summary = queue_summary(all_sidecar_dicts)
+    vq_line = format_summary_line(vq_summary)
+    if vq_line:
+        print(vq_line, flush=True)
+    summary["visual_queue"] = vq_summary
+
     return summary
 
 
@@ -1090,7 +1414,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                 if not embed_cfg.get("colpali_enabled", False):
                     continue
                     
-                model_name = embed_cfg.get("colpali_model", "vidore/colpali-v1.3-hf")
+                model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
                 device = embed_cfg.get("colpali_device", "cpu")
                 
                 try:

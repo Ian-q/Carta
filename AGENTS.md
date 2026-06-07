@@ -147,3 +147,5 @@ to override the per-page routing heuristic: `auto` (default) | `ocr` | `vision` 
 Set `vision_call_timeout_s` if Ollama calls time out on dense pages (default: 300 s).
 
 See the "Scoping heavy visual models" section in README.md for full config reference.
+
+**Two-pass visual embedding:** image-heavy PDF pages are processed in two passes — run `carta embed` first (fast text; queues visual pages), then `carta embed --visual` (slow, resumable: OCR text + ColPali). Scope visual work with `colpali_scoped_paths`. The `--visual` pass requires the `[visual]` extra (`pip install 'carta-cc[visual]'`); if absent it exits cleanly with install guidance.
