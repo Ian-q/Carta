@@ -4,6 +4,22 @@ from carta.embed.visual_queue import (
 )
 
 
+def test_pipeline_imports_queue_summary_and_format_summary_line():
+    """Confirm run_embed imports and uses queue_summary + format_summary_line from pipeline."""
+    import inspect
+    import carta.embed.pipeline as pipeline_mod
+
+    # Both names must be importable from the module (live references, not just names in source)
+    assert callable(pipeline_mod.queue_summary), "queue_summary not imported into pipeline"
+    assert callable(pipeline_mod.format_summary_line), "format_summary_line not imported into pipeline"
+
+    # run_embed must reference queue_summary somewhere in its source
+    source = inspect.getsource(pipeline_mod.run_embed)
+    assert "queue_summary" in source
+    assert "format_summary_line" in source
+    assert "visual_queue" in source
+
+
 def test_add_pending_pages_dedupes_and_sorts():
     sc = {}
     add_pending_pages(sc, [3, 1, 1])

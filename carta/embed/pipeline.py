@@ -31,7 +31,7 @@ from carta.embed.embed import (
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
-from carta.embed.visual_queue import add_pending_pages, VISUAL_PENDING_KEY
+from carta.embed.visual_queue import add_pending_pages, VISUAL_PENDING_KEY, queue_summary, format_summary_line
 from carta.vision.classifier import PageClass, PageAnalyzer
 
 _IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
@@ -1084,6 +1084,20 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     alert_msg = check_stale_alert(stale_count, total_count, threshold)
     if alert_msg:
         print(alert_msg, flush=True)
+
+    # Emit visual-queue nudge: scan all sidecars for pending visual pages (pass-1 → pass-2)
+    all_sidecar_dicts = []
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if sidecars_root.exists():
+        for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+            data = read_sidecar(sc_path)
+            if data is not None:
+                all_sidecar_dicts.append(data)
+    vq_summary = queue_summary(all_sidecar_dicts)
+    vq_line = format_summary_line(vq_summary)
+    if vq_line:
+        print(vq_line, flush=True)
+    summary["visual_queue"] = vq_summary
 
     return summary
 
