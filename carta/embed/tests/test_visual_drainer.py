@@ -6,9 +6,16 @@ from carta.embed.visual_queue import VISUAL_PENDING_KEY, VISUAL_DONE_KEY
 
 
 def _mock_router_embedder(monkeypatch):
-    """Patch SmartRouter and ColPaliEmbedder so run_visual_embed doesn't need real models."""
-    monkeypatch.setattr("carta.embed.pipeline.SmartRouter", lambda cfg: MagicMock(), raising=False)
-    monkeypatch.setattr("carta.embed.pipeline.ColPaliEmbedder", lambda **k: MagicMock(), raising=False)
+    """Patch SmartRouter and ColPaliEmbedder so run_visual_embed doesn't need real models.
+
+    run_visual_embed / _visual_embed_one_page import these *locally* from their source
+    modules (carta.embed.colpali, carta.vision.router), so the patch must target the
+    source modules — patching carta.embed.pipeline.* has no effect and lets the real
+    ColPaliEmbedder constructor run, which ImportErrors when the [visual] extra (torch)
+    isn't installed (e.g. in CI).
+    """
+    monkeypatch.setattr("carta.vision.router.SmartRouter", lambda cfg: MagicMock(), raising=False)
+    monkeypatch.setattr("carta.embed.colpali.ColPaliEmbedder", lambda **k: MagicMock())
 
 
 def test_drainer_checkpoints_each_page(monkeypatch, tmp_path):
