@@ -383,7 +383,58 @@ def cmd_init(args):
     _check_path_conflict()
     from carta.install.bootstrap import run_bootstrap
     run_bootstrap(Path.cwd(), skip_skills=getattr(args, "skip_skills", False))
+
+    # Offer to wire the embed-progress segment into the user's status line.
+    try:
+        from carta import statusline
+        result = statusline.offer_install(interactive=sys.stdin.isatty())
+        if result == "installed":
+            print("✓ Wired carta embed-progress into your status line.")
+        elif result == "unsupported":
+            print(
+                "Note: couldn't auto-wire the status line; add this before your "
+                'script prints $parts:\n'
+                '  seg=$(command -v carta >/dev/null && carta statusline <<<"$input" 2>/dev/null)\n'
+                '  [ -n "$seg" ] && parts="$parts │ $seg"'
+            )
+    except Exception:
+        pass  # status-line wiring is a convenience, never block init
+
     _notify_if_update()
+
+def cmd_statusline(args):
+    """Print the embed-progress status-line segment, or install/uninstall wiring."""
+    from carta import statusline
+
+    if getattr(args, "install", False) or getattr(args, "uninstall", False):
+        settings_path = Path.home() / ".claude" / "settings.json"
+        script = statusline.find_statusline_script(settings_path)
+        if script is None:
+            print(
+                "carta statusline: no wireable status-line script found in "
+                f"{settings_path}.\n"
+                "Add this to your status-line script, before it prints $parts:\n"
+                '  seg=$(command -v carta >/dev/null && carta statusline <<<"$input" 2>/dev/null)\n'
+                '  [ -n "$seg" ] && parts="$parts │ $seg"',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if getattr(args, "uninstall", False):
+            result = statusline.uninstall_from_script(script)
+            print(f"carta statusline: {result} ({script})")
+            sys.exit(0)
+        result = statusline.install_into_script(
+            script, confirm=lambda msg: input(f"{msg} [y/N] ").strip().lower() == "y"
+        )
+        print(f"carta statusline: {result} ({script})")
+        if result == "installed":
+            print(f"  backup: {script}.bak")
+        sys.exit(0)
+
+    # Default: print the segment for the current working directory.
+    statusline.print_segment()
+    sys.exit(0)
+
 
 def cmd_doctor(args):
     """Run diagnostic checks and optionally auto-fix issues."""
@@ -579,6 +630,20 @@ def main():
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")
     update_p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
+    statusline_p = sub.add_parser(
+        "statusline",
+        help="Print the embed-progress status-line segment (or --install/--uninstall wiring)",
+    )
+    statusline_grp = statusline_p.add_mutually_exclusive_group()
+    statusline_grp.add_argument(
+        "--install", action="store_true",
+        help="Wire the carta segment into your Claude Code status-line script",
+    )
+    statusline_grp.add_argument(
+        "--uninstall", action="store_true",
+        help="Remove the carta segment from your status-line script",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -590,6 +655,7 @@ def main():
         "doctor": cmd_doctor,
         "eval": cmd_eval,
         "update": cmd_update,
+        "statusline": cmd_statusline,
     }
 
     if args.command not in dispatch:

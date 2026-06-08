@@ -341,6 +341,38 @@ carta embed --visual
 
 ---
 
+## Status-line progress widget
+
+While `carta embed` runs, it writes `.carta/embed-status.json` with live progress. The `carta statusline` command reads that file and prints a compact segment for the Claude Code status line:
+
+```
+⠹ carta 24/47  big.pdf  19m
+✓ carta 47 files · 3.2k chunks
+✗ carta 24/47 · 2 errors
+```
+
+**Auto-wiring during `carta init`**
+
+If your `~/.claude/settings.json` has a `statusLine.command` pointing to a `.sh` file, `carta init` will offer to wire the segment in automatically. It writes a `.bak` backup before editing.
+
+**Manual snippet** — add this to your status-line script, before the line that prints `$parts`:
+
+```bash
+seg=$(command -v carta >/dev/null && carta statusline <<<"$input" 2>/dev/null)
+[ -n "$seg" ] && parts="$parts │ $seg"
+```
+
+**CLI wiring**
+
+```bash
+carta statusline --install    # wire into the script found in settings.json
+carta statusline --uninstall  # remove the wired block
+```
+
+`.carta/embed-status.json` is regenerated each run and should be gitignored (Carta does this automatically).
+
+---
+
 ## Issue lifecycle
 
 Carta assigns stable `AUDIT-NNN` IDs that survive across audit runs:

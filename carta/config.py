@@ -52,6 +52,7 @@ DEFAULTS = {
         "vision_workers": 4,               # parallel vision/OCR HTTP calls per PDF (1 = serial)
         "embedding_workers": 8,            # parallel text-embedding HTTP calls (1 = serial)
         "file_timeout_s": 600,  # seconds allowed per file; raise for large/dense PDFs
+        "status_file": True,  # write .carta/embed-status.json for the status-line widget
         "chunking": {
             "max_tokens": 800,
             "overlap_fraction": 0.15,
