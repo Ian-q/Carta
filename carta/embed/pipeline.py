@@ -1357,6 +1357,35 @@ def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
     )
 
 
+def _rrf_merge_collections(per_collection: list[list[dict]], top_n: int, k: int = 60) -> list[dict]:
+    """Fuse ranked hit lists from multiple collections with Reciprocal Rank Fusion.
+
+    Each collection's native scores live on incomparable scales — text uses cosine
+    or RRF (~0-1) while the visual collection uses ColPali MaxSim (a sum over query
+    tokens, ~10-40).  Merging by raw score lets visual hits crowd out every text
+    hit.  RRF discards score magnitude and fuses by rank instead, so a rank-0 text
+    hit and a rank-0 visual hit compete fairly regardless of scale.
+
+    Args:
+        per_collection: one list per collection, each already ordered best-first.
+        top_n: number of fused results to return.
+        k: RRF damping constant (Qdrant's fusion default is 60).
+
+    Returns:
+        Flat list of the original hit dicts, best-first by RRF, length <= top_n.
+        Ties (same rank across collections) break toward earlier collections, so
+        callers should pass the text collection before the visual one.
+    """
+    scored = []
+    for coll_index, hits in enumerate(per_collection):
+        for rank, hit in enumerate(hits):
+            rrf = 1.0 / (k + rank + 1)
+            scored.append((rrf, coll_index, rank, hit))
+    # -rrf: higher fused score first. coll_index/rank: deterministic, text-first ties.
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+    return [hit for _, _, _, hit in scored[:top_n]]
+
+
 def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
@@ -1398,10 +1427,13 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     except Exception as e:
         raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
     
-    # Search across all collections and merge results
-    all_results = []
-    
+    # Search each collection independently, then fuse across them by rank (RRF)
+    # so incomparable score scales (text cosine/RRF vs visual ColPali MaxSim)
+    # can't crowd each other out.
+    per_collection: list[list[dict]] = []
+
     for coll_name in collections:
+        coll_results: list[dict] = []
         try:
             if coll_name.endswith("_visual"):
                 # Visual collection search using ColPali
@@ -1436,7 +1468,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                     
                     for r in response.points:
                         payload = r.payload or {}
-                        all_results.append({
+                        coll_results.append({
                             "score": r.score,
                             "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
                             "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
@@ -1484,12 +1516,14 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
                 
                 for r in response.points:
                     payload = r.payload or {}
-                    all_results.append({
+                    coll_results.append({
                         "score": r.score,
                         "source": payload.get("file_path", payload.get("slug", "")),
                         "excerpt": payload.get("text", ""),
                         "type": "text",
                     })
+
+            per_collection.append(coll_results)
         except Exception as e:
             err_str = str(e).lower()
             # 404 / collection not found — skip silently (collection may not exist yet)
@@ -1504,8 +1538,9 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
             # Other unexpected errors — skip collection, don't break entire search
             continue
     
-    # Sort by score descending and take top_n
-    all_results.sort(key=lambda x: x["score"], reverse=True)
+    # Fuse across collections by rank (RRF) — scale-free, so visual MaxSim scores
+    # can't swamp text cosine/RRF scores. fetch_limit keeps the rerank pool wide.
+    all_results = _rrf_merge_collections(per_collection, fetch_limit)
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
     if rerank_enabled and all_results:
