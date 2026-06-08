@@ -241,6 +241,35 @@ def test_judge_timeout_fails_open():
 # Chunk cap: max 5 chunks regardless of hits count (HOOK-06)
 # ---------------------------------------------------------------------------
 
+def test_proactive_recall_search_is_text_only():
+    """The per-prompt hook must not trigger the heavy ColPali visual path.
+
+    Regression: with colpali_enabled auto-default, run_search auto-searches the
+    _visual collection and loads ColPali (~9s) on every prompt. The hook must
+    pass a text-only cfg (colpali_enabled disabled) to run_search.
+    """
+    cfg = _make_cfg()
+    cfg["embed"]["colpali_enabled"] = None  # auto: a normal search would load ColPali
+    captured = {}
+
+    def fake_search(query, c, *a, **k):
+        captured["cfg"] = c
+        return []
+
+    with (
+        patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=fake_search),
+    ):
+        _capture_main()
+
+    assert captured.get("cfg", {}).get("embed", {}).get("colpali_enabled") is False, (
+        "proactive-recall hook must disable visual search (text-only) to avoid "
+        "loading ColPali on every prompt"
+    )
+
+
 def test_chunk_cap():
     """8 hits at score 0.90: exactly 5 injected."""
     hits = [_make_hit(0.90, source=f"docs/doc{i}.md", excerpt=f"Excerpt {i}") for i in range(8)]
