@@ -114,3 +114,8 @@ def test_two_pass_visual_defaults():
     e = DEFAULTS["embed"]
     assert e["two_pass_visual"] is True
     assert e["visual_timeout_s"] == 3600
+
+
+def test_status_file_default_enabled():
+    from carta.config import DEFAULTS
+    assert DEFAULTS["embed"]["status_file"] is True
