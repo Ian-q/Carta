@@ -41,6 +41,41 @@ Natural language recall over everything that's been embedded. Ask Claude what th
 
 ---
 
+## Retrieval quality
+
+Search is **hybrid** (dense + BM25 with Reciprocal Rank Fusion) by default, with an optional
+**ColPali visual layer** for image-heavy PDF pages. Measured on a real technical-docs corpus
+(~160 markdown docs + 214 datasheet PDFs, local models — `nomic-embed-text` + `Qdrant/bm25`):
+
+**Text retrieval** — markdown eval, 20 queries:
+
+| Pipeline | recall@5 | MRR |
+|---|---:|---:|
+| Dense only (cosine) | 0.550 | 0.402 |
+| **Hybrid (BM25 + dense, RRF)** | **0.700** | **0.546** |
+
+**Visual retrieval** — datasheet eval, 14 queries:
+
+| Pipeline | recall@5 | MRR |
+|---|---:|---:|
+| Text / OCR only | 0.500 | 0.429 |
+| **+ ColPali visual (two-pass)** | **0.857** | **0.589** |
+
+The datasheet set includes 6 "visual-only" queries whose answer lives on a diagram, package
+drawing, or derating curve that text search structurally can't reach — ColPali lifts those from
+**0/6 to 5/6**. Text and visual hits are fused by rank (RRF), so the visual layer never crowds
+out text results.
+
+> These are one project's eval sets, not a public benchmark — they show the *delta* each layer
+> adds on real technical docs, not an absolute SOTA claim.
+
+**Comparing against public benchmarks.** To position Carta against standard suites:
+- **[ViDoRe](https://huggingface.co/spaces/vidore/vidore-leaderboard) v1/v2** (nDCG@5) — the visual-document-retrieval benchmark ColPali/ColQwen2 are evaluated on; the most direct check of Carta's visual layer.
+- **[BEIR](https://github.com/beir-cellar/beir)** / **[MTEB retrieval](https://huggingface.co/spaces/mteb/leaderboard)** / **[RTEB](https://huggingface.co/blog/rteb)** (nDCG@10) — standard text-retrieval generalization.
+- **[FreshStack](https://fresh-stack.github.io/)** — hard RAG over technical docs + code; closest in spirit to Carta's use case.
+
+---
+
 ## Good fits
 
 Carta shines in projects where:
@@ -316,7 +351,13 @@ carta embed --visual     # slow, resumable: OCR text + ColPali for queued pages
 embed:
   two_pass_visual: true      # default true — set false to revert to inline visual processing
   visual_timeout_s: 3600     # per-file timeout for the --visual pass (default: 3600 s)
+  colpali_enabled: null      # null = auto (search _visual when it exists); true = force; false = off
 ```
+
+Once a `_visual` collection has content, `carta search` includes it **automatically** (the
+default `colpali_enabled: null` is "auto") and fuses visual hits with text by rank (RRF). The
+readiness check runs before the ColPali model loads, so projects with no visual content pay
+nothing. Set `colpali_enabled: false` to opt out entirely.
 
 **Requirements for `--visual`:**
 
