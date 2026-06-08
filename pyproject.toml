@@ -27,6 +27,10 @@ visual = [
     # introduced in transformers 4.49, which needs no PEFT adapters.
     "torch>=2.0.0",
     "transformers>=4.49.0",
+    # transformers>=5.x routes from_pretrained(device_map=...) through accelerate,
+    # which it no longer pulls in transitively — required for the device_map we pass
+    # in colpali.py _load_model. Without it: ValueError "requires accelerate".
+    "accelerate>=0.26.0",
     "pillow>=10.0.0",
     "numpy>=1.24.0",
 ]
