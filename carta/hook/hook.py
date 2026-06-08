@@ -73,9 +73,12 @@ def _run() -> None:
     # 5. Extract query
     query = _extract_query(prompt, cfg)
 
-    # 6. Search
+    # 6. Search — text-only. Proactive recall fires on every prompt, so it must
+    # never trigger the heavy ColPali visual path (model load ~9s/prompt). Force
+    # colpali_enabled off for this search regardless of the project's setting.
+    search_cfg = {**cfg, "embed": {**cfg.get("embed", {}), "colpali_enabled": False}}
     try:
-        hits = run_search(query, cfg)
+        hits = run_search(query, search_cfg)
     except Exception as e:
         print(f"carta-hook: search error (fail-open): {e}", file=sys.stderr)
         sys.exit(0)

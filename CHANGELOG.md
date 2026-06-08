@@ -2,6 +2,25 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] — 2026-06-08
+
+### Added
+- **Two-pass visual embedding.** `carta embed` extracts text fast and queues image-heavy PDF pages (`visual_pending`) instead of blocking on inline vision; `carta embed --visual` is a slow, resumable drain that runs glm-ocr (→ hybrid text index) + ColPali (→ `_visual` collection) per page. No more datasheet timeouts. (#20)
+- **Status-line embed-progress widget** + `carta statusline` subcommand (segment + idempotent install/uninstall); `carta init` offers to wire it. Live `.carta/embed-status.json` written during `carta embed`. (#23)
+
+### Changed
+- **Visual search is on by default (auto).** `embed.colpali_enabled` is now tri-state: `null`/unset = **auto** (search the `_visual` collection when it exists and is non-empty), `true` = force on, `false` = hard opt-out. The readiness check runs *before* loading ColPali, so projects with no visual content pay nothing. Two-pass output is now visible to search without a separate flag. (#27)
+
+### Fixed
+- **Cross-collection result fusion.** `run_search` now fuses text (cosine/RRF, ~0–1) and visual (ColPali MaxSim, ~10–40) hits by **rank** (Reciprocal Rank Fusion) instead of incomparable raw scores. Previously visual hits crowded out every text hit when the visual collection was enabled (recall collapsed to 0); now text and visual interleave. (#21)
+- **`[visual]` extra now installs `accelerate`** — transformers ≥5 routes `from_pretrained(device_map=…)` through it, so `carta embed --visual` failed to load ColPali without it. (#22)
+- **Reranker over-fetch.** Fetch `candidate_pool` candidates before reranking, then truncate to `top_n`, so the cross-encoder can rescue lower-ranked relevant docs instead of only reordering the top-`n`. (#18)
+- **Proactive-recall hook is text-only** — it no longer loads ColPali (~9 s) on every prompt now that visual search auto-enables. (#28)
+- **Visual-drainer tests no longer require the torch `[visual]` extra**, fixing a CI failure red on `main` since #20. (#25)
+
+### Docs
+- README: measured retrieval-quality tables (hybrid 0.550→0.700; two-pass visual 0.500→0.857 on a datasheet eval) + pointers to public benchmarks (ViDoRe, BEIR/MTEB/RTEB, FreshStack). (#26)
+
 ## [0.5.0] — 2026-06-06
 
 ### Added
