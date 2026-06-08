@@ -1374,6 +1374,21 @@ def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
     )
 
 
+def _visual_collection_ready(client, coll_name: str) -> bool:
+    """True when the visual collection exists and holds at least one point.
+
+    Used to auto-gate visual search: in the default (auto) mode we only pay the
+    ColPali model load + query embed when there's actually something to search.
+    Any error (missing collection, transport failure) is treated as not-ready.
+    """
+    try:
+        info = client.get_collection(coll_name)
+    except Exception:
+        return False
+    count = getattr(info, "points_count", None)
+    return bool(count and count > 0)
+
+
 def _rrf_merge_collections(per_collection: list[list[dict]], top_n: int, k: int = 60) -> list[dict]:
     """Fuse ranked hit lists from multiple collections with Reciprocal Rank Fusion.
 
@@ -1436,7 +1451,9 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     except ValueError:
         # Fall back to default collections
         collections = [collection_name(cfg, "doc")]
-        if cfg.get("embed", {}).get("colpali_enabled", False):
+        # List visual unless explicitly opted out; run_search gates the actual query
+        # on collection readiness, so an absent/empty collection costs nothing.
+        if cfg.get("embed", {}).get("colpali_enabled", None) is not False:
             collections.append(f"{cfg['project_name']}_visual")
     
     try:
@@ -1455,14 +1472,19 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
             if coll_name.endswith("_visual"):
                 # Visual collection search using ColPali
                 from carta.embed.colpali import is_colpali_available, ColPaliEmbedder, ColPaliError
-                
+
+                embed_cfg = cfg.get("embed", {})
+                # Tri-state colpali_enabled: False = hard opt-out; True/None(auto) = on,
+                # but only when ColPali is importable AND the collection has content.
+                # The readiness check runs before the (expensive) model load so projects
+                # with no visual content pay nothing.
+                if embed_cfg.get("colpali_enabled", None) is False:
+                    continue
                 if not is_colpali_available():
                     continue
-                    
-                embed_cfg = cfg.get("embed", {})
-                if not embed_cfg.get("colpali_enabled", False):
+                if not _visual_collection_ready(client, coll_name):
                     continue
-                    
+
                 model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
                 device = embed_cfg.get("colpali_device", "cpu")
                 
