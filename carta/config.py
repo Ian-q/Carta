@@ -62,7 +62,10 @@ DEFAULTS = {
         # Checkpoints must use the HF-native variants (no PEFT adapters):
         #   ColQwen2:  vidore/colqwen2-v1.0-hf  (default, ~5GB, lower VRAM)
         #   ColPali:   vidore/colpali-v1.3-hf   (~7GB)
-        "colpali_enabled": False,  # opt-in flag
+        # Tri-state: None = auto (search the _visual collection when it exists and
+        # is non-empty, so two-pass output is visible by default); True = force on;
+        # False = hard opt-out. Auto never loads ColPali unless there's something to search.
+        "colpali_enabled": None,
         "colpali_model": "vidore/colqwen2-v1.0-hf",  # or vidore/colpali-v1.3-hf
         "colpali_device": "cpu",  # "cpu", "cuda", "mps"
         "colpali_batch_size": 1,  # pages per batch (1 for CPU)

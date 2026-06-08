@@ -33,23 +33,25 @@ def get_search_collections(cfg: dict, scope: str = "repo") -> list[str]:
         raise ValueError(f"Invalid scope: {scope}. Must be 'repo', 'shared', or 'global'.")
     
     project_name = cfg.get("project_name", "carta-project")
-    
-    # Check if ColPali visual embedding is enabled
-    colpali_enabled = cfg.get("embed", {}).get("colpali_enabled", False)
-    
+
+    # Visual collection is listed unless ColPali is *explicitly* disabled
+    # (colpali_enabled: false). Default (None=auto) and True both list it; run_search
+    # then only queries it when the collection actually exists and is non-empty.
+    visual_opted_out = cfg.get("embed", {}).get("colpali_enabled", None) is False
+
     # Filter collection types based on config
     if scope == "global":
         # Global scope: only carta_global_* collections
         types = COLLECTION_TYPES.copy()
-        if not colpali_enabled:
-            types.remove("visual")  # Skip visual if ColPali not enabled
+        if visual_opted_out:
+            types.remove("visual")
         return [f"carta_global_{t}" for t in types]
-    
+
     if scope == "repo":
         # Repo scope: only current project collections
         types = COLLECTION_TYPES.copy()
-        if not colpali_enabled:
-            types.remove("visual")  # Skip visual if ColPali not enabled
+        if visual_opted_out:
+            types.remove("visual")
         return [f"{project_name}_{t}" for t in types]
     
     # scope == "shared"

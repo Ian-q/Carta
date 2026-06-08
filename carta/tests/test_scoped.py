@@ -19,19 +19,41 @@ class TestGetSearchCollectionsRepoScope:
     """scope='repo' should return only current project collections."""
 
     def test_repo_scope_returns_project_collections(self, minimal_cfg):
-        """Should return {project_name}_doc, {project_name}_notes, {project_name}_session."""
+        """Should return doc, notes, session, and visual (visual auto-included by default)."""
         # Arrange
         minimal_cfg["project_name"] = "myproject"
-        
+
         # Act
         result = get_search_collections(minimal_cfg, scope="repo")
-        
+
         # Assert
         assert sorted(result) == sorted([
             "myproject_doc",
-            "myproject_notes", 
-            "myproject_session"
+            "myproject_notes",
+            "myproject_session",
+            "myproject_visual",
         ])
+
+    def test_repo_scope_includes_visual_by_default(self, minimal_cfg):
+        """colpali_enabled unset (auto) -> visual collection is listed."""
+        minimal_cfg["project_name"] = "myproject"
+        minimal_cfg.get("embed", {}).pop("colpali_enabled", None)
+        result = get_search_collections(minimal_cfg, scope="repo")
+        assert "myproject_visual" in result
+
+    def test_repo_scope_excludes_visual_when_explicitly_disabled(self, minimal_cfg):
+        """colpali_enabled: false is a hard opt-out -> visual not listed."""
+        minimal_cfg["project_name"] = "myproject"
+        minimal_cfg.setdefault("embed", {})["colpali_enabled"] = False
+        result = get_search_collections(minimal_cfg, scope="repo")
+        assert "myproject_visual" not in result
+
+    def test_repo_scope_includes_visual_when_enabled(self, minimal_cfg):
+        """colpali_enabled: true -> visual listed."""
+        minimal_cfg["project_name"] = "myproject"
+        minimal_cfg.setdefault("embed", {})["colpali_enabled"] = True
+        result = get_search_collections(minimal_cfg, scope="repo")
+        assert "myproject_visual" in result
 
     def test_repo_scope_ignores_global_setting(self, minimal_cfg):
         """cross_project_recall.enabled should not affect repo scope."""
@@ -48,13 +70,14 @@ class TestGetSearchCollectionsGlobalScope:
     """scope='global' should return only carta_global_* collections."""
 
     def test_global_scope_returns_global_collections(self, minimal_cfg):
-        """Should return carta_global_doc, carta_global_notes, carta_global_session."""
+        """Should return carta_global_ doc, notes, session, visual (visual auto-included)."""
         result = get_search_collections(minimal_cfg, scope="global")
-        
+
         assert sorted(result) == sorted([
             "carta_global_doc",
             "carta_global_notes",
-            "carta_global_session"
+            "carta_global_session",
+            "carta_global_visual",
         ])
 
     def test_global_scope_does_not_discover(self, minimal_cfg):
