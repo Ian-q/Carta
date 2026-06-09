@@ -449,6 +449,112 @@ class TestSnapshotHttpHelpers:
             share._upload_snapshot("http://h:6333", "newproj_doc", snap)
         assert posted["url"].startswith("http://h:6333/collections/newproj_doc/snapshots/upload")
 
+    def test_create_and_download_happy_path(self, tmp_path):
+        client = Mock()
+        client.create_snapshot.return_value = SimpleNamespace(name="snap1")
+        got = {}
+
+        def fake_get(url, **kw):
+            got["url"] = url
+            return SimpleNamespace(content=b"DATA", raise_for_status=lambda: None)
+
+        with patch("carta.share.requests.get", side_effect=fake_get):
+            dest = share._create_and_download_snapshot(client, "http://h:6333", "myproj_doc", tmp_path)
+
+        assert got["url"] == "http://h:6333/collections/myproj_doc/snapshots/snap1"
+        assert dest.read_bytes() == b"DATA"
+        client.delete_snapshot.assert_called_once_with(collection_name="myproj_doc", snapshot_name="snap1")
+
+    def test_create_and_download_deletes_snapshot_on_download_failure(self, tmp_path):
+        # Even if the HTTP download fails, the server-side snapshot must be cleaned up.
+        client = Mock()
+        client.create_snapshot.return_value = SimpleNamespace(name="snap1")
+
+        def boom(url, **kw):
+            raise RuntimeError("download exploded")
+
+        with patch("carta.share.requests.get", side_effect=boom):
+            with pytest.raises(RuntimeError):
+                share._create_and_download_snapshot(client, "http://h:6333", "myproj_doc", tmp_path)
+
+        client.delete_snapshot.assert_called_once_with(collection_name="myproj_doc", snapshot_name="snap1")
+
+
+# ---------------------------------------------------------------------------
+# Bundle extraction safety (path traversal + version portability)
+# ---------------------------------------------------------------------------
+
+def _force_no_filter_kwarg():
+    """Patch TarFile.extractall to reject the `filter=` kwarg (simulates Python < 3.10.12)."""
+    real = tarfile.TarFile.extractall
+
+    def fake(self, path=".", members=None, **kw):
+        if "filter" in kw:
+            raise TypeError("extractall() got an unexpected keyword argument 'filter'")
+        return real(self, path, members)
+
+    return patch.object(tarfile.TarFile, "extractall", fake)
+
+
+def _traversal_bundle(path, tmp_path):
+    payload = tmp_path / "payload"
+    payload.write_text("pwned")
+    with tarfile.open(path, "w:gz") as tf:
+        tf.add(payload, arcname="../escape.txt")
+    return path
+
+
+class TestUnpackSafety:
+    def test_rejects_path_traversal(self, tmp_path):
+        evil = _traversal_bundle(tmp_path / "evil.tar.gz", tmp_path)
+        dest = tmp_path / "dest"; dest.mkdir()
+        with pytest.raises((ValueError, tarfile.TarError, Exception)):
+            share._unpack_bundle(evil, dest)
+        assert not (tmp_path / "escape.txt").exists()
+
+    def test_fallback_extracts_normally_without_filter_kwarg(self, tmp_path):
+        bundle = _write_bundle(tmp_path / "b.tar.gz")
+        dest = tmp_path / "dest"; dest.mkdir()
+        with _force_no_filter_kwarg():
+            share._unpack_bundle(bundle, dest)
+        assert (dest / "manifest.json").exists()
+        assert (dest / "snapshots" / "myproj_doc.snapshot").exists()
+
+    def test_fallback_rejects_path_traversal_without_filter_kwarg(self, tmp_path):
+        evil = _traversal_bundle(tmp_path / "evil.tar.gz", tmp_path)
+        dest = tmp_path / "dest"; dest.mkdir()
+        with _force_no_filter_kwarg():
+            with pytest.raises(ValueError, match="[Uu]nsafe"):
+                share._unpack_bundle(evil, dest)
+        assert not (tmp_path / "escape.txt").exists()
+
+
+class TestImportPartialFailureReporting:
+    def test_reports_restored_collections_before_failure(self, tmp_path, capsys):
+        bundle = _write_bundle(
+            tmp_path / "b.tar.gz",
+            collection_points={"myproj_doc": 1, "myproj_visual": 2},
+        )
+        target_carta = tmp_path / ".carta"; target_carta.mkdir()
+        client = _import_mock_client()
+
+        # First upload succeeds, second blows up.
+        calls = {"n": 0}
+
+        def flaky_upload(url, collection, snap):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("upload failed")
+
+        with patch("carta.share.QdrantClient", return_value=client), \
+             patch("carta.share.requests.get", side_effect=_fake_get_version), \
+             patch("carta.share._upload_snapshot", side_effect=flaky_upload):
+            with pytest.raises(RuntimeError):
+                share.run_import(bundle, target_carta, verbose=True)
+
+        err = capsys.readouterr().err
+        assert "myproj_doc" in err  # the one that did restore is reported
+
 
 # ---------------------------------------------------------------------------
 # CLI wiring

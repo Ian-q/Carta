@@ -111,17 +111,25 @@ def _qdrant_server_version(qdrant_url: str):
 def _create_and_download_snapshot(client, qdrant_url: str, collection: str, dest_dir: Path) -> Path:
     """Snapshot `collection`, download it to dest_dir, delete the server-side copy.
 
+    The server-side snapshot is always cleaned up — even if the download fails —
+    so a failed export doesn't leave snapshots piling up in Qdrant's storage dir.
+
     Returns the path to the downloaded `.snapshot` file.
     """
     snap = client.create_snapshot(collection_name=collection)
     name = snap.name
-    url = f"{qdrant_url.rstrip('/')}/collections/{collection}/snapshots/{name}"
-    resp = requests.get(url, timeout=600)
-    resp.raise_for_status()
     dest = Path(dest_dir) / f"{collection}.snapshot"
-    dest.write_bytes(resp.content)
-    # Don't let snapshots pile up in the server's storage dir.
-    client.delete_snapshot(collection_name=collection, snapshot_name=name)
+    try:
+        url = f"{qdrant_url.rstrip('/')}/collections/{collection}/snapshots/{name}"
+        resp = requests.get(url, timeout=600)
+        resp.raise_for_status()
+        dest.write_bytes(resp.content)
+    finally:
+        try:
+            client.delete_snapshot(collection_name=collection, snapshot_name=name)
+        except Exception:
+            # Best-effort cleanup; never mask the original error.
+            pass
     return dest
 
 
@@ -166,8 +174,9 @@ def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
             "Run `carta embed` first."
         )
 
+    created_at = _now_iso()
     if output_path is None:
-        date = _now_iso()[:10].replace("-", "")
+        date = created_at[:10].replace("-", "")
         output_path = Path.cwd() / f"carta-{project_name}-{date}.tar.gz"
     output_path = Path(output_path)
 
@@ -201,7 +210,7 @@ def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
             qdrant_version=qdrant_version,
             include_visual=include_visual,
             collections=manifest_collections,
-            created_at=_now_iso(),
+            created_at=created_at,
         )
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
@@ -223,10 +232,36 @@ def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
     return output_path
 
 
+def _is_within(directory: Path, target: Path) -> bool:
+    """True if `target` resolves to a path inside `directory`."""
+    try:
+        target.resolve().relative_to(directory.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _unpack_bundle(bundle_path: Path, dest_dir: Path) -> None:
-    """Extract a bundle tarball into dest_dir (data filter: no absolute/`..` paths)."""
+    """Extract a bundle tarball into dest_dir, safe against path traversal.
+
+    Prefers tarfile's `data` filter (Python 3.12+, backported to 3.10.12/3.11.4).
+    On older interpreters that lack the `filter=` kwarg, falls back to a manual
+    member-vetting pass so a malicious bundle can't escape dest_dir via `..` or
+    absolute paths or symlinks.
+    """
+    dest_dir = Path(dest_dir)
     with tarfile.open(bundle_path, "r:gz") as tf:
-        tf.extractall(dest_dir, filter="data")
+        try:
+            tf.extractall(dest_dir, filter="data")
+            return
+        except TypeError:
+            pass  # Python < 3.10.12 / < 3.11.4: no `data` filter available.
+        for member in tf.getmembers():
+            if member.issym() or member.islnk():
+                raise ValueError(f"Unsafe link in bundle: {member.name}")
+            if not _is_within(dest_dir, dest_dir / member.name):
+                raise ValueError(f"Unsafe path in bundle: {member.name}")
+        tf.extractall(dest_dir)
 
 
 def _copy_sidecars_non_destructive(src_dir: Path, dst_dir: Path) -> int:
@@ -312,8 +347,6 @@ def run_import(bundle_path, carta_dir: Path, *, qdrant_url=None, project=None,
                 )
             # Conflict preflight (before any upload).
             conflicts = [t["name"] for t in targets if client.collection_exists(collection_name=t["name"])]
-        except RuntimeError:
-            raise
         except Exception as e:
             raise RuntimeError(f"Could not reach Qdrant at {effective_url}: {e}")
 
@@ -327,11 +360,21 @@ def run_import(bundle_path, carta_dir: Path, *, qdrant_url=None, project=None,
                 client.delete_collection(collection_name=name)
 
         restored = []
-        for t in targets:
-            if verbose:
-                print(f"Restoring {t['name']} ...", flush=True)
-            _upload_snapshot(effective_url, t["name"], t["snapshot"])
-            restored.append({"name": t["name"], "points": t["points"]})
+        try:
+            for t in targets:
+                if verbose:
+                    print(f"Restoring {t['name']} ...", flush=True)
+                _upload_snapshot(effective_url, t["name"], t["snapshot"])
+                restored.append({"name": t["name"], "points": t["points"]})
+        except Exception:
+            if restored:
+                names = ", ".join(r["name"] for r in restored)
+                print(
+                    f"Import failed partway. Already restored: {names}. "
+                    "Re-run with --force to retry cleanly.",
+                    file=sys.stderr,
+                )
+            raise
 
         # Wire up .carta/: config + sidecars.
         carta_dir.mkdir(parents=True, exist_ok=True)
