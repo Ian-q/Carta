@@ -1605,15 +1605,16 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
     if rerank_enabled and all_results:
-        from carta.search.rerank import rerank_hits
+        from carta.search.rerank import rerank_dispatch
         pool = all_results[:candidate_pool]
         # rerank_hits reads chunk text from key "text"; run_search stores it as "excerpt"
         for h in pool:
             h["text"] = h.get("excerpt", "")
-        all_results = rerank_hits(
+        all_results = rerank_dispatch(
             query,
             pool,
-            model_name=rr_cfg.get("model", "BAAI/bge-reranker-base"),
+            rr_cfg=rr_cfg,
+            ollama_url=cfg.get("embed", {}).get("ollama_url", "http://localhost:11434"),
             top_n=top_n,
         )
         # Strip transient keys so returned dicts have a stable shape
