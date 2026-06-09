@@ -900,10 +900,22 @@ def run_visual_embed(
     client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
     queued = _discover_visual_pending(repo_root)
     summary["files"] = len(queued)
+    total_pages = sum(len(sc.get(VISUAL_PENDING_KEY, []) or []) for _, sc in queued)
+
+    # Status-line widget: track the --visual drain too (not just `carta embed`).
+    status = StatusWriter(repo_root, enabled=cfg.get("embed", {}).get("status_file", True))
+    status.start(total_pages)
 
     # Construct router and embedder ONCE for the entire drain — not per page.
     from carta.vision.router import SmartRouter
     from carta.embed.colpali import ColPaliEmbedder
+    # Pin torch to one thread: ColPali matmuls otherwise crash Apple's multithreaded
+    # Accelerate BLAS on macOS (belt-and-suspenders with the env-var pin in carta._compat).
+    try:
+        import torch
+        torch.set_num_threads(1)
+    except Exception:
+        pass
     embed_cfg = cfg.get("embed", {}) or {}
     model_name = embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf")
     device = embed_cfg.get("colpali_device", "cpu")
@@ -920,24 +932,34 @@ def run_visual_embed(
         cache_dir=str(cache_dir_path),
     )
 
-    for sc_path, sc in queued:
-        for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
-            try:
-                _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
-                move_to_done(sc, page)
-                _update_sidecar(sc_path, {
-                    VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
-                    VISUAL_DONE_KEY: sc[VISUAL_DONE_KEY],
-                })
-                summary["pages_embedded"] += 1
-            except Exception as e:
-                summary["pages_failed"] += 1
-                print(
-                    f"  visual: page {page} of {sc.get('current_path')} failed: {e} "
-                    f"(left pending)",
-                    flush=True,
-                )
+    idx = 0
+    try:
+        for sc_path, sc in queued:
+            for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
+                idx += 1
+                status.file_start(idx, f"page {page} of {sc.get('current_path', '')}")
+                try:
+                    _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
+                    move_to_done(sc, page)
+                    _update_sidecar(sc_path, {
+                        VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
+                        VISUAL_DONE_KEY: sc[VISUAL_DONE_KEY],
+                    })
+                    summary["pages_embedded"] += 1
+                    status.file_done(embedded=1)
+                except Exception as e:
+                    summary["pages_failed"] += 1
+                    status.file_done(errors=1)
+                    print(
+                        f"  visual: page {page} of {sc.get('current_path')} failed: {e} "
+                        f"(left pending)",
+                        flush=True,
+                    )
+    except BaseException:
+        status.finish("failed")
+        raise
 
+    status.finish("done")
     return summary
 
 
