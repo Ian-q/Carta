@@ -205,6 +205,28 @@ embed:
   ollama_model: nomic-embed-text:latest
 ```
 
+### Search reranking
+
+Hybrid retrieval (dense + BM25, RRF-fused) is the default. An optional second-stage **reranker**
+reorders the candidate pool for better top-k precision:
+
+```yaml
+search:
+  rerank:
+    enabled: true
+    backend: llm            # cross-encoder | llm
+    model: BAAI/bge-reranker-base   # backend=cross-encoder (fastembed, local ONNX)
+    llm_model: qwen3.5:0.8b         # backend=llm: one listwise Ollama call per search
+    llm_timeout_s: 20
+    candidate_pool: 40      # docs fetched before reranking (use ~40 for the llm backend)
+```
+
+- **`cross-encoder`** — fastembed `bge-reranker-base`, no Ollama, fast.
+- **`llm`** — sends the query + candidate excerpts to a local Ollama model in a **single** call and
+  reorders by its judgment. **Fail-open:** any error/timeout falls back to the fused order. On a
+  real technical-docs corpus, `qwen3.5:0.8b` lifted recall@5 0.700 → 0.750 / MRR 0.546 → 0.589
+  (a larger 9b model gave no recall gain), so the small model is the default.
+
 ---
 
 ## Visual Embedding (ColPali/ColQwen2)

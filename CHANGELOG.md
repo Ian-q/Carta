@@ -2,6 +2,16 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-06-09
+
+### Added
+- **LLM reranker backend** for `search.rerank` (`backend: llm`). A single listwise Ollama call
+  reorders the candidate pool (`llm_model`, default `qwen3.5:0.8b`; `llm_timeout_s`). Opt-in — the
+  default `cross-encoder` (fastembed `bge-reranker-base`) path is unchanged. **Fail-open:** any
+  Ollama error/timeout/parse failure returns the fused order, so search is never worse than today.
+  Measured on a technical-docs corpus: recall@5 0.700 → **0.750**, MRR 0.546 → **0.589** with
+  `qwen3.5:0.8b` (a 9b model gave no recall gain — small model is the default).
+
 ## [0.7.1] — 2026-06-08
 
 ### Fixed
