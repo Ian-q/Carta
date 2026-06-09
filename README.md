@@ -414,6 +414,52 @@ carta statusline --uninstall  # remove the wired block
 
 ---
 
+## Sharing an embedded project
+
+Embedding is the expensive part — vision models run over every PDF page and ColPali
+produces multi-vector visual embeddings, which can take hours on a capable GPU. A
+collaborator working on the **same repository** doesn't need to repeat that. Once one
+machine has embedded the project, it can hand the embedded state to another in one
+command on each side.
+
+**On the machine that has embedded the project:**
+
+```bash
+carta export                       # -> ./carta-<project>-<date>.tar.gz
+carta export -o ~/share/carta.tar.gz
+carta export --no-visual           # skip the _visual collection (smaller bundle)
+```
+
+This snapshots the project's Qdrant collections (`_doc`, `_notes`, `_session`, and
+`_visual` unless `--no-visual`) and packs them with a copy of `config.yaml`, the
+`sidecars/` metadata, and a manifest into a single `.tar.gz`. The visual collection
+is included by default.
+
+**On the receiving machine** (Qdrant running, same `qdrant/qdrant` version):
+
+```bash
+carta import carta-myproject-20260608.tar.gz
+carta import bundle.tar.gz --project otherproject   # restore under a different name
+carta import bundle.tar.gz --force                  # overwrite existing collections
+```
+
+Import restores each collection, writes `config.yaml` and any missing sidecars into
+`.carta/`, and then `carta search` works immediately — no re-embedding. Existing
+sidecars are never overwritten; existing collections block the import unless
+`--force` is passed.
+
+**Notes**
+
+- **Querying still needs Ollama** (`nomic-embed-text`) to embed the search query —
+  lightweight, runs on CPU. Visual search additionally loads ColPali/ColQwen2 at
+  query time, so set `colpali_device: cuda` on a machine with an NVIDIA GPU.
+- **Snapshots are Qdrant-version-coupled.** Run a matching `qdrant/qdrant` version on
+  both sides; import warns (but proceeds) on a version mismatch.
+- Keep your repo, Qdrant storage, and Ollama models on a native Linux filesystem
+  rather than a slow mount (e.g. under WSL, use `/home/...`, not `/mnt/c`).
+
+---
+
 ## Issue lifecycle
 
 Carta assigns stable `AUDIT-NNN` IDs that survive across audit runs:

@@ -556,6 +556,52 @@ def cmd_eval(args):
         print(f"  [{mark}] {row['q']}")
 
 
+def cmd_export(args):
+    """Bundle this project's embeddings into a portable .tar.gz for sharing."""
+    from carta.config import load_config
+    from carta.share import run_export
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
+    try:
+        run_export(
+            cfg,
+            cfg_path.parent,
+            output_path=args.output,
+            include_visual=not args.no_visual,
+            verbose=True,
+        )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_import(args):
+    """Restore a shared embeddings bundle into the local Qdrant and wire up .carta/."""
+    from carta.share import run_import
+    try:
+        cfg_path = find_config()
+        carta_dir = cfg_path.parent
+        from carta.config import load_config
+        qdrant_url = load_config(cfg_path).get("qdrant_url")
+    except FileNotFoundError:
+        # Fresh machine, no local config yet — restore into ./.carta and let
+        # run_import read qdrant_url from the bundled config.
+        carta_dir = Path.cwd() / ".carta"
+        qdrant_url = None
+    try:
+        run_import(
+            args.bundle,
+            carta_dir,
+            qdrant_url=qdrant_url,
+            project=args.project,
+            force=args.force,
+            verbose=True,
+        )
+    except (RuntimeError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="carta")
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
@@ -644,6 +690,33 @@ def main():
         help="Remove the carta segment from your status-line script",
     )
 
+    export_p = sub.add_parser(
+        "export",
+        help="Bundle this project's embeddings into a portable .tar.gz to share",
+    )
+    export_p.add_argument(
+        "-o", "--output", metavar="PATH",
+        help="Output bundle path (default: ./carta-<project>-<date>.tar.gz)",
+    )
+    export_p.add_argument(
+        "--no-visual", action="store_true",
+        help="Exclude the _visual (ColPali) collection from the bundle",
+    )
+
+    import_p = sub.add_parser(
+        "import",
+        help="Restore a shared embeddings bundle into the local Qdrant",
+    )
+    import_p.add_argument("bundle", help="Path to a carta export .tar.gz bundle")
+    import_p.add_argument(
+        "--project", metavar="NAME",
+        help="Restore under a different project name (rewrites collection names)",
+    )
+    import_p.add_argument(
+        "--force", action="store_true",
+        help="Overwrite any collections that already exist",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -656,6 +729,8 @@ def main():
         "eval": cmd_eval,
         "update": cmd_update,
         "statusline": cmd_statusline,
+        "export": cmd_export,
+        "import": cmd_import,
     }
 
     if args.command not in dispatch:
