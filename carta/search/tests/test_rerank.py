@@ -22,3 +22,33 @@ def test_rerank_truncates_to_top_n(monkeypatch):
     hits = [{"text": str(i), "file_path": f"{i}.md"} for i in range(5)]
     out = rerank_hits("q", hits, model_name="x", top_n=2)
     assert len(out) == 2
+
+
+from unittest.mock import patch
+from carta.search.rerank import rerank_dispatch
+
+
+def _dispatch_hits():
+    return [{"source": "a.md", "excerpt": "x", "type": "text"} for _ in range(3)]
+
+
+def test_dispatch_routes_to_cross_encoder_by_default():
+    rr = {"backend": "cross-encoder", "model": "BAAI/bge-reranker-base"}
+    with patch("carta.search.rerank.rerank_hits", return_value=["CE"]) as ce, \
+         patch("carta.search.llm_rerank.llm_rerank_hits", return_value=["LLM"]) as llm:
+        out = rerank_dispatch("q", _dispatch_hits(), rr_cfg=rr, ollama_url="u", top_n=2)
+    assert out == ["CE"]
+    ce.assert_called_once()
+    llm.assert_not_called()
+
+
+def test_dispatch_routes_to_llm_when_backend_llm():
+    rr = {"backend": "llm", "llm_model": "qwen3.5:0.8b", "llm_timeout_s": 9}
+    with patch("carta.search.rerank.rerank_hits", return_value=["CE"]) as ce, \
+         patch("carta.search.llm_rerank.llm_rerank_hits", return_value=["LLM"]) as llm:
+        out = rerank_dispatch("q", _dispatch_hits(), rr_cfg=rr, ollama_url="u", top_n=2)
+    assert out == ["LLM"]
+    llm.assert_called_once()
+    ce.assert_not_called()
+    assert llm.call_args.kwargs["model"] == "qwen3.5:0.8b"
+    assert llm.call_args.kwargs["timeout_s"] == 9
