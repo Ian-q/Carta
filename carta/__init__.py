@@ -3,4 +3,4 @@ from carta._compat import apply_macos_blas_workaround as _apply_macos_blas_worka
 
 _apply_macos_blas_workaround()
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"

@@ -38,3 +38,22 @@ def rerank_hits(query: str, hits: list[dict], model_name: str, top_n: int) -> li
         h["rerank_score"] = s
     hits.sort(key=lambda h: h["rerank_score"], reverse=True)
     return hits[:top_n]
+
+
+def rerank_dispatch(query: str, hits: list[dict], *, rr_cfg: dict, ollama_url: str,
+                    top_n: int) -> list[dict]:
+    """Route reranking to the configured backend. Defaults to cross-encoder.
+
+    rr_cfg is cfg["search"]["rerank"]. backend="llm" uses the listwise Ollama
+    reranker; anything else (incl. unset) uses the fastembed cross-encoder.
+    """
+    if rr_cfg.get("backend", "cross-encoder") == "llm":
+        from carta.search.llm_rerank import llm_rerank_hits
+        return llm_rerank_hits(
+            query, hits,
+            model=rr_cfg.get("llm_model", "qwen3.5:0.8b"),
+            ollama_url=ollama_url,
+            top_n=top_n,
+            timeout_s=rr_cfg.get("llm_timeout_s", 20),
+        )
+    return rerank_hits(query, hits, model_name=rr_cfg.get("model", DEFAULT_RERANK_MODEL), top_n=top_n)
