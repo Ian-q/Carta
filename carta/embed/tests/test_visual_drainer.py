@@ -34,6 +34,30 @@ def test_drainer_checkpoints_each_page(monkeypatch, tmp_path):
     assert sc[VISUAL_PENDING_KEY] == [] and sc[VISUAL_DONE_KEY] == [1, 2]
 
 
+def test_drainer_writes_status_file(monkeypatch, tmp_path):
+    """run_visual_embed must drive StatusWriter so the status-line widget tracks
+    the --visual pass (previously only `carta embed` wrote embed-status.json)."""
+    import json
+    sc = {"current_path": "docs/x.pdf", "slug": "x", VISUAL_PENDING_KEY: [1, 2], VISUAL_DONE_KEY: []}
+    monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc_path", sc)], raising=False)
+    monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page",
+                        lambda *a, **k: True, raising=False)
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    _mock_router_embedder(monkeypatch)
+    (tmp_path / ".carta").mkdir()  # StatusWriter writes into an existing .carta/
+
+    pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
+
+    status_path = tmp_path / ".carta" / "embed-status.json"
+    assert status_path.exists(), "run_visual_embed must write embed-status.json"
+    st = json.loads(status_path.read_text())
+    assert st["total"] == 2          # 2 pending pages
+    assert st["embedded"] == 2
+    assert st["phase"] == "done"
+
+
 def test_drainer_leaves_failed_page_pending(monkeypatch, tmp_path):
     sc = {"current_path": "docs/x.pdf", "slug": "x", VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []}
     monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc", sc)], raising=False)

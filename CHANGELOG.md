@@ -2,6 +2,17 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1] — 2026-06-08
+
+### Fixed
+- **ColPali no longer segfaults on macOS.** torch-CPU dispatched ColPali matmuls to Apple's *multithreaded* Accelerate `cblas_sgemm`, which intermittently SIGSEGV'd (exit 139, "Python crashed") during `carta embed --visual`. Carta now pins BLAS to a single thread on Darwin (`carta._compat`, applied at import before torch loads) plus `torch.set_num_threads(1)` in the visual drain. Slower per page, but stable.
+- **Status-line tracks the visual pass.** `run_visual_embed` (`carta embed --visual`) now drives `StatusWriter`, so the status-line widget shows live progress during the drain instead of freezing on pass-1's final state.
+
+## [0.7.0] — 2026-06-08
+
+### Added
+- **`carta export` / `carta import`** — share a project's embeddings between machines via a portable archive (safe tar extraction, snapshot cleanup).
+
 ## [0.6.0] — 2026-06-08
 
 ### Added
