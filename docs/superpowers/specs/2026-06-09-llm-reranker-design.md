@@ -76,7 +76,7 @@ search:
     enabled: true            # existing
     backend: cross-encoder   # NEW: cross-encoder | llm  (default cross-encoder)
     model: BAAI/bge-reranker-base   # used when backend=cross-encoder
-    llm_model: qwen3.5:9b           # NEW: used when backend=llm (local Ollama)
+    llm_model: qwen3.5:0.8b         # NEW: used when backend=llm (local Ollama) — small-first
     llm_timeout_s: 20               # NEW
     candidate_pool: 50              # bump default? see Open Questions
 ```
@@ -107,8 +107,9 @@ Live eval (manual, not CI): `carta eval .carta/eval/et-embed.yaml -k 5` with `ba
 ## Open questions (resolve in plan)
 1. **Default `candidate_pool`** — keep 30 or bump to 50? Bigger pool = more context for the LLM but
    a longer prompt. Lean 40.
-2. **`llm_model` default** — `qwen3.5:9b` (quality) vs `qwen3.5:0.8b` (fast, already the recall
-   judge). Bench both on the eval; pick on the recall/latency tradeoff.
+2. **`llm_model` default** — **decided: start with `qwen3.5:0.8b`** (fast, already the recall
+   judge). Bench it against `qwen3.5:9b` on the eval; keep the small model unless 9b is
+   *significantly* better on recall. Open to trying another local model if one looks well-suited.
 3. **Excerpt budget** — `max_excerpt_chars` 500 × ~40 candidates ≈ 20k chars; fits small-model
    context but verify against the chosen model.
 
