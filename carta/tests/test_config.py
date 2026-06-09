@@ -119,3 +119,11 @@ def test_two_pass_visual_defaults():
 def test_status_file_default_enabled():
     from carta.config import DEFAULTS
     assert DEFAULTS["embed"]["status_file"] is True
+
+
+def test_rerank_backend_defaults():
+    from carta.config import DEFAULTS
+    rr = DEFAULTS["search"]["rerank"]
+    assert rr["backend"] == "cross-encoder"
+    assert rr["llm_model"] == "qwen3.5:0.8b"
+    assert rr["llm_timeout_s"] == 20
