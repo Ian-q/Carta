@@ -28,7 +28,10 @@ DEFAULTS = {
         },
         "rerank": {
             "enabled": False,
-            "model": "BAAI/bge-reranker-base",
+            "backend": "cross-encoder",   # cross-encoder | llm
+            "model": "BAAI/bge-reranker-base",   # used when backend=cross-encoder
+            "llm_model": "qwen3.5:0.8b",  # used when backend=llm (local Ollama)
+            "llm_timeout_s": 20,
             "candidate_pool": 30,
         },
     },
