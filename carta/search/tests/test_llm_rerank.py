@@ -59,6 +59,19 @@ def test_empty_hits_and_blank_query():
     assert [h["source"] for h in out] == ["a.md", "b.md"]
 
 
+def test_parses_array_with_trailing_extra_data():
+    # Small models sometimes emit a valid array then trailing junk despite format=json.
+    with patch("carta.search.llm_rerank.requests.post", return_value=_resp("[2, 0] some trailing text")):
+        out = llm_rerank_hits("q", _hits(), model="m", ollama_url="http://x:11434", top_n=2)
+    assert [h["source"] for h in out] == ["c.md", "a.md"]
+
+
+def test_parses_array_with_leading_prose():
+    with patch("carta.search.llm_rerank.requests.post", return_value=_resp("Here you go: [1, 0]")):
+        out = llm_rerank_hits("q", _hits(), model="m", ollama_url="http://x:11434", top_n=2)
+    assert [h["source"] for h in out] == ["b.md", "a.md"]
+
+
 def test_request_disables_thinking():
     # The default llm_model (qwen3.5:0.8b) is a reasoning model; without think:false
     # the answer goes to message.thinking and message.content stays empty → fail-open.

@@ -7,6 +7,7 @@ input order unchanged (never worse than no rerank). Local Ollama only.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import requests
 
@@ -28,10 +29,26 @@ def _build_prompt(query: str, hits: list[dict], max_excerpt_chars: int) -> str:
 
 
 def _parse_order(content: str, n: int) -> list[int]:
-    """Parse the model reply into a de-duplicated list of valid in-range indices."""
-    data = json.loads(content)
+    """Parse the model reply into a de-duplicated list of valid in-range indices.
+
+    Tolerant of small-model noise: a valid JSON array followed by trailing text,
+    or wrapped in leading prose. Returns [] (→ fail-open) when no array is found.
+    """
+    content = (content or "").strip()
+    try:
+        data, _end = json.JSONDecoder().raw_decode(content)
+    except json.JSONDecodeError:
+        m = re.search(r"\[.*?\]", content, re.DOTALL)
+        if not m:
+            return []
+        try:
+            data = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return []
     if isinstance(data, dict):
         data = next((v for v in data.values() if isinstance(v, list)), [])
+    if not isinstance(data, list):
+        return []
     order: list[int] = []
     seen = set()
     for x in data:
