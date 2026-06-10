@@ -57,3 +57,12 @@ def test_empty_hits_and_blank_query():
     assert llm_rerank_hits("q", [], model="m", ollama_url="u", top_n=5) == []
     out = llm_rerank_hits("   ", _hits(), model="m", ollama_url="u", top_n=2)
     assert [h["source"] for h in out] == ["a.md", "b.md"]
+
+
+def test_request_disables_thinking():
+    # The default llm_model (qwen3.5:0.8b) is a reasoning model; without think:false
+    # the answer goes to message.thinking and message.content stays empty → fail-open.
+    with patch("carta.search.llm_rerank.requests.post", return_value=_resp("[0, 1]")) as post:
+        llm_rerank_hits("q", _hits(), model="m", ollama_url="http://x:11434", top_n=2)
+    payload = post.call_args.kwargs["json"]
+    assert payload["think"] is False

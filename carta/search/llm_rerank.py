@@ -61,6 +61,11 @@ def llm_rerank_hits(query: str, hits: list[dict], *, model: str, ollama_url: str
                 ],
                 "stream": False,
                 "format": "json",
+                # The default llm_model (qwen3.5:0.8b) is a reasoning model. Without
+                # this, its answer streams to message.thinking and message.content
+                # stays empty (or it thinks to the context limit and times out), so the
+                # reranker silently fails open. A listwise reranker never needs to think.
+                "think": False,
                 "options": {"temperature": 0},
             },
             timeout=timeout_s,
