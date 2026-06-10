@@ -104,3 +104,38 @@ def test_graph_cache_avoids_reparse_within_mtime_window(tmp_path, monkeypatch):
     assert first > 0
     g.build_related_graph(repo)        # cached — no reparse
     assert calls["n"] == first
+
+
+def test_hit_path_strips_visual_page_suffix():
+    assert g.hit_path({"source": "docs/x.pdf (page 5)"}) == "docs/x.pdf"
+    assert g.hit_path({"source": "docs/y.md"}) == "docs/y.md"
+    assert g.hit_path({}) == ""
+
+
+def test_expand_seeds_returns_one_hop_neighbours():
+    adj = {
+        "a.md": {"b.md", "c.md"},
+        "b.md": {"a.md"},
+        "c.md": {"a.md", "d.md"},
+        "d.md": {"c.md"},
+    }
+    out = g.expand_seeds(["a.md"], adj, hops=1)
+    assert set(out) == {"b.md", "c.md"}      # d.md is 2 hops away
+    assert "a.md" not in out                 # seed excluded
+
+
+def test_promote_moves_neighbours_to_just_after_seeds():
+    pool = [{"source": f"{c}.md"} for c in "ABCDEFGHIJKL"]  # 12 hits
+    # neighbour is the deep hit at index 10 ("K.md")
+    out = g.promote_graph_neighbors(pool, {"K.md"}, seed_count=3)
+    paths = [g.hit_path(h) for h in out]
+    assert paths[:3] == ["A.md", "B.md", "C.md"]     # seeds untouched
+    assert paths[3] == "K.md"                          # neighbour promoted to pos 3
+    assert len(out) == len(pool)                       # nothing dropped
+    assert set(paths) == {f"{c}.md" for c in "ABCDEFGHIJKL"}
+
+
+def test_promote_is_stable_with_no_neighbours():
+    pool = [{"source": f"{c}.md"} for c in "ABC"]
+    out = g.promote_graph_neighbors(pool, set(), seed_count=2)
+    assert [g.hit_path(h) for h in out] == ["A.md", "B.md", "C.md"]

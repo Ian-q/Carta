@@ -144,6 +144,42 @@ def build_related_graph(
     return adj
 
 
+def hit_path(hit: dict) -> str:
+    """Canonical doc path for a search hit — strips the visual ' (page N)' suffix."""
+    src = hit.get("source", "") or ""
+    return src.split(" (page ", 1)[0]
+
+
+def expand_seeds(seeds: list[str], graph: dict[str, set], hops: int = 1) -> list[str]:
+    """1-hop (or `hops`) neighbour doc paths of `seeds`, excluding the seeds themselves.
+
+    Order: ascending hop distance then path (from :func:`walk_hops`).
+    """
+    out: list[str] = []
+    seen = set(seeds)
+    for h in walk_hops(list(seeds), graph, hops):
+        doc = h["doc"]
+        if doc not in seen:
+            seen.add(doc)
+            out.append(doc)
+    return out
+
+
+def promote_graph_neighbors(pool: list[dict], neighbours, seed_count: int) -> list[dict]:
+    """Reorder `pool` so neighbour hits move to immediately after the first `seed_count`
+    hits. Stable within each group (seeds, promoted neighbours, remainder); nothing dropped.
+
+    The top `seed_count` hits are never displaced, so when no reranker runs this cannot
+    change the top-`seed_count` results — graph's recall lift is realized via the reranker.
+    """
+    nb = set(neighbours)
+    seeds = pool[:seed_count]
+    tail = pool[seed_count:]
+    promoted = [h for h in tail if hit_path(h) in nb]
+    rest = [h for h in tail if hit_path(h) not in nb]
+    return seeds + promoted + rest
+
+
 def walk_hops(
     seeds: list[str],
     graph: dict[str, set[str]],
