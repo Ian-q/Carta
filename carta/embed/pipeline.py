@@ -1448,7 +1448,7 @@ def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[di
     any error (or graph disabled / no neighbours) returns `results` unchanged.
     """
     graph_cfg = cfg.get("search", {}).get("graph", {})
-    if not graph_cfg.get("enabled", True) or not results:
+    if not graph_cfg.get("enabled", False) or not results:
         return results
     try:
         from carta.search.graph import build_related_graph, expand_seeds, promote_graph_neighbors, hit_path
@@ -1493,7 +1493,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     rerank_enabled = rr_cfg.get("enabled", False)
     candidate_pool = rr_cfg.get("candidate_pool", 30)
     graph_cfg = cfg.get("search", {}).get("graph", {})
-    graph_enabled = graph_cfg.get("enabled", True)
+    graph_enabled = graph_cfg.get("enabled", False)
     candidate_depth = graph_cfg.get("candidate_depth", 50)
     # Fetch deep enough for the rerank pool AND graph promotion (whichever is wider).
     fetch_limit = top_n

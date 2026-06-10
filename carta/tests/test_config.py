@@ -132,7 +132,7 @@ def test_rerank_backend_defaults():
 def test_graph_defaults_present():
     from carta.config import DEFAULTS
     graph = DEFAULTS["search"]["graph"]
-    assert graph["enabled"] is True
+    assert graph["enabled"] is False   # opt-in (measured neutral on a dense-reranker corpus)
     assert graph["hops"] == 1
     assert graph["seed_count"] == 10
     assert graph["candidate_depth"] == 50
