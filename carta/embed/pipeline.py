@@ -1467,13 +1467,15 @@ def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[di
         return results
 
 
-def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
+def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None = None) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
     Args:
         query: natural-language search query.
         cfg: carta config dict.
         verbose: unused, kept for interface consistency.
+        stats: optional dict; when provided, run_search records "rerank_requested" and
+            "rerank_applied" (rerank_score observed on hits before stripping).
 
     Returns:
         List of dicts: {"score": float, "source": str, "excerpt": str}
@@ -1645,6 +1647,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
         all_results = _apply_graph_expansion(all_results, cfg, repo_root)
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
+    rerank_applied = False
     if rerank_enabled and all_results:
         from carta.search.rerank import rerank_dispatch
         pool = all_results[:candidate_pool]
@@ -1658,10 +1661,18 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
             ollama_url=cfg.get("embed", {}).get("ollama_url", "http://localhost:11434"),
             top_n=top_n,
         )
+        # Both backends stamp rerank_score only when they actually ran; every
+        # fail-open path returns unstamped hits. Capture the signal before
+        # stripping so callers (eval) can detect a silent fail-open.
+        rerank_applied = any("rerank_score" in h for h in all_results)
         # Strip transient keys so returned dicts have a stable shape
         # regardless of whether reranking ran.
         for _h in all_results:
             _h.pop("text", None)
             _h.pop("rerank_score", None)
+
+    if stats is not None:
+        stats["rerank_requested"] = rerank_enabled
+        stats["rerank_applied"] = rerank_applied
 
     return all_results[:top_n]

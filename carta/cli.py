@@ -541,19 +541,43 @@ def cmd_eval(args):
     # internally; results use "source" as the file path key (not "file_path"),
     # so the closure remaps to "file_path".
     eval_cfg = copy.deepcopy(cfg)
+    rerank_requested = bool(eval_cfg.get("search", {}).get("rerank", {}).get("enabled", False))
+    rerank_applied_count = 0
+    query_count = 0
 
     def _search(query: str, top_k: int) -> list:
+        nonlocal rerank_applied_count, query_count
         eval_cfg.setdefault("search", {})["top_n"] = top_k
-        results = run_search(query, eval_cfg) or []
+        stats: dict = {}
+        results = run_search(query, eval_cfg, stats=stats) or []
+        query_count += 1
+        if stats.get("rerank_applied"):
+            rerank_applied_count += 1
         # run_search returns {"score", "source", "excerpt", "type"};
         # run_eval expects dicts with "file_path".
         return [{"file_path": r.get("source", ""), **r} for r in results]
 
     metrics = run_eval(Path(args.eval_path), _search, k=k)
     print(f"queries={metrics['n_queries']}  recall@{k}={metrics['recall_at_k']:.3f}  MRR={metrics['mrr']:.3f}")
+    if rerank_requested:
+        print(f"rerank: applied on {rerank_applied_count}/{query_count} queries")
+    else:
+        print("rerank: not requested")
     for row in metrics["per_query"]:
         mark = row["first_hit_rank"] if row["first_hit_rank"] is not None else "MISS"
         print(f"  [{mark}] {row['q']}")
+
+    # A reranker that failed open on EVERY query is indistinguishable from a
+    # working one in rank metrics alone — that's how 0.8.0 shipped broken.
+    # Make it impossible to mistake for a result.
+    if rerank_requested and query_count and rerank_applied_count == 0:
+        print(
+            "Error: search.rerank.enabled is true but the reranker ran on 0 queries — "
+            "it is silently failing open (check the model and search.rerank.* config). "
+            "These are NOT reranked numbers.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def cmd_export(args):
