@@ -1639,9 +1639,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     all_results = _rrf_merge_collections(per_collection, fetch_limit)
 
     # Graph-aware expansion: promote related:-adjacent docs into the pool the reranker
-    # sees. Fail-open. Note: candidate_depth (default 50) widens the Qdrant fetch even
-    # when reranking is off, since graph is enabled by default (unless search.graph.enabled
-    # is explicitly False).
+    # sees. Fail-open. Off by default (opt in via search.graph.enabled); when enabled,
+    # candidate_depth (default 50) widens the Qdrant fetch to seed the walk.
     if graph_enabled:
         all_results = _apply_graph_expansion(all_results, cfg, repo_root)
 
