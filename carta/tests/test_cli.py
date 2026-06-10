@@ -197,3 +197,75 @@ def test_statusline_print_segment_smoke(tmp_path, monkeypatch, capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "carta 2/5" in out.replace("\x1b", "")  # ANSI-tolerant
+
+
+class TestCmdEvalRerankAssertion:
+    """cmd_eval reports rerank-applied counts and hard-fails when rerank was
+    requested but silently failed open on every query (the 0.8.0 bug class)."""
+
+    def _eval_yaml(self, tmp_path):
+        p = tmp_path / "eval.yaml"
+        p.write_text(
+            'queries:\n'
+            '  - q: "alpha"\n'
+            '    expect: ["a.md"]\n'
+            '  - q: "beta"\n'
+            '    expect: ["b.md"]\n'
+        )
+        return p
+
+    def _run(self, tmp_path, rerank_enabled, applied_per_query):
+        """Run cmd_eval with run_search mocked to report the given per-query
+        rerank_applied values. Returns the SystemExit code or None."""
+        import argparse
+        from unittest.mock import patch
+        from carta.cli import cmd_eval
+
+        cfg = {
+            "project_name": "p",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://localhost:11434", "ollama_model": "m"},
+            "search": {"top_n": 5, "rerank": {"enabled": rerank_enabled}},
+        }
+        applied_iter = iter(applied_per_query)
+
+        def fake_run_search(query, c, verbose=False, stats=None):
+            if stats is not None:
+                stats["rerank_requested"] = rerank_enabled
+                stats["rerank_applied"] = next(applied_iter)
+            return [{"score": 0.9, "source": "docs/a.md", "excerpt": "x", "type": "text"}]
+
+        args = argparse.Namespace(eval_path=str(self._eval_yaml(tmp_path)), k=5)
+        with patch("carta.cli.find_config", return_value=Path("/fake/.carta/config.yaml")), \
+             patch("carta.config.load_config", return_value=cfg), \
+             patch("carta.embed.pipeline.run_search", side_effect=fake_run_search):
+            try:
+                cmd_eval(args)
+            except SystemExit as e:
+                return e.code
+        return None
+
+    def test_zero_applied_with_rerank_requested_exits_nonzero(self, tmp_path, capsys):
+        code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[False, False])
+        captured = capsys.readouterr()
+        assert code == 1, "silent fail-open on every query must hard-fail the eval"
+        assert "failing open" in captured.err
+        assert "applied on 0/2 queries" in captured.out
+
+    def test_partial_applied_reports_count_and_passes(self, tmp_path, capsys):
+        code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[True, False])
+        captured = capsys.readouterr()
+        assert code is None
+        assert "rerank: applied on 1/2 queries" in captured.out
+
+    def test_all_applied_reports_count(self, tmp_path, capsys):
+        code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[True, True])
+        captured = capsys.readouterr()
+        assert code is None
+        assert "rerank: applied on 2/2 queries" in captured.out
+
+    def test_rerank_not_requested_reports_and_passes(self, tmp_path, capsys):
+        code = self._run(tmp_path, rerank_enabled=False, applied_per_query=[False, False])
+        captured = capsys.readouterr()
+        assert code is None
+        assert "rerank: not requested" in captured.out
