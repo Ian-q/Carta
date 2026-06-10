@@ -41,9 +41,10 @@ Two facts shape the design:
   graph connects without editing the docs.
 - **Audit reports bad entries:** a scanner check flags `related:` entries that resolve only via
   fallback (non-canonical) or not at all, feeding the linking sweep that densifies the graph.
-- **On by default, opt-out-able:** ships enabled, config-gated, surfaced in `carta init`'s
-  optional-feature opt-out (for low-memory / old machines). Fail-open — any graph error returns
-  today's behaviour unchanged.
+- **On by default, opt-out-able:** ships enabled; the `search.graph.enabled` config knob is the
+  opt-out (set `false` for low-memory / old machines). Graph expansion is lightweight (a cached
+  frontmatter walk), so no separate interactive `carta init` prompt is added. Fail-open — any
+  graph error returns today's behaviour unchanged.
 - **Measurable:** re-run `et-embed.yaml` with graph on + LLM rerank on; success = the rank-33
   (Safety MCU) and rank-43 (telemetry) docs reaching top-5, `recall@5` > 0.750.
 
@@ -117,8 +118,8 @@ search:
     candidate_depth: 50    # NEW — deep-fetch size when graph is enabled
 ```
 
-`DEFAULTS["search"]["graph"]` in `carta/config.py` gains these. `carta init` adds graph
-expansion to the optional-feature opt-out prompt (alongside the existing statusline wiring).
+`DEFAULTS["search"]["graph"]` in `carta/config.py` gains these. The knob is the opt-out; no new
+`carta init` prompt (graph expansion is lightweight — a cached frontmatter walk, unlike ColPali).
 
 ### Audit check (`carta/scanner/scanner.py`)
 
