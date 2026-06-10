@@ -223,9 +223,35 @@ search:
 
 - **`cross-encoder`** — fastembed `bge-reranker-base`, no Ollama, fast.
 - **`llm`** — sends the query + candidate excerpts to a local Ollama model in a **single** call and
-  reorders by its judgment. **Fail-open:** any error/timeout falls back to the fused order. On a
-  real technical-docs corpus, `qwen3.5:0.8b` lifted recall@5 0.700 → 0.750 / MRR 0.546 → 0.589
-  (a larger 9b model gave no recall gain), so the small model is the default.
+  reorders by its judgment. **Fail-open:** any error/timeout falls back to the fused order.
+  Reasoning models are handled (`think` is disabled so the answer lands in the reply, not the
+  thinking stream), and the parser tolerates a JSON array wrapped in stray prose.
+
+  **Model strength matters a lot.** On a real technical-docs corpus, a strong reranker
+  (`qwen3.5:9b`) lifted recall@5 **0.750 → 0.900** / MRR 0.539 → 0.699. The small default
+  (`qwen3.5:0.8b`) is fast but can *degrade* ranking on harder corpora — use it for low latency,
+  and a 9b-class model when retrieval quality is the priority (at higher per-query cost).
+
+### Graph-aware retrieval (opt-in)
+
+An optional pre-rerank stage walks the `related:` frontmatter graph (undirected, 1 hop) from the
+top hits and promotes graph-adjacent documents into the rerank candidate pool, so a relevant doc
+that ranks too deep to be seen can still surface. **Fail-open**, and **off by default**:
+
+```yaml
+search:
+  graph:
+    enabled: false      # opt-in
+    hops: 1
+    seed_count: 10      # top fused hits that seed the walk
+    candidate_depth: 50 # deep-fetch size when enabled
+```
+
+The benefit is realized *through the reranker* (it never displaces the top fused hits on its own).
+It was measured **neutral** on a corpus where a strong reranker already floats in-pool docs; it is
+most likely to help corpora with a rich, well-linked `related:` graph and relevant docs that rank
+deep. The companion `related:` resolver (id/path normalization) and the `carta scan`
+`noncanonical_related` check ship regardless and feed link-graph cleanup.
 
 ---
 

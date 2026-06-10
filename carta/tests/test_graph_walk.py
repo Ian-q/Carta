@@ -37,7 +37,9 @@ def test_build_related_graph_basic(tmp_path):
     assert "docs/CAN/TOPOLOGY.md" in graph["docs/CAN/MESSAGE_FLOW.md"]
     assert "docs/CAN/SAFETY.md" in graph["docs/CAN/MESSAGE_FLOW.md"]
     assert "docs/CAN/MESSAGE_FLOW.md" in graph["docs/CAN/TOPOLOGY.md"]
-    assert graph["docs/CAN/SAFETY.md"] == []
+    # SAFETY.md has no outgoing related: entries, but MESSAGE_FLOW.md lists it,
+    # so the undirected mirror gives it a back-edge to MESSAGE_FLOW.md.
+    assert "docs/CAN/MESSAGE_FLOW.md" in graph["docs/CAN/SAFETY.md"]
 
 
 def test_build_related_graph_no_frontmatter(tmp_path):
@@ -47,7 +49,7 @@ def test_build_related_graph_no_frontmatter(tmp_path):
 
     graph = build_related_graph(tmp_path)
     assert "docs/BARE.md" in graph
-    assert graph["docs/BARE.md"] == []
+    assert graph["docs/BARE.md"] == set()
 
 
 def test_build_related_graph_missing_docs_root(tmp_path):

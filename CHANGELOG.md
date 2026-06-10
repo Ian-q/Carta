@@ -2,6 +2,36 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] — 2026-06-10
+
+### Fixed
+- **LLM reranker now works with reasoning models.** `search.rerank backend: llm` sends
+  `think: false`, so a reasoning model (e.g. the default `qwen3.5:0.8b`) returns its answer in
+  `message.content` instead of the `thinking` stream — previously `content` was empty (or the
+  model thought to the context limit and timed out), so the reranker silently failed open on
+  **every** query for anyone on the default config.
+- **LLM reranker parser tolerates noisy replies.** A valid JSON array followed by trailing tokens,
+  or wrapped in leading prose, now parses (leading-value `raw_decode` + regex fallback) instead of
+  failing open. With both fixes, a strong reranker (`qwen3.5:9b`) measured recall@5 **0.750 → 0.900**
+  / MRR 0.539 → 0.699 on a technical-docs corpus. The small default `qwen3.5:0.8b` is fast but can
+  *degrade* ranking on harder corpora — pick the model to fit your latency/quality budget.
+
+### Added
+- **`related:` entry resolver** — search-time normalization mapping any entry style (exact path,
+  missing-`docs/`-prefix, bare id/slug, `.embed-meta.yaml` drift) to a canonical repo-root path,
+  with `..`-escape guarding. Builds an undirected adjacency (forward ∪ backlinks), memoized by max
+  doc mtime.
+- **`carta scan` `noncanonical_related` check** — flags `related:` entries that resolve only via a
+  fallback tier (with the suggested canonical path) or don't resolve at all, feeding link-graph
+  cleanup. `check_broken_related` is now resolver-aware so the two checks partition cleanly (one
+  finding per entry, not two).
+- **Graph-aware retrieval (`search.graph`, opt-in / off by default).** Undirected 1-hop `related:`
+  expansion that promotes graph-adjacent deep docs into the rerank candidate pool (fail-open). The
+  mechanism is verified — it pulls a rank-33 doc to rank-12, into the pool — but measured **neutral**
+  on a corpus where a strong reranker already floats in-pool docs (it rescores independent of input
+  order). Shipped off by default; most likely to help corpora with a rich `related:` graph and
+  relevant docs that rank deep. Knobs: `enabled`, `hops`, `seed_count`, `candidate_depth`.
+
 ## [0.8.0] — 2026-06-09
 
 ### Added

@@ -34,6 +34,16 @@ DEFAULTS = {
             "llm_timeout_s": 20,
             "candidate_pool": 30,
         },
+        "graph": {
+            # Opt-in: undirected 1-hop related: expansion that promotes graph-adjacent
+            # deep docs into the rerank pool. Measured neutral on a dense-reranker corpus
+            # (a strong reranker already floats in-pool docs); may help sparser-ranking
+            # corpora with rich related: graphs. Enable per-project.
+            "enabled": False,
+            "hops": 1,              # related: traversal depth
+            "seed_count": 10,       # how many top fused hits seed the walk
+            "candidate_depth": 50,  # deep-fetch size when graph expansion is enabled
+        },
     },
     "embed": {
         "reference_docs_path": "docs/reference/",
