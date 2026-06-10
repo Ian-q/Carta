@@ -34,6 +34,12 @@ DEFAULTS = {
             "llm_timeout_s": 20,
             "candidate_pool": 30,
         },
+        "graph": {
+            "enabled": True,        # on by default; set false to opt out (low-memory machines)
+            "hops": 1,              # related: traversal depth
+            "seed_count": 10,       # how many top fused hits seed the walk
+            "candidate_depth": 50,  # deep-fetch size when graph expansion is enabled
+        },
     },
     "embed": {
         "reference_docs_path": "docs/reference/",

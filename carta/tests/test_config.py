@@ -127,3 +127,12 @@ def test_rerank_backend_defaults():
     assert rr["backend"] == "cross-encoder"
     assert rr["llm_model"] == "qwen3.5:0.8b"
     assert rr["llm_timeout_s"] == 20
+
+
+def test_graph_defaults_present():
+    from carta.config import DEFAULTS
+    graph = DEFAULTS["search"]["graph"]
+    assert graph["enabled"] is True
+    assert graph["hops"] == 1
+    assert graph["seed_count"] == 10
+    assert graph["candidate_depth"] == 50
