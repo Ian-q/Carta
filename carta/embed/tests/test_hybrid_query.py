@@ -47,6 +47,9 @@ def _make_run_search_cfg(*, top_n=5, rerank_enabled=False, candidate_pool=30,
                        "bm25_model": "Qdrant/bm25"},
             "rerank": {"enabled": rerank_enabled, "candidate_pool": candidate_pool,
                        "model": "BAAI/bge-reranker-base"},
+            # Disable graph expansion so these tests exercise rerank-only fetch_limit
+            # behaviour in isolation — graph expansion has its own test suite.
+            "graph": {"enabled": False},
         },
     }
 

@@ -1440,6 +1440,33 @@ def _rrf_merge_collections(per_collection: list[list[dict]], top_n: int, k: int 
     return [hit for _, _, _, hit in scored[:top_n]]
 
 
+def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[dict]:
+    """Promote related:-graph neighbours of the top seeds into the candidate pool.
+
+    Undirected 1-hop expansion from the top `seed_count` fused hits; neighbour hits are
+    moved to just-after the seeds so a downstream reranker can float them up. Fail-open:
+    any error (or graph disabled / no neighbours) returns `results` unchanged.
+    """
+    graph_cfg = cfg.get("search", {}).get("graph", {})
+    if not graph_cfg.get("enabled", True) or not results:
+        return results
+    try:
+        from carta.search.graph import build_related_graph, expand_seeds, promote_graph_neighbors, hit_path
+        from pathlib import Path
+
+        seed_count = graph_cfg.get("seed_count", 10)
+        graph = build_related_graph(Path(repo_root))
+        seeds = [hit_path(h) for h in results[:seed_count]]
+        neighbours = expand_seeds(seeds, graph, graph_cfg.get("hops", 1))
+        if not neighbours:
+            return results
+        return promote_graph_neighbors(results, neighbours, seed_count)
+    except Exception as exc:
+        import sys
+        print(f"Warning: graph expansion failed, skipping: {exc}", file=sys.stderr, flush=True)
+        return results
+
+
 def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
@@ -1465,7 +1492,15 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     rr_cfg = cfg.get("search", {}).get("rerank", {})
     rerank_enabled = rr_cfg.get("enabled", False)
     candidate_pool = rr_cfg.get("candidate_pool", 30)
-    fetch_limit = max(candidate_pool, top_n) if rerank_enabled else top_n
+    graph_cfg = cfg.get("search", {}).get("graph", {})
+    graph_enabled = graph_cfg.get("enabled", True)
+    candidate_depth = graph_cfg.get("candidate_depth", 50)
+    # Fetch deep enough for the rerank pool AND graph promotion (whichever is wider).
+    fetch_limit = top_n
+    if rerank_enabled:
+        fetch_limit = max(fetch_limit, candidate_pool)
+    if graph_enabled:
+        fetch_limit = max(fetch_limit, candidate_depth)
 
     # Get all collections to search
     try:
@@ -1602,6 +1637,13 @@ def run_search(query: str, cfg: dict, verbose: bool = False) -> list[dict]:
     # Fuse across collections by rank (RRF) — scale-free, so visual MaxSim scores
     # can't swamp text cosine/RRF scores. fetch_limit keeps the rerank pool wide.
     all_results = _rrf_merge_collections(per_collection, fetch_limit)
+
+    # Graph-aware expansion: promote related:-adjacent docs into the pool the reranker
+    # sees. Fail-open. Note: candidate_depth (default 50) widens the Qdrant fetch even
+    # when reranking is off, since graph is enabled by default (unless search.graph.enabled
+    # is explicitly False).
+    if graph_enabled:
+        all_results = _apply_graph_expansion(all_results, cfg, repo_root)
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
     if rerank_enabled and all_results:
