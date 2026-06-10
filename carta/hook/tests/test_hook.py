@@ -270,6 +270,39 @@ def test_proactive_recall_search_is_text_only():
     )
 
 
+def test_proactive_recall_search_never_reranks():
+    """The per-prompt hook must not pay reranker latency.
+
+    Regression: hook.py forced colpali off but passed search.rerank through
+    untouched, so enabling search.rerank (e.g. backend=llm, 10s+/call) made
+    every prompt submission block on a rerank call. The hook must force
+    search.rerank.enabled off in the cfg it passes to run_search.
+    """
+    cfg = _make_cfg()
+    cfg["search"] = {"top_n": 5, "rerank": {"enabled": True, "backend": "llm"}}
+    captured = {}
+
+    def fake_search(query, c, *a, **k):
+        captured["cfg"] = c
+        return []
+
+    with (
+        patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=fake_search),
+    ):
+        _capture_main()
+
+    rr = captured.get("cfg", {}).get("search", {}).get("rerank", {})
+    assert rr.get("enabled") is False, (
+        "proactive-recall hook must disable reranking — the hook blocks prompt "
+        "submission and must never pay rerank latency"
+    )
+    # The project cfg itself must not be mutated by the override
+    assert cfg["search"]["rerank"]["enabled"] is True
+
+
 def test_chunk_cap():
     """8 hits at score 0.90: exactly 5 injected."""
     hits = [_make_hit(0.90, source=f"docs/doc{i}.md", excerpt=f"Excerpt {i}") for i in range(8)]
