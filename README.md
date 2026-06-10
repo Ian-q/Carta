@@ -69,6 +69,10 @@ out text results.
 > These are one project's eval sets, not a public benchmark — they show the *delta* each layer
 > adds on real technical docs, not an absolute SOTA claim.
 
+When `search.rerank.enabled` is true, `carta eval` also prints `rerank: applied on N/M queries`
+— and **fails (exit 1)** if the reranker ran on zero queries, so a silent fail-open (wrong model
+name, Ollama down, reasoning-model misconfig) can never masquerade as a reranked result.
+
 **Comparing against public benchmarks.** To position Carta against standard suites:
 - **[ViDoRe](https://huggingface.co/spaces/vidore/vidore-leaderboard) v1/v2** (nDCG@5) — the visual-document-retrieval benchmark ColPali/ColQwen2 are evaluated on; the most direct check of Carta's visual layer.
 - **[BEIR](https://github.com/beir-cellar/beir)** / **[MTEB retrieval](https://huggingface.co/spaces/mteb/leaderboard)** / **[RTEB](https://huggingface.co/blog/rteb)** (nDCG@10) — standard text-retrieval generalization.
@@ -231,6 +235,11 @@ search:
   (`qwen3.5:9b`) lifted recall@5 **0.750 → 0.900** / MRR 0.539 → 0.699. The small default
   (`qwen3.5:0.8b`) is fast but can *degrade* ranking on harder corpora — use it for low latency,
   and a 9b-class model when retrieval quality is the priority (at higher per-query cost).
+
+Reranking applies to explicit searches (`carta search`, the MCP `carta_search` tool, `carta
+eval`). The proactive-recall hook **never reranks** (and never loads ColPali) — it fires on
+every prompt and blocks submission, so it always uses the fast fused order; its gray-zone judge
+handles relevance filtering.
 
 ### Graph-aware retrieval (opt-in)
 
