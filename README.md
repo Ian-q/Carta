@@ -54,6 +54,11 @@ Search is **hybrid** (dense + BM25 with Reciprocal Rank Fusion) by default, with
 | Dense only (cosine) | 0.550 | 0.402 |
 | **Hybrid (BM25 + dense, RRF)** | **0.700** | **0.546** |
 
+On an expanded **62-query** set over the same corpus (adds datasheet, supplier, and patent
+reference docs): hybrid alone scores **0.790 / 0.641**, and the LLM reranker (`qwen3.5:9b`,
+candidate pool 40) lifts it to **0.871 / 0.778** — with `rerank: applied on 61/62 queries`
+confirming the reranker actually ran on every scored query but one.
+
 **Visual retrieval** — datasheet eval, 14 queries:
 
 | Pipeline | recall@5 | MRR |
@@ -231,8 +236,8 @@ search:
   Reasoning models are handled (`think` is disabled so the answer lands in the reply, not the
   thinking stream), and the parser tolerates a JSON array wrapped in stray prose.
 
-  **Model strength matters a lot.** On a real technical-docs corpus, a strong reranker
-  (`qwen3.5:9b`) lifted recall@5 **0.750 → 0.900** / MRR 0.539 → 0.699. The small default
+  **Model strength matters a lot.** On a real technical-docs corpus (62-query eval), a strong
+  reranker (`qwen3.5:9b`) lifted recall@5 **0.790 → 0.871** / MRR 0.641 → 0.778. The small default
   (`qwen3.5:0.8b`) is fast but can *degrade* ranking on harder corpora — use it for low latency,
   and a 9b-class model when retrieval quality is the priority (at higher per-query cost).
 

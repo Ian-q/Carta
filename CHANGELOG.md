@@ -15,7 +15,8 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
   via an optional `stats` out-param, and `carta eval` prints `rerank: applied on N/M queries` and
   **exits 1** when rerank was requested but applied on zero queries. (The 0.8.0 reranker shipped
   fully fail-open and the eval reported its numbers as a win — this class of failure is now a hard
-  error.)
+  error.) Verified live on a 62-query technical-docs eval: hybrid 0.790 recall@5 / 0.641 MRR →
+  with `qwen3.5:9b` rerank 0.871 / 0.778, reported as `rerank: applied on 61/62 queries`.
 
 ### Changed
 - CI workflows bumped to Node 24 action releases (`actions/checkout@v5`,
