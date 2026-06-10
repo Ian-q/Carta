@@ -59,3 +59,48 @@ def test_resolve_entry_unresolvable_returns_none(tmp_path):
     assert g.resolve_entry("", idx, repo) is None
     assert g.resolve_entry(None, idx, repo) is None
     assert g.resolve_entry("../escape.md", idx, repo) is None
+
+
+def test_graph_is_undirected_backlink_reaches_connector_map(tmp_path):
+    repo = _make_repo(tmp_path)
+    g._GRAPH_CACHE.clear()
+    adj = g.build_related_graph(repo)
+    pa = "docs/hardware/vcu/power-architecture.md"
+    cm = "docs/hardware/vcu/connector-map.md"
+    # power-architecture -> connector-map (forward, via bare-id entry)
+    assert cm in adj[pa]
+    # connector-map's own related: is empty, but the edge is mirrored (undirected)
+    assert pa in adj[cm]
+
+
+def test_graph_resolves_canonical_path_edge(tmp_path):
+    repo = _make_repo(tmp_path)
+    g._GRAPH_CACHE.clear()
+    adj = g.build_related_graph(repo)
+    mf = "docs/CAN/MESSAGE_FLOW.md"
+    safety = "docs/CAN/SAFETY-MCU-MESSAGES.md"
+    assert safety in adj[mf]
+    assert mf in adj[safety]   # mirrored
+
+
+def test_graph_includes_root_files_as_nodes(tmp_path):
+    repo = _make_repo(tmp_path)
+    g._GRAPH_CACHE.clear()
+    adj = g.build_related_graph(repo)
+    assert "CLAUDE.md" in adj
+
+
+def test_graph_cache_avoids_reparse_within_mtime_window(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+    g._GRAPH_CACHE.clear()
+    calls = {"n": 0}
+    real = g.parse_frontmatter
+    def counting(p):
+        calls["n"] += 1
+        return real(p)
+    monkeypatch.setattr(g, "parse_frontmatter", counting)
+    g.build_related_graph(repo)
+    first = calls["n"]
+    assert first > 0
+    g.build_related_graph(repo)        # cached — no reparse
+    assert calls["n"] == first

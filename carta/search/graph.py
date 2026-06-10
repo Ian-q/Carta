@@ -77,34 +77,76 @@ def resolve_entry(entry: object, doc_index: dict[str, str], repo_root: Path) -> 
     return doc_index.get(key)
 
 
-def build_related_graph(repo_root: Path, docs_root: Optional[Path] = None) -> dict[str, list[str]]:
-    """Parse all markdown docs under docs_root and return the related: adjacency list.
+_GRAPH_CACHE: dict[str, tuple[float, dict[str, set]]] = {}
 
-    Args:
-        repo_root: Repository root path.
-        docs_root: Subtree to scan.  Defaults to ``repo_root/docs``.
+
+def _docs_mtime_sig(repo_root: Path, docs_root: Path) -> float:
+    """Largest mtime across all markdown docs — a cheap cache-invalidation key.
+
+    Note: deletion of a doc without a surviving-file mtime change will not
+    invalidate the cache (acceptable — the next file write recovers).
+    """
+    latest = 0.0
+    for p in _iter_md_paths(repo_root, docs_root):
+        try:
+            latest = max(latest, p.stat().st_mtime)
+        except OSError:
+            continue
+    return latest
+
+
+def build_related_graph(
+    repo_root: Path,
+    docs_root: Optional[Path] = None,
+    *,
+    use_cache: bool = True,
+) -> dict[str, set]:
+    """Undirected ``related:`` adjacency over all markdown docs.
+
+    Every entry is resolved to a canonical repo-root POSIX path (see
+    :func:`resolve_entry`); each edge is mirrored so backlink-only targets (a doc
+    with an empty ``related:`` that others point at) are reachable. Keys match
+    search hits' ``source`` exactly. Memoized by max doc mtime.
 
     Returns:
-        Dict mapping ``str(relative_path)`` → list of related paths (strings,
-        as they appear in frontmatter — may or may not exist on disk).
+        Dict mapping ``canonical_path`` → set of adjacent canonical paths.
     """
     if docs_root is None:
         docs_root = repo_root / "docs"
-    graph: dict[str, list[str]] = {}
-    if not docs_root.exists():
-        return graph
-    for md_path in docs_root.rglob("*.md"):
-        if ".git" in md_path.parts:
+    cache_key = f"{repo_root}::{docs_root}"
+    if use_cache:
+        # sig computed before the cache check on purpose — it IS the invalidation key
+        sig = _docs_mtime_sig(repo_root, docs_root)
+        cached = _GRAPH_CACHE.get(cache_key)
+        if cached and cached[0] == sig:
+            return cached[1]
+
+    doc_index = build_doc_index(repo_root, docs_root)
+    adj: dict[str, set] = {}
+
+    def link(a: str, b: str) -> None:
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+
+    for p in _iter_md_paths(repo_root, docs_root):
+        canon = p.relative_to(repo_root).as_posix()
+        adj.setdefault(canon, set())
+        fm = parse_frontmatter(p)
+        if not fm:
             continue
-        rel = str(md_path.relative_to(repo_root))
-        fm = parse_frontmatter(md_path)
-        graph[rel] = list(fm.get("related") or []) if fm else []
-    return graph
+        for entry in fm.get("related") or []:
+            target = resolve_entry(entry, doc_index, repo_root)
+            if target and target != canon:
+                link(canon, target)
+
+    if use_cache:
+        _GRAPH_CACHE[cache_key] = (sig, adj)
+    return adj
 
 
 def walk_hops(
     seeds: list[str],
-    graph: dict[str, list[str]],
+    graph: dict[str, set[str]],
     hops: int,
 ) -> list[dict]:
     """BFS expansion of seed documents through the related: graph.
@@ -131,7 +173,7 @@ def walk_hops(
     frontier: list[tuple[str, int, str]] = []
 
     for seed in seeds:
-        for neighbour in graph.get(seed, []):
+        for neighbour in sorted(graph.get(seed, set())):
             if neighbour not in visited:
                 frontier.append((neighbour, 1, seed))
                 visited.add(neighbour)
@@ -142,7 +184,7 @@ def walk_hops(
         if doc not in seed_set:
             results.append({"doc": doc, "hop": hop, "via": via})
         if hop < hops:
-            for neighbour in graph.get(doc, []):
+            for neighbour in sorted(graph.get(doc, set())):
                 if neighbour not in visited:
                     frontier.append((neighbour, hop + 1, doc))
                     visited.add(neighbour)
