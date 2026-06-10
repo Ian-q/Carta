@@ -2,6 +2,26 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.1] — 2026-06-10
+
+### Fixed
+- **The proactive-recall hook never pays reranker latency.** The hook forced ColPali off but
+  passed `search.rerank` through untouched, so enabling the LLM reranker (10s+/call with a strong
+  model) made every prompt submission block on a rerank call. The hook now forces
+  `search.rerank.enabled` off in its search config (mirroring the colpali-off override) — you can
+  enable `search.rerank` for explicit `carta search` without slowing every prompt.
+- **`carta eval` can no longer mistake a silently broken reranker for a result.** Both reranker
+  backends stamp `rerank_score` only when they actually ran; `run_search` now exposes that signal
+  via an optional `stats` out-param, and `carta eval` prints `rerank: applied on N/M queries` and
+  **exits 1** when rerank was requested but applied on zero queries. (The 0.8.0 reranker shipped
+  fully fail-open and the eval reported its numbers as a win — this class of failure is now a hard
+  error.) Verified live on a 62-query technical-docs eval: hybrid 0.790 recall@5 / 0.641 MRR →
+  with `qwen3.5:9b` rerank 0.871 / 0.778, reported as `rerank: applied on 61/62 queries`.
+
+### Changed
+- CI workflows bumped to Node 24 action releases (`actions/checkout@v5`,
+  `actions/setup-python@v6`) ahead of GitHub's 2026-06-16 forced migration.
+
 ## [0.9.0] — 2026-06-10
 
 ### Fixed

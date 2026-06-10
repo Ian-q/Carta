@@ -1034,3 +1034,84 @@ class TestRunEmbedStatusWriter:
             pipeline.run_embed(tmp_path, cfg, verbose=False, progress=None)
         data = json.loads((tmp_path / ".carta" / STATUS_FILENAME).read_text())
         assert data["phase"] == "failed"
+
+
+class TestRunSearchRerankStats:
+    """run_search reports via the optional stats out-param whether the reranker
+    actually ran. Both backends stamp rerank_score only on success; fail-open
+    paths return unstamped hits — that absence is the 0.8.0 silent-failure
+    signature this surfaces."""
+
+    def _cfg(self, rerank_enabled=True):
+        return {
+            "project_name": "test-project",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text",
+                "colpali_enabled": False,
+            },
+            "search": {"top_n": 5, "rerank": {"enabled": rerank_enabled, "candidate_pool": 30}},
+            "modules": {"doc_search": True},
+        }
+
+    def _run(self, cfg, stats, rerank_side_effect=None, points=True):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        point = MagicMock()
+        point.score = 0.9
+        point.payload = {"file_path": "docs/a.md", "text": "alpha"}
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = MagicMock(points=[point] if points else [])
+
+        patches = [
+            patch("carta.embed.pipeline.QdrantClient", return_value=mock_client),
+            patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768),
+            patch("carta.embed.pipeline.collection_is_hybrid", return_value=False),
+            patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]),
+            patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"),
+        ]
+        if rerank_side_effect is not None:
+            patches.append(patch("carta.search.rerank.rerank_dispatch", side_effect=rerank_side_effect))
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            return run_search("q", cfg, stats=stats)
+
+    def test_stats_reports_applied_when_reranker_stamps_scores(self):
+        """Reranker ran: hits come back stamped with rerank_score -> applied True,
+        and the transient key is still stripped from the returned hits."""
+        def fake_rerank(query, pool, **kwargs):
+            for h in pool:
+                h["rerank_score"] = 1.0
+            return pool
+
+        stats = {}
+        results = self._run(self._cfg(rerank_enabled=True), stats, rerank_side_effect=fake_rerank)
+        assert stats == {"rerank_requested": True, "rerank_applied": True}
+        assert results, "search should return the mocked hit"
+        assert all("rerank_score" not in h for h in results), "transient key must be stripped"
+
+    def test_stats_reports_fail_open_when_hits_unstamped(self):
+        """Fail-open: reranker returns the pool unchanged (no rerank_score) -> applied False."""
+        stats = {}
+        self._run(self._cfg(rerank_enabled=True), stats, rerank_side_effect=lambda q, pool, **kw: pool)
+        assert stats == {"rerank_requested": True, "rerank_applied": False}
+
+    def test_stats_reports_not_requested_when_rerank_disabled(self):
+        stats = {}
+        self._run(self._cfg(rerank_enabled=False), stats)
+        assert stats == {"rerank_requested": False, "rerank_applied": False}
+
+    def test_stats_requested_but_no_results_is_not_applied(self):
+        """Rerank enabled but zero hits: the rerank block is skipped -> applied False."""
+        stats = {}
+        self._run(self._cfg(rerank_enabled=True), stats, points=False)
+        assert stats == {"rerank_requested": True, "rerank_applied": False}
+
+    def test_stats_default_none_is_unchanged_behavior(self):
+        """No stats dict passed: run_search works exactly as before."""
+        results = self._run(self._cfg(rerank_enabled=False), None)
+        assert isinstance(results, list)
