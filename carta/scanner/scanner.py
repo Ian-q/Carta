@@ -126,20 +126,69 @@ def check_homeless_docs(repo_root: Path, cfg: dict) -> list:
     return issues
 
 
-def check_broken_related(doc_path: Path, frontmatter: dict, repo_root: Path) -> list:
-    """Flag related: entries that don't resolve to real files."""
+def check_broken_related(doc_path: Path, frontmatter: dict, repo_root: Path, doc_index: dict | None = None) -> list:
+    """Flag related: entries that are truly unresolvable (no resolver tier can find them).
+
+    When *doc_index* is provided the check delegates to :func:`~carta.search.graph.resolve_entry`
+    so that non-canonical-but-resolvable entries (e.g. bare ids) are *not* flagged here —
+    those are the responsibility of :func:`check_noncanonical_related`.  When *doc_index*
+    is ``None`` the legacy behaviour (literal path existence check) is preserved so that
+    call sites that don't have an index available still work.
+    """
+    from carta.search.graph import resolve_entry  # local import — avoids circular import
+
     issues = []
     for rel_path in frontmatter.get("related") or []:
+        if not isinstance(rel_path, str) or not rel_path.strip():
+            continue
         target = repo_root / rel_path
-        if not target.exists():
-            rel_doc = str(doc_path.relative_to(repo_root))
+        if target.exists():
+            continue
+        # With a doc_index use the resolver: only flag if NO tier resolves it.
+        if doc_index is not None:
+            if resolve_entry(rel_path, doc_index, repo_root) is not None:
+                continue  # resolvable (but non-canonical) — check_noncanonical_related handles it
+        rel_doc = str(doc_path.relative_to(repo_root))
+        issues.append({
+            "type": "broken_related",
+            "severity": "error",
+            "doc": rel_doc,
+            "detail": f"related: entry '{rel_path}' does not exist",
+            "related_file": rel_path,
+        })
+    return issues
+
+
+def check_noncanonical_related(doc_path: Path, frontmatter: dict, doc_index: dict, repo_root: Path) -> list:
+    """Flag related: entries that resolve only via a fallback tier (non-canonical —
+    e.g. a bare id or a missing-docs/-prefix path).
+
+    A canonical entry (an exact, existing repo-root path) produces no finding.
+    A truly-unresolvable entry also produces no finding here — that case is
+    owned solely by :func:`check_broken_related` to avoid double-reporting.
+    This feeds the linking sweep so entries get rewritten to canonical paths
+    over time; search itself resolves them regardless via resolve_entry.
+    """
+    from carta.search.graph import resolve_entry  # local import — avoids circular import
+    issues = []
+    rel_doc = str(doc_path.relative_to(repo_root))
+    for entry in frontmatter.get("related") or []:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        if (repo_root / entry).exists():
+            continue  # already canonical — no finding
+        resolved = resolve_entry(entry, doc_index, repo_root)
+        if resolved is not None:
             issues.append({
-                "type": "broken_related",
-                "severity": "error",
+                "type": "noncanonical_related",
+                "severity": "warning",
                 "doc": rel_doc,
-                "detail": f"related: entry '{rel_path}' does not exist",
-                "related_file": rel_path,
+                "detail": f"related: entry '{entry}' is non-canonical; use '{resolved}'",
+                "related_file": entry,
+                "suggested": resolved,
+                "resolves": True,
             })
+        # resolved is None → truly broken; check_broken_related handles it — no finding here
     return issues
 
 
@@ -824,6 +873,8 @@ def run_scan(
     if progress:
         progress.scan_step(f"checking frontmatter and links ({len(tracked_docs)} docs)")
     threshold = cfg.get("stale_threshold_days", 30)
+    from carta.search.graph import build_doc_index
+    doc_index = build_doc_index(repo_root)
     for doc_path in tracked_docs:
         rel = str(doc_path.relative_to(repo_root))
         fm = frontmatters.get(rel)
@@ -836,7 +887,8 @@ def run_scan(
         prototype = check_prototype_doc(doc_path, fm, repo_root)
         if prototype:
             issues.append(prototype)
-        issues.extend(check_broken_related(doc_path, fm, repo_root))
+        issues.extend(check_broken_related(doc_path, fm, repo_root, doc_index))
+        issues.extend(check_noncanonical_related(doc_path, fm, doc_index, repo_root))
         issues.extend(check_one_way_links(doc_path, fm, frontmatters, repo_root))
         issues.extend(check_stale_last_reviewed(doc_path, fm, threshold, ref_date))
         issues.extend(check_related_drift(doc_path, fm, repo_root))

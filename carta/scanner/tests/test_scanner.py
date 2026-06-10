@@ -236,7 +236,9 @@ def test_broken_related_detected(tmp_path):
     _make_tree(tmp_path, ["docs/PCB/DESIGN_CHECKLIST.md", "CLAUDE.md"])
     fm = {"related": ["CLAUDE.md", "docs/NONEXISTENT.md"], "last_reviewed": "2026-03-01"}
     doc = tmp_path / "docs/PCB/DESIGN_CHECKLIST.md"
-    issues = check_broken_related(doc, fm, tmp_path)
+    from carta.search.graph import build_doc_index
+    doc_index = build_doc_index(tmp_path)
+    issues = check_broken_related(doc, fm, tmp_path, doc_index)
     assert len(issues) == 1
     assert "docs/NONEXISTENT.md" in issues[0]["detail"]
 
@@ -245,7 +247,22 @@ def test_broken_related_all_valid(tmp_path):
     _make_tree(tmp_path, ["docs/PCB/DESIGN_CHECKLIST.md", "CLAUDE.md"])
     fm = {"related": ["CLAUDE.md"], "last_reviewed": "2026-03-01"}
     doc = tmp_path / "docs/PCB/DESIGN_CHECKLIST.md"
-    assert check_broken_related(doc, fm, tmp_path) == []
+    from carta.search.graph import build_doc_index
+    doc_index = build_doc_index(tmp_path)
+    assert check_broken_related(doc, fm, tmp_path, doc_index) == []
+
+
+def test_broken_related_skips_resolvable_bare_id(tmp_path):
+    """A bare id that resolves via doc_index must NOT be flagged broken_related."""
+    (tmp_path / "docs" / "vcu").mkdir(parents=True)
+    (tmp_path / "docs" / "vcu" / "connector-map.md").write_text(
+        "---\nid: connector-map\nrelated: []\n---\nbody\n")
+    checker_doc = tmp_path / "docs" / "vcu" / "connector-map.md"
+    fm = {"related": ["connector-map"]}
+    from carta.search.graph import build_doc_index
+    doc_index = build_doc_index(tmp_path)
+    issues = check_broken_related(checker_doc, fm, tmp_path, doc_index)
+    assert issues == [], f"Expected no broken_related for resolvable bare id; got {issues}"
 
 
 def test_missing_frontmatter_flagged(tmp_path):
