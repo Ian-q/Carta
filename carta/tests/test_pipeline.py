@@ -1115,3 +1115,28 @@ class TestRunSearchRerankStats:
         """No stats dict passed: run_search works exactly as before."""
         results = self._run(self._cfg(rerank_enabled=False), None)
         assert isinstance(results, list)
+
+
+class TestRunSearchDocType:
+    def test_text_hits_carry_doc_type_from_payload(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        point = MagicMock()
+        point.score = 0.9
+        point.payload = {"file_path": "docs/quirks/x.md", "text": "alpha",
+                         "doc_type": "quirk"}
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = MagicMock(points=[point])
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "u", "ollama_model": "m", "colpali_enabled": False},
+               "search": {"top_n": 5}, "modules": {"doc_search": True}}
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.search.scoped.get_search_collections", return_value=["p_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("q", cfg)
+
+        assert results and results[0]["doc_type"] == "quirk"

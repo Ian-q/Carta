@@ -303,8 +303,10 @@ def cmd_search(args):
         )
         _notify_if_update(cfg_path, cfg)
         return
+    from carta.config import NOTE_DOC_TYPES
     for r in results:
-        print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
+        tag = f"[{r['doc_type']}] " if r.get("doc_type") in NOTE_DOC_TYPES else ""
+        print(f"[{r['score']:.2f}] {tag}{r['source']} — {r['excerpt']}")
 
     hops = getattr(args, "hops", 0)
     if hops > 0:
