@@ -54,6 +54,9 @@ def resolve_doc_type(file_path: Path, rel_path: Path) -> str:
     if file_path.suffix == ".md":
         from carta.scanner.scanner import parse_frontmatter
         try:
+            # parse_frontmatter handles malformed YAML itself (returns None);
+            # the except is fail-open for unreadable/binary/non-UTF-8 files,
+            # which fall through to path inference like any other file.
             fm = parse_frontmatter(file_path) or {}
         except Exception:
             fm = {}
