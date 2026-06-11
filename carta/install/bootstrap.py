@@ -484,13 +484,11 @@ Returns top results from all collections with scores and excerpts.
 
 ---
 
-### `/session-memory <text>`
-Capture session context for future recall.
+### Saving project notes
 
-**Example:**
-```
-/session-memory save key decisions about API design
-```
+Use the `carta_remember` MCP tool (or `carta remember "text" --type quirk`) to save durable
+project knowledge — surprising quirks, bug-investigation findings, helpful notes. Notes are
+written to docs/quirks/ or docs/notes/ (git-shareable) and are immediately searchable.
 
 ---
 
