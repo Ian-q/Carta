@@ -148,6 +148,7 @@ def cleanup_expired_orphans(
 
 
 # Protected doc types that should never be deleted by orphan cleanup
+# Keep in sync with NOTE_DOC_TYPES in carta/config.py (routing/labeling).
 PROTECTED_DOC_TYPES = frozenset({"quirk", "bug-note", "helpful-note"})
 
 

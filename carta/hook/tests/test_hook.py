@@ -523,3 +523,25 @@ def test_judge_no_returns_false():
     with patch("carta.hook.hook._call_ollama_judge", return_value=False):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=3)
     assert result is False
+
+
+def test_inject_labels_note_hits():
+    """Recalled notes are labeled with their type so Claude can tell curated memory
+    from plain docs; plain docs stay unlabeled."""
+    hits = [
+        {"score": 0.92, "source": "docs/quirks/2026-06-11-psu.md",
+         "excerpt": "bench PSU must be on", "doc_type": "quirk"},
+        {"score": 0.91, "source": "docs/CAN/TOPOLOGY.md",
+         "excerpt": "two CAN buses", "doc_type": ""},
+    ]
+    cfg = _make_cfg()
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        out = _capture_main()
+    data = json.loads(out.strip())
+    assert "[quirk] docs/quirks/2026-06-11-psu.md" in data["context"]
+    assert "Source: docs/CAN/TOPOLOGY.md" in data["context"]

@@ -303,8 +303,10 @@ def cmd_search(args):
         )
         _notify_if_update(cfg_path, cfg)
         return
+    from carta.config import NOTE_DOC_TYPES
     for r in results:
-        print(f"[{r['score']:.2f}] {r['source']} — {r['excerpt']}")
+        tag = f"[{r['doc_type']}] " if r.get("doc_type") in NOTE_DOC_TYPES else ""
+        print(f"[{r['score']:.2f}] {tag}{r['source']} — {r['excerpt']}")
 
     hops = getattr(args, "hops", 0)
     if hops > 0:
@@ -580,6 +582,24 @@ def cmd_eval(args):
         sys.exit(1)
 
 
+def cmd_remember(args):
+    """Save a curated project note (quirk/bug-note/helpful-note) and embed it."""
+    from carta.config import load_config
+    from carta.memory.capture import capture_note
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
+    repo_root = cfg_path.parent.parent
+    tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()] or None
+    try:
+        result = capture_note(cfg, repo_root, args.text, note_type=args.type,
+                              title=args.title, tags=tags)
+    except (ValueError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ Note saved: {result['path']} → {result['collection']} "
+          f"({result['chunks']} chunks)")
+
+
 def cmd_export(args):
     """Bundle this project's embeddings into a portable .tar.gz for sharing."""
     from carta.config import load_config
@@ -696,6 +716,18 @@ def main():
     eval_p.add_argument("eval_path", help="Path to eval-set YAML (see carta/eval/datasets/example.yaml)")
     eval_p.add_argument("-k", type=int, default=5, help="top-k cutoff (default 5)")
 
+    remember_p = sub.add_parser(
+        "remember",
+        help="Save a project note (quirk/bug-note/helpful-note) and embed it",
+    )
+    remember_p.add_argument("text", help="The note text")
+    remember_p.add_argument(
+        "--type", choices=["quirk", "bug-note", "helpful-note"],
+        default="helpful-note", help="Note type (default: helpful-note)",
+    )
+    remember_p.add_argument("--title", default="", help="Optional title (drives the filename slug)")
+    remember_p.add_argument("--tags", default="", help="Comma-separated tags")
+
     update_p = sub.add_parser("update", help="Update carta to the latest version")
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")
     update_p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
@@ -751,6 +783,7 @@ def main():
         "audit": cmd_audit,
         "doctor": cmd_doctor,
         "eval": cmd_eval,
+        "remember": cmd_remember,
         "update": cmd_update,
         "statusline": cmd_statusline,
         "export": cmd_export,

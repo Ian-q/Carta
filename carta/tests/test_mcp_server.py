@@ -157,3 +157,31 @@ class TestDiscoverStaleFilesIntegration:
             # Should return only the stale file
             assert len(results) == 1
             assert results[0] == stale_file
+
+
+def test_remember_returns_ok_shape(tmp_path):
+    from carta.mcp import server
+    with patch.object(server, "_load_cfg", return_value={"project_name": "p"}), \
+         patch.object(server, "_repo_root_from_cfg", return_value=tmp_path), \
+         patch("carta.memory.capture.capture_note",
+               return_value={"path": "docs/quirks/x.md", "collection": "p_notes", "chunks": 1}):
+        out = server._remember("the bench PSU must be on", note_type="quirk")
+    assert out == {"status": "ok", "path": "docs/quirks/x.md",
+                   "collection": "p_notes", "chunks": 1}
+
+
+def test_remember_invalid_type_maps_to_invalid_request(tmp_path):
+    from carta.mcp import server
+    with patch.object(server, "_load_cfg", return_value={"project_name": "p"}), \
+         patch.object(server, "_repo_root_from_cfg", return_value=tmp_path), \
+         patch("carta.memory.capture.capture_note", side_effect=ValueError("bad note_type")):
+        out = server._remember("x", note_type="nope")
+    assert out["error"] == "invalid_request"
+
+
+def test_remember_no_config_maps_to_service_unavailable():
+    from carta.mcp import server
+    from carta.config import ConfigError
+    with patch.object(server, "_load_cfg", side_effect=ConfigError("no .carta")):
+        out = server._remember("x")
+    assert out["error"] == "service_unavailable"
