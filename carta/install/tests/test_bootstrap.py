@@ -116,7 +116,7 @@ def test_create_qdrant_collections_uses_namespaced_names():
     called_urls = [call.args[0] for call in mock_req.put.call_args_list]
     assert any("my-project_doc" in url for url in called_urls)
     assert any("my-project_session" in url for url in called_urls)
-    assert any("my-project_quirk" in url for url in called_urls)
+    assert any("my-project_notes" in url for url in called_urls)
 
 def test_bootstrap_continues_if_qdrant_unavailable(tmp_path):
     """bootstrap should warn and continue (not exit) when Qdrant is unreachable but not critically failing."""
