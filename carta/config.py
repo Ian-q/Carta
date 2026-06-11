@@ -4,6 +4,9 @@ import yaml
 
 REQUIRED_FIELDS = ["project_name", "qdrant_url"]
 
+# Curated note types — routed to {project}_notes and labeled in search output.
+NOTE_DOC_TYPES = ("quirk", "bug-note", "helpful-note")
+
 DEFAULTS = {
     "docs_root": "docs/",
     "stale_threshold_days": 30,
@@ -19,6 +22,10 @@ DEFAULTS = {
         "configuration values",
         "environment variable names",
     ],
+    "memory": {
+        "quirks_dir": "docs/quirks",     # note_type: quirk
+        "notes_dir": "docs/notes",       # note_type: bug-note, helpful-note
+    },
     "search": {
         "top_n": 5,
         "hybrid": {
@@ -161,7 +168,7 @@ def collection_for_doc_type(cfg: dict, doc_type: str) -> str:
     Returns:
         Collection name (e.g., "myproject_doc", "myproject_notes", "myproject_session").
     """
-    if doc_type in ("quirk", "bug-note", "helpful-note"):
+    if doc_type in NOTE_DOC_TYPES:
         return collection_name(cfg, "notes")
     elif doc_type == "session":
         return collection_name(cfg, "session")
