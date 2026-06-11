@@ -6,7 +6,7 @@ from typing import Optional
 
 import yaml
 
-from carta.config import collection_name
+from carta.config import collection_name, collection_for_doc_type
 
 
 # Map parent directory names to doc_type values
@@ -17,6 +17,8 @@ _PATH_TYPE_MAP = {
     "reference": "reference",
     "specs": "spec",
     "guides": "guide",
+    "quirks": "quirk",
+    "notes": "helpful-note",
 }
 
 
@@ -42,6 +44,25 @@ def infer_doc_type(file_path: Path) -> str:
     return "unknown"
 
 
+def resolve_doc_type(file_path: Path, rel_path: Path) -> str:
+    """Resolve a file's doc_type: explicit frontmatter wins, else parent-dir inference.
+
+    Args:
+        file_path: absolute path (read for frontmatter when markdown).
+        rel_path: repo-relative path (parent names drive inference).
+    """
+    if file_path.suffix == ".md":
+        from carta.scanner.scanner import parse_frontmatter
+        try:
+            fm = parse_frontmatter(file_path) or {}
+        except Exception:
+            fm = {}
+        fm_type = fm.get("doc_type")
+        if isinstance(fm_type, str) and fm_type.strip():
+            return fm_type.strip()
+    return infer_doc_type(rel_path)
+
+
 def generate_sidecar_stub(
     file_path: Path,
     repo_root: Path,
@@ -57,7 +78,7 @@ def generate_sidecar_stub(
         notes: optional free-text notes.
     """
     rel_path = file_path.relative_to(repo_root)
-    doc_type = infer_doc_type(rel_path)
+    doc_type = resolve_doc_type(file_path, rel_path)
     slug = slug_from_filename(file_path.name)
     file_type = "markdown" if file_path.suffix == ".md" else "pdf"
 
@@ -72,7 +93,7 @@ def generate_sidecar_stub(
         "image_count": None,
         "image_chunks": None,
         "file_mtime": None,
-        "collection": collection_name(cfg, "doc"),
+        "collection": collection_for_doc_type(cfg, doc_type),
         "spec_summary": None,
         "notes": notes or "",
         # Lifecycle fields (Plan 999.1-02)

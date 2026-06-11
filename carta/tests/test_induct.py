@@ -67,3 +67,45 @@ class TestGenerateSidecarStub:
 
         assert isinstance(stub["version_history"], list)
         assert len(stub["version_history"]) == 0
+
+
+class TestDocTypeResolution:
+    """Frontmatter doc_type wins over parent-dir inference; quirks/notes dirs map;
+    the stub's collection field routes via collection_for_doc_type."""
+
+    def _stub(self, tmp_path, rel, content="# T"):
+        fp = tmp_path / rel
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content)
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333"}
+        return generate_sidecar_stub(fp, tmp_path, cfg)
+
+    def test_frontmatter_doc_type_wins_over_path(self, tmp_path):
+        stub = self._stub(tmp_path, "docs/reference/x.md",
+                          "---\ndoc_type: quirk\n---\n\nBody text")
+        assert stub["doc_type"] == "quirk"
+        assert stub["collection"] == "p_notes"
+
+    def test_quirks_dir_maps_to_quirk(self, tmp_path):
+        stub = self._stub(tmp_path, "docs/quirks/x.md")
+        assert stub["doc_type"] == "quirk"
+        assert stub["collection"] == "p_notes"
+
+    def test_notes_dir_maps_to_helpful_note(self, tmp_path):
+        stub = self._stub(tmp_path, "docs/notes/x.md")
+        assert stub["doc_type"] == "helpful-note"
+        assert stub["collection"] == "p_notes"
+
+    def test_unmapped_dir_no_frontmatter_unchanged(self, tmp_path):
+        stub = self._stub(tmp_path, "docs/misc/x.md")
+        assert stub["doc_type"] == "unknown"
+        assert stub["collection"] == "p_doc"
+
+    def test_mapped_dir_without_frontmatter_still_routes_doc(self, tmp_path):
+        stub = self._stub(tmp_path, "docs/reference/datasheets/x.md")
+        assert stub["doc_type"] == "datasheet"
+        assert stub["collection"] == "p_doc"
+
+    def test_malformed_frontmatter_falls_back_to_path(self, tmp_path):
+        stub = self._stub(tmp_path, "docs/quirks/x.md", "---\n: : bad yaml [\n---\nBody")
+        assert stub["doc_type"] == "quirk"
