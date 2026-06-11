@@ -2,6 +2,26 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0] — 2026-06-11
+
+### Added
+- **Note capture — the write side of session memory.** `carta_remember` (MCP tool) and
+  `carta remember` (CLI) save curated project knowledge as plain markdown files with
+  `doc_type` frontmatter — `quirk` → `docs/quirks/`, `bug-note`/`helpful-note` →
+  `docs/notes/` (paths configurable via `memory.quirks_dir`/`memory.notes_dir`) — and embed
+  them into `{project}_notes` through the standard pipeline. Notes are git-shareable repo
+  docs: they show up in `carta scan`/audit, export with `carta export`, and survive
+  re-embeds. Search results and proactive-recall injections label them (`[quirk] …`).
+- **Frontmatter `doc_type` override.** A `doc_type:` key in markdown frontmatter now wins
+  over parent-directory inference, and `quirks/` / `notes/` directories map to note types —
+  hand-written notes route correctly on (re-)embed.
+
+### Fixed
+- **`collection_for_doc_type` was dead code — note types never reached `_notes`.**
+  `upsert_chunks` hardcoded the `_doc` collection; it now routes by the batch's doc_type.
+  `carta init` creates `{project}_notes` (instead of the never-used `_quirk`); existing
+  projects need no migration — the collection is auto-created on first capture.
+
 ## [0.9.1] — 2026-06-10
 
 ### Fixed
