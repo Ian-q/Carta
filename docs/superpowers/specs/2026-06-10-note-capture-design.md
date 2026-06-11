@@ -59,6 +59,12 @@ def capture_note(cfg: dict, repo_root: Path, text: str, *,
     quirks_dir: docs/quirks      # note_type: quirk
     notes_dir: docs/notes        # note_type: bug-note, helpful-note
   ```
+  **Repo footprint policy (recorded rationale):** knowledge artifacts are content-named and
+  blend into the user's docs tree (like `docs/adr/` convention; they must remain useful if
+  Carta is removed — hence generic `doc_type:` frontmatter, not a carta-branded schema or a
+  `docs/carta/` namespace). Tool artifacts stay contained in the single `.carta/` machine
+  dir (the sidecar-relocation precedent). Containment-minded users can point these config
+  keys at a namespaced dir. Nothing new is ever added at repo root.
 - Filename `YYYY-MM-DD-<slug>.md` — slug from `title` (or first ~6 words of `text`),
   lowercase kebab-case; on collision append `-2`, `-3`, …
 - File content: YAML frontmatter (`doc_type`, `title`, `created` ISO date, `tags` when
