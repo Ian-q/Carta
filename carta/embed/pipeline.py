@@ -1571,6 +1571,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                             "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
                             "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
                             "type": "visual",
+                            "doc_type": payload.get("doc_type", ""),
                         })
                         
                 except Exception:

@@ -5,6 +5,7 @@ import yaml
 REQUIRED_FIELDS = ["project_name", "qdrant_url"]
 
 # Curated note types — routed to {project}_notes and labeled in search output.
+# Keep in sync with PROTECTED_DOC_TYPES in carta/embed/lifecycle.py (orphan-cleanup guard).
 NOTE_DOC_TYPES = ("quirk", "bug-note", "helpful-note")
 
 DEFAULTS = {
