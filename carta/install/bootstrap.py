@@ -10,7 +10,7 @@ import yaml
 
 CARTA_RUNTIME_SRC = Path(__file__).parent.parent
 
-VECTOR_DIMENSIONS = {"doc": 768, "session": 768, "quirk": 768}
+VECTOR_DIMENSIONS = {"doc": 768, "session": 768, "notes": 768}
 
 
 def _is_interactive() -> bool:
@@ -252,7 +252,7 @@ def run_bootstrap(project_root: Path, *, skip_skills: bool = False) -> None:
                 print(f"\n✓ Carta skills at {display}: {', '.join(msg_parts)}")
                 print("  (Reload Claude Code to activate)")
 
-    colls = f"{project_name}_doc, {project_name}_session, {project_name}_quirk"
+    colls = f"{project_name}_doc, {project_name}_session, {project_name}_notes"
     if collections_ok:
         print(f"\n✅ Carta ready. Collections: {colls}")
         print("  Slash commands available: /doc-audit, /doc-embed, /doc-search")
@@ -356,7 +356,7 @@ def _remove_plugin_cache() -> bool:
 def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> bool:
     """Create Qdrant collections. Returns True if all succeeded."""
     failures = 0
-    for type_ in ["doc", "session", "quirk"]:
+    for type_ in ["doc", "session", "notes"]:
         collection = f"{project_name}_{type_}"
         try:
             r = requests.put(
@@ -423,7 +423,7 @@ def _create_mcp_configs(project_root: Path) -> None:
 
 def _append_claude_md(project_root: Path, project_name: str) -> None:
     claude_md = project_root / "CLAUDE.md"
-    note = f"\n<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_quirk -->\n"
+    note = f"\n<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_notes -->\n"
     if claude_md.exists():
         if "Carta is active" in claude_md.read_text():
             return
@@ -484,13 +484,11 @@ Returns top results from all collections with scores and excerpts.
 
 ---
 
-### `/session-memory <text>`
-Capture session context for future recall.
+### Saving project notes
 
-**Example:**
-```
-/session-memory save key decisions about API design
-```
+Use the `carta_remember` MCP tool (or `carta remember "text" --type quirk`) to save durable
+project knowledge — surprising quirks, bug-investigation findings, helpful notes. Notes are
+written to docs/quirks/ or docs/notes/ (git-shareable) and are immediately searchable.
 
 ---
 
@@ -507,7 +505,7 @@ Capture session context for future recall.
 2. Seed knowledge store: `/doc-embed`
 3. Search docs: `/doc-search <query>`
 
-<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_quirk -->
+<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_notes -->
 '''
     agents_md.write_text(content)
     print(f"  Created AGENTS.md with Carta slash commands")

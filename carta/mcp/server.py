@@ -408,6 +408,47 @@ def carta_scan() -> dict:
         return {"error": "service_unavailable", "detail": str(e)}
 
 
+def _remember(text: str, *, note_type: str = "helpful-note", title: str = "",
+              tags: list[str] | None = None) -> dict:
+    """Plain-function core for carta_remember (kept undecorated for testability)."""
+    try:
+        cfg = _load_cfg()
+        repo_root = _repo_root_from_cfg()
+    except (ConfigError, FileNotFoundError) as e:
+        return {"error": "service_unavailable", "detail": str(e)}
+    try:
+        from carta.memory.capture import capture_note
+        result = capture_note(cfg, repo_root, text, note_type=note_type,
+                              title=title, tags=tags)
+        return {"status": "ok", **result}
+    except ValueError as e:
+        return {"error": "invalid_request", "detail": str(e)}
+    except Exception as e:
+        _logger.warning("carta_remember error: %s", e)
+        return {"error": "service_unavailable", "detail": str(e)}
+
+
+@mcp_server.tool()
+def carta_remember(
+    text: str,
+    note_type: str = "helpful-note",
+    title: str = "",
+    tags: list[str] | None = None,
+) -> dict:
+    """Save a curated project note as a repo markdown file and embed it for search.
+
+    Use when you learn something durable about THIS project worth remembering across
+    sessions: note_type="quirk" for surprising system/hardware behavior,
+    "bug-note" for bug-investigation findings, "helpful-note" for other durable
+    knowledge. The note lands in docs/quirks/ or docs/notes/ (git-shareable) and is
+    immediately retrievable via carta_search and proactive recall.
+
+    Returns:
+        {"status": "ok", "path", "collection", "chunks"} or {"error", "detail"}.
+    """
+    return _remember(text, note_type=note_type, title=title, tags=tags)
+
+
 def main() -> None:
     """Entry point for carta-mcp command."""
     mcp_server.run()

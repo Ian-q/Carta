@@ -18,7 +18,7 @@ from pathlib import Path
 
 import requests
 
-from carta.config import find_config, load_config
+from carta.config import find_config, load_config, NOTE_DOC_TYPES
 from carta.embed.pipeline import run_search
 
 
@@ -227,8 +227,9 @@ def _inject(hits: list[dict]) -> None:
     """
     context_lines = ["## Relevant documentation\n"]
     for h in hits:
+        tag = f"[{h['doc_type']}] " if h.get("doc_type") in NOTE_DOC_TYPES else ""
         context_lines.append(
-            f"**Source: {h['source']} (score: {h['score']:.2f})**\n"
+            f"**Source: {tag}{h['source']} (score: {h['score']:.2f})**\n"
             f"> {h['excerpt'][:200]}\n"
         )
     context_text = "\n".join(context_lines)

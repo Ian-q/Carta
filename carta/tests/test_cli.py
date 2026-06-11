@@ -269,3 +269,50 @@ class TestCmdEvalRerankAssertion:
         captured = capsys.readouterr()
         assert code is None
         assert "rerank: not requested" in captured.out
+
+
+class TestCmdRemember:
+    def _args(self, **kw):
+        import argparse
+        kw.setdefault("text", "the bench PSU must be on")
+        kw.setdefault("type", "quirk")
+        kw.setdefault("title", "")
+        kw.setdefault("tags", "")
+        return argparse.Namespace(**kw)
+
+    def _run(self, args, capture_result=None, capture_error=None):
+        from unittest.mock import patch
+        from carta.cli import cmd_remember
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333"}
+        kwargs = {}
+        if capture_error:
+            kwargs["side_effect"] = capture_error
+        else:
+            kwargs["return_value"] = capture_result or {
+                "path": "docs/quirks/2026-06-11-x.md", "collection": "p_notes", "chunks": 2}
+        with patch("carta.cli.find_config", return_value=Path("/fake/.carta/config.yaml")), \
+             patch("carta.config.load_config", return_value=cfg), \
+             patch("carta.memory.capture.capture_note", **kwargs) as cap:
+            try:
+                cmd_remember(args)
+            except SystemExit as e:
+                return e.code, cap
+        return None, cap
+
+    def test_happy_path_prints_path_and_collection(self, capsys):
+        code, cap = self._run(self._args(tags="bench, can"))
+        out = capsys.readouterr().out
+        assert code is None
+        assert "docs/quirks/2026-06-11-x.md" in out
+        assert "p_notes" in out
+        # comma-string tags become a list
+        assert cap.call_args.kwargs["tags"] == ["bench", "can"]
+
+    def test_no_tags_passes_none(self):
+        code, cap = self._run(self._args(tags=""))
+        assert cap.call_args.kwargs["tags"] is None
+
+    def test_capture_error_exits_1(self, capsys):
+        code, _ = self._run(self._args(), capture_error=ValueError("bad"))
+        assert code == 1
+        assert "bad" in capsys.readouterr().err

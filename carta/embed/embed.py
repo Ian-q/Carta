@@ -18,7 +18,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from carta.config import collection_name
+from carta.config import collection_name, collection_for_doc_type
 
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
@@ -181,7 +181,11 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     Returns:
         Number of points upserted.
     """
-    coll_name = collection_name(cfg, "doc")
+    # Route by the batch's doc_type (batches come from a single file, so they are
+    # doc_type-homogeneous). Note types (quirk/bug-note/helpful-note) land in
+    # {project}_notes; everything else (incl. image/visual chunk types) stays in _doc.
+    batch_doc_type = chunks[0].get("doc_type", "unknown") if chunks else "unknown"
+    coll_name = collection_for_doc_type(cfg, batch_doc_type)
     embed_cfg = cfg["embed"]
     ollama_url = embed_cfg["ollama_url"]
     model = embed_cfg["ollama_model"]

@@ -189,6 +189,7 @@ last_reviewed: 2026-03-20
 | `/doc-audit` | Structural + semantic audit, generates `AUDIT_REPORT.md` |
 | `/doc-embed` | Ingest PDFs, manuals, and audio transcripts into Qdrant |
 | `/doc-search` | Natural language search over the embedded knowledge base |
+| `carta remember` / `carta_remember` | Save a curated project note (quirk / bug-note / helpful-note) as a repo markdown file and embed it |
 
 ---
 
@@ -266,6 +267,27 @@ It was measured **neutral** on a corpus where a strong reranker already floats i
 most likely to help corpora with a rich, well-linked `related:` graph and relevant docs that rank
 deep. The companion `related:` resolver (id/path normalization) and the `carta scan`
 `noncanonical_related` check ship regardless and feed link-graph cleanup.
+
+### Capturing notes (quirks, bug notes, helpful notes)
+
+The write side of session memory. When you (or Claude) learn something durable about the
+project, save it:
+
+```bash
+carta remember "EZKontrol bench tests silently fail unless motor CAN is powered" \
+  --type quirk --title "EZKontrol bench power" --tags can,bench
+```
+
+or from Claude via the `carta_remember` MCP tool. Notes are plain markdown files with
+`doc_type` frontmatter — `quirk` → `docs/quirks/`, `bug-note`/`helpful-note` → `docs/notes/`
+(configurable via `memory.quirks_dir` / `memory.notes_dir`) — embedded into
+`{project}_notes` and retrieved by the same hybrid search, reranker, and proactive-recall
+hook as your docs. Search output labels them: `[quirk] docs/quirks/2026-06-11-….md`.
+
+Notes are knowledge artifacts, not tool state: git-shareable, audited by `carta scan`
+(staleness, links), exported by `carta export`, and still useful if you remove Carta.
+Hand-written files work too — drop a markdown file in `docs/quirks/` (or set
+`doc_type: quirk` in frontmatter anywhere) and `carta embed` routes it correctly.
 
 ---
 

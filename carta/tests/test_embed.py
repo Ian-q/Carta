@@ -244,3 +244,41 @@ class TestCollectionForDocType:
 
         assert collection_for_doc_type(cfg, "unknown_type") == "myproject_doc"
         assert collection_for_doc_type(cfg, "random-string") == "myproject_doc"
+
+
+class TestUpsertChunksRouting:
+    """upsert_chunks must route by the chunks' doc_type via collection_for_doc_type —
+    it previously hardcoded {project}_doc, making note types unreachable."""
+
+    def _run(self, doc_type):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.embed import upsert_chunks
+        chunks = [{"slug": "s", "text": "hello world", "chunk_index": 0,
+                   "doc_type": doc_type}]
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "http://localhost:11434",
+                          "ollama_model": "m", "embedding_workers": 1}}
+        client = MagicMock()
+        with patch("carta.embed.embed.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.embed.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.embed.ensure_collection") as ens:
+            upsert_chunks(chunks, cfg, client=client)
+        ensured = ens.call_args[0][1]
+        # the same name must be used for the actual upsert call
+        assert ensured in str(client.upsert.call_args)
+        return ensured
+
+    def test_quirk_routes_to_notes(self):
+        assert self._run("quirk") == "p_notes"
+
+    def test_bug_note_routes_to_notes(self):
+        assert self._run("bug-note") == "p_notes"
+
+    def test_helpful_note_routes_to_notes(self):
+        assert self._run("helpful-note") == "p_notes"
+
+    def test_plain_doc_type_still_routes_to_doc(self):
+        assert self._run("datasheet") == "p_doc"
+
+    def test_image_description_still_routes_to_doc(self):
+        assert self._run("image_description") == "p_doc"
