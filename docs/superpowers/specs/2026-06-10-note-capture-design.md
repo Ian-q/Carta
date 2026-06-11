@@ -70,28 +70,40 @@ def capture_note(cfg: dict, repo_root: Path, text: str, *,
 - File content: YAML frontmatter (`doc_type`, `title`, `created` ISO date, `tags` when
   given) + blank line + `text` verbatim.
 - Embeds via the existing `run_embed_file(path, cfg)` (pipeline.py:1035) — sidecar stub,
-  chunking, upsert all reuse the standard pipeline.
-- **Ensures the target Qdrant collection exists** before embedding (so capture works on
-  projects bootstrapped before this release, without re-init).
+  chunking, upsert all reuse the standard pipeline. (Collection auto-creation is already
+  handled by `ensure_collection()` inside `upsert_chunks` — no extra plumbing.)
 - Returns `{"path": <repo-relative>, "collection": <name>, "chunks": <int>}`; raises with a
   clear message on failure (callers map to their error shape). If embedding fails after the
   file was written, the file is kept and the error says so — the note is not lost, and a
   later `carta embed` picks it up.
 
-### 2. Prerequisite fix: frontmatter `doc_type` override (induct.py)
+### 2. Prerequisite fixes: doc_type routing end-to-end
 
-- `generate_sidecar_stub()` / doc-type inference: a `doc_type:` key in the file's YAML
-  frontmatter **wins** over parent-directory inference.
-- Add `quirks` → `quirk` and `notes` → `helpful-note` to `_PATH_TYPE_MAP` so
-  frontmatter-less hand-written files in those directories route correctly on (re-)embed.
-- Existing behavior unchanged for files with neither frontmatter nor a mapped parent.
+Planning investigation found the routing gap is wider than bootstrap — `collection_for_doc_type`
+(config.py:150) is currently **dead code**; nothing in the embed path calls it. Three fixes:
 
-### 3. Prerequisite fix: `_notes` collection (bootstrap + doctor)
+- **Frontmatter override (induct.py):** a `doc_type:` key in a markdown file's YAML
+  frontmatter **wins** over parent-directory inference (reuses `scanner.parse_frontmatter`).
+  Add `quirks` → `quirk` and `notes` → `helpful-note` to `_PATH_TYPE_MAP` so frontmatter-less
+  hand-written files route correctly. Existing behavior unchanged otherwise. The sidecar
+  stub's informational `collection` field uses `collection_for_doc_type` instead of
+  hardcoded `_doc`.
+- **Upsert routing (embed.py:184):** `upsert_chunks` hardcodes
+  `coll_name = collection_name(cfg, "doc")`; change to
+  `collection_for_doc_type(cfg, chunks[0].get("doc_type", "unknown"))` (batches are
+  per-file, hence doc_type-homogeneous; image/visual doc_types still map to `_doc`, so all
+  current behavior is preserved except note types, which now route to `_notes`).
+- **Bootstrap (bootstrap.py:13,359,255):** create `["doc", "session", "notes"]` (replacing
+  `quirk` in the list and in `VECTOR_DIMENSIONS`; `_session` stays — deployed projects have
+  it and scoped search lists it). Update the success-message string.
 
-- Bootstrap creates `["doc", "session", "notes"]` (replacing `quirk` in the list; `_session`
-  stays — it exists in deployed projects and scoped search lists it).
-- `carta doctor`: new check — if `{project}_notes` is missing, create it (report as a fix);
-  if a legacy empty `{project}_quirk` exists, report it as removable (do not auto-delete).
+### 3. Migration: none needed
+
+`ensure_collection()` inside `upsert_chunks` auto-creates missing collections with the
+correct schema, so the first capture on a pre-0.10.0 project creates `{project}_notes`
+automatically. Legacy `{project}_quirk` collections are inert empties (the old routing never
+wrote to them) and can be ignored or manually deleted. No doctor check is added (YAGNI —
+revisit only if real confusion shows up).
 
 ### 4. Surfaces
 
@@ -102,6 +114,8 @@ def capture_note(cfg: dict, repo_root: Path, text: str, *,
 - **CLI**: `carta remember "text..." --type quirk --title "..." --tags a,b` — prints the
   created path and collection; exit 1 with stderr message on error. Registered in the
   existing subparser block (cli.py).
+- **Bootstrap AGENTS.md text** (bootstrap.py:487): replace the phantom `/session-memory`
+  skeleton with guidance for the real `carta_remember` MCP tool / `carta remember` CLI.
 
 ### 5. Recall labeling
 
@@ -128,9 +142,10 @@ TDD per component:
   collision suffixing; type→directory routing; invalid type/empty text rejected; collection
   ensured when missing; embed failure keeps the file and reports.
 - **induct**: frontmatter doc_type beats path inference; `quirks/`/`notes/` path mapping;
-  no frontmatter + unmapped path ⇒ unchanged behavior.
-- **bootstrap/doctor**: collection list includes `notes`, not `quirk`; doctor creates
-  missing `_notes`, flags legacy `_quirk`.
+  no frontmatter + unmapped path ⇒ unchanged behavior; stub collection field routed.
+- **upsert routing**: chunks with doc_type quirk/bug-note/helpful-note upsert into
+  `{project}_notes`; plain docs and image/visual chunks still go to `{project}_doc`.
+- **bootstrap**: collection list includes `notes`, not `quirk`.
 - **MCP + CLI wiring**: happy path and error shape for both surfaces.
 - **labeling**: hook injection and search output prefix `[quirk]` etc.; plain docs
   unaffected.
