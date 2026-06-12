@@ -349,6 +349,9 @@ def _embed_one_file(
         metadata["frontmatter"] = frontmatter_meta
 
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
+    # NOTE: expected_text tracks what upsert_chunks attempts. If a later task drops
+    # empty chunks inside upsert_chunks, this line must be updated to match.
+    expected_text = len(enriched)
     count = upsert_chunks(enriched, cfg, client=client)
 
     # Vision progress tracking — events collected by callback, passed to caller via sidecar_updates
@@ -377,6 +380,7 @@ def _embed_one_file(
     # Vision: extract image descriptions for PDF files (fail-open per D-11, D-12)
     image_count = 0
     image_chunk_count = 0
+    expected_images = 0  # tracks chunks attempted; must equal image_chunk_count for cleanup gate
     vision_metadata = None
     visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
     _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
@@ -479,6 +483,7 @@ def _embed_one_file(
                                 "model_used": desc.get("model_used", "llava"),
                                 "content_type": desc.get("content_type", "visual"),
                             })
+                    expected_images = len(image_chunks)
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                     if verbose:
                         print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
@@ -511,6 +516,7 @@ def _embed_one_file(
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
                                 "text": desc["text"],
                             })
+                        expected_images = len(image_chunks)
                         image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                         if verbose:
                             print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
@@ -556,12 +562,19 @@ def _embed_one_file(
         except OSError:
             pass
 
-    # Delete stale-generation points for this file (best-effort; errors are logged not raised).
+    # Delete stale-generation points for this file only when the upsert was complete.
+    # A partial upsert (batch failure) leaves the new generation incomplete; deleting the
+    # old generation would then lose chunks from BOTH generations. Require exact counts.
     # Also organically removes any legacy slug-keyed points that share the same file_path.
-    if count + image_chunk_count > 0:
+    rel_path = str(file_path.relative_to(repo_root))
+    if count + image_chunk_count > 0 and count == expected_text and image_chunk_count == expected_images:
         coll = collection_for_doc_type(cfg, file_info.get("doc_type", "unknown"))
-        delete_other_generations(
-            client, coll, str(file_path.relative_to(repo_root)), generation
+        delete_other_generations(client, coll, rel_path, generation)
+    elif count + image_chunk_count > 0:
+        print(
+            f"Warning: partial upsert for {rel_path} ({count}/{expected_text} text, "
+            f"{image_chunk_count}/{expected_images} image) — keeping previous generation's points",
+            flush=True,
         )
 
     return count + image_chunk_count, sidecar_updates
@@ -816,6 +829,10 @@ def _visual_embed_one_page(
 
     if chunks:
         image_chunks = []
+        # Stamp the sidecar's current generation onto every pass-2 chunk so
+        # delete_other_generations (keyed on doc_generation) does not delete them
+        # when the file is re-embedded at a later generation.
+        doc_generation = int(sidecar.get("generation") or 1)
         for chunk in chunks:
             for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
                 i = len(image_chunks)
@@ -823,6 +840,7 @@ def _visual_embed_one_page(
                     "slug": slug,
                     "file_path": current_path,
                     "doc_type": "image_description",
+                    "doc_generation": doc_generation,
                     "page_num": page,
                     "image_index": chunk.get("image_index", 0),
                     # Use a pass-2-specific chunk_index token so the Qdrant point
@@ -1122,6 +1140,10 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         version_history = version_history[-max_gens:]
 
     # Prepare lifecycle updates
+    # VISUAL_DONE_KEY is reset to [] so add_pending_pages no longer excludes these pages;
+    # pass-1 re-queues image-heavy pages and the visual drainer re-processes them.
+    # VISUAL_PENDING_KEY is intentionally omitted — pass-1's fresh queuing merges into it
+    # and any stale pending pages re-drain idempotently (point IDs overwrite in place).
     lifecycle_updates = {
         "generation": new_generation,
         "status": "stale",
@@ -1130,6 +1152,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         "file_mtime": current_mtime,
         "last_hash_check_at": now.isoformat(),
         "version_history": version_history,
+        VISUAL_DONE_KEY: [],
     }
 
     # Mark chunks as stale in Qdrant (with migration boundary guard)

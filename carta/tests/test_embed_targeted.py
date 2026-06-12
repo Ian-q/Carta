@@ -118,7 +118,7 @@ def test_targeted_multiple_files_all_processed(mock_find_config, mock_load_confi
         assert mock_run_embed_file.call_count == 3
 
 
-@patch("carta.embed.pipeline.upsert_chunks", return_value=2)
+@patch("carta.embed.pipeline.upsert_chunks", return_value=1)
 @patch("carta.embed.pipeline.delete_other_generations")
 def test_embed_one_file_cleans_other_generations(mock_del, mock_upsert, tmp_path):
     """_embed_one_file calls delete_other_generations with correct file_path and generation."""
@@ -144,3 +144,132 @@ def test_embed_one_file_cleans_other_generations(mock_del, mock_upsert, tmp_path
     # Verify chunks passed to upsert carry doc_generation == 2
     upsert_call_chunks = mock_upsert.call_args.args[0]
     assert all(c.get("doc_generation") == 2 for c in upsert_call_chunks)
+
+
+# ---------------------------------------------------------------------------
+# Test 2: run_embed_file resets visual_done on hash-changed re-embed
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.upsert_chunks", return_value=3)
+@patch("carta.embed.pipeline.mark_sidecar_stale")
+@patch("carta.embed.pipeline.ensure_collection")
+@patch("carta.embed.pipeline.QdrantClient")
+@patch("carta.embed.pipeline._update_sidecar")
+@patch("carta.embed.pipeline.read_sidecar")
+@patch("carta.embed.pipeline.write_sidecar")
+@patch("carta.embed.pipeline.sidecar_path")
+@patch("carta.embed.pipeline.compute_file_hash", return_value="newhash")
+@patch("carta.embed.pipeline.needs_rehash", return_value=True)
+@patch("carta.embed.pipeline.find_config")
+def test_run_embed_file_resets_visual_done_on_hash_change(
+    mock_find_config,
+    mock_needs_rehash,
+    mock_compute_hash,
+    mock_sidecar_path,
+    mock_write_sidecar,
+    mock_read_sidecar,
+    mock_update_sidecar,
+    MockQdrantClient,
+    mock_ensure_collection,
+    mock_mark_stale,
+    mock_upsert,
+    mock_del,
+    tmp_path,
+):
+    """run_embed_file on a hash-changed file must write visual_done: [] into the sidecar.
+
+    Regression: before fix, visual_done was never cleared on re-embed, so
+    add_pending_pages excluded already-done pages and OCR chunks were permanently lost.
+    """
+    from carta.embed.pipeline import run_embed_file
+    from carta.embed.visual_queue import VISUAL_DONE_KEY
+
+    # Set up a real markdown file so _embed_one_file can read it
+    doc = tmp_path / "docs" / "a.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("# Title\n\nsome content here to chunk\n")
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.touch()
+    mock_find_config.return_value = cfg_path
+
+    sc_path = tmp_path / ".carta" / "sidecars" / "a.embed-meta.yaml"
+    mock_sidecar_path.return_value = sc_path
+    sc_path.parent.mkdir(parents=True)
+    sc_path.touch()
+
+    # Sidecar already has some visual_done pages from a previous visual pass
+    mock_read_sidecar.return_value = {
+        "slug": "a",
+        "doc_type": "unknown",
+        "generation": 1,
+        "file_hash": "oldhash",
+        "sidecar_id": None,
+        VISUAL_DONE_KEY: [1, 2, 3],
+    }
+
+    cfg = {
+        "project_name": "test",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+
+    run_embed_file(doc, cfg)
+
+    # Collect all _update_sidecar calls and merge their updates (last write wins per key)
+    assert mock_update_sidecar.called, "_update_sidecar was never called"
+    merged = {}
+    for c in mock_update_sidecar.call_args_list:
+        merged.update(c.args[1])
+
+    assert VISUAL_DONE_KEY in merged, (
+        f"visual_done key not written to sidecar on hash-change re-embed; "
+        f"sidecar updates keys: {list(merged.keys())}"
+    )
+    assert merged[VISUAL_DONE_KEY] == [], (
+        f"Expected visual_done=[] after hash-change re-embed, got: {merged[VISUAL_DONE_KEY]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 3: partial upsert skips delete_other_generations and prints warning
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.upsert_chunks", return_value=1)   # partial: returns 1, expected >= 2
+def test_partial_upsert_skips_cleanup_and_warns(mock_upsert, mock_del, tmp_path, capsys):
+    """When upsert_chunks returns fewer chunks than attempted, cleanup must be skipped
+    and a warning mentioning 'partial upsert' must be printed.
+
+    Regression: before fix, cleanup after partial upsert deleted gen-1 points while
+    the failed gen-2 batch left those chunk indexes in neither generation.
+    """
+    from carta.embed.pipeline import _embed_one_file
+
+    repo = tmp_path
+    doc = repo / "docs" / "b.md"
+    doc.parent.mkdir(parents=True)
+    # Write enough content to produce at least 2 chunks
+    doc.write_text("# Title\n\n" + ("word " * 200) + "\n\n" + ("more content " * 200) + "\n")
+
+    cfg = {
+        "project_name": "test",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    file_info = {"slug": "b", "doc_type": "unknown", "generation": 2}
+
+    _embed_one_file(doc, file_info, cfg, MagicMock(), repo, 800, 0.15)
+
+    # Cleanup must NOT have been called
+    mock_del.assert_not_called()
+
+    # Warning must be printed mentioning "partial upsert"
+    captured = capsys.readouterr()
+    assert "partial upsert" in captured.out or "partial upsert" in captured.err, (
+        f"Expected 'partial upsert' warning in stdout/stderr; got:\n"
+        f"  stdout: {captured.out!r}\n"
+        f"  stderr: {captured.err!r}"
+    )
