@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import hashlib
+import sys
 import uuid
 
 import requests
@@ -173,7 +174,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
 
     Args:
         chunks: list of chunk dicts with at minimum keys:
-            "slug", "text", "chunk_index".
+            "slug", "text", "chunk_index"; "file_path" (repo-relative) should
+            also be set — it is the primary point-ID key (slug is a fallback).
             Any additional keys are stored as Qdrant payload.
         cfg: carta config dict (must contain qdrant_url, embed.ollama_url,
              embed.ollama_model, and project_name).
@@ -202,19 +204,28 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     is_hybrid = collection_is_hybrid(client, coll_name)
 
     def build_point(chunk: dict, vec: list[float]) -> PointStruct:
+        # The payload's doc_generation and the generation baked into the point
+        # ID must agree — generation cleanup deletes by payload value.
+        generation = chunk.get("doc_generation", 1)
         payload = {k: v for k, v in chunk.items() if k != "text"}
         payload["text"] = chunk["text"]
-        payload["doc_generation"] = chunk.get("doc_generation", 1)
+        payload["doc_generation"] = generation
         payload["stale_as_of"] = None
         payload["superseded_at"] = None
         payload["orphaned_at"] = None
         payload["sidecar_id"] = chunk.get("sidecar_id", "")
         payload["chunk_source_hash"] = chunk.get("chunk_source_hash", "")
 
-        id_key = chunk.get("file_path") or chunk["slug"]
-        point_id = _point_id_versioned(
-            id_key, chunk["chunk_index"], chunk.get("doc_generation", 1)
-        )
+        id_key = chunk.get("file_path")
+        if not id_key:
+            # Slug-keyed IDs collide across same-stem files; make a regression loud.
+            print(
+                f"Warning: chunk {chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}] "
+                f"has no file_path — falling back to slug-keyed point ID",
+                file=sys.stderr, flush=True,
+            )
+            id_key = chunk["slug"]
+        point_id = _point_id_versioned(id_key, chunk["chunk_index"], generation)
 
         if is_hybrid:
             from carta.embed.sparse import embed_sparse_document
