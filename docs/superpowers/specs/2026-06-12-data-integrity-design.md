@@ -100,15 +100,20 @@ In `_embed_one_file` (text path) and the visual path:
 ### 4. Sidecar status bookkeeping (Bug E)
 
 `run_embed_file`: on successful embed, the final sidecar state is
-`status: current`, `stale_as_of: null` (lifecycle updates must not clobber the
-success state). `status: stale` persists only when the embed itself failed.
-The stale marker remains correct for the window between hash-change detection
-and re-embed completion.
+`status: embedded` (the codebase's existing canonical healthy value — not
+`current` as originally drafted), `stale_as_of: null`; `extraction_failed`
+from the embed itself survives the merge. On an embed exception nothing is
+written, so the sidecar keeps its prior state and the file stays
+re-discoverable. Sidecar-level `stale` is no longer persisted at all — the
+stale marker during the re-embed window lives on the old generation's Qdrant
+points (`mark_sidecar_stale`), which generation cleanup then removes.
 
 ### 5. `carta doctor` corpus-integrity checks (read-only)
 
-New doctor section scanning the project's `_doc` (and `_visual` if present)
-collections plus sidecars:
+New doctor section scanning the project's `_doc` collection plus sidecars.
+(`_visual` scanning is deliberately deferred to the visual/OCR follow-up:
+repair cannot re-create visual points it purges until a visual re-embed path
+exists, so detecting damage there without a fix path would only mislead.)
 
 1. **Slug collisions:** >1 embedded file sharing a slug (these overwrite each
    other under the legacy ID scheme).
@@ -162,8 +167,8 @@ Strict TDD per task. Key cases:
 - **Empty guard:** all-empty extraction → no upsert, sidecar
   `extraction_failed`, warning printed; partial-empty → only empty chunks
   dropped, drop count reported.
-- **Status bookkeeping:** successful re-embed ends `status: current`,
-  `stale_as_of: null`; failed embed leaves `stale`.
+- **Status bookkeeping:** successful re-embed ends `status: embedded`,
+  `stale_as_of: null`; an embed exception writes nothing (prior state kept).
 - **Doctor checks:** each of the four detections against fixture corpora
   (mocked Qdrant or ephemeral collections, matching existing test patterns).
 - **Repair:** integration test covering delete→re-embed and purge+flag paths.
