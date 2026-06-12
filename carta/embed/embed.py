@@ -191,7 +191,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     chunks = [c for c in chunks if (c.get("text") or "").strip()]
     n_dropped = n_total - len(chunks)
     if n_dropped:
-        src = chunks[0].get("file_path") if chunks else original_chunks[0].get("file_path", "(unknown)")
+        src = (chunks[0] if chunks else original_chunks[0]).get("file_path", "(unknown)")
         print(
             f"Warning: dropped {n_dropped} empty chunk(s) for {src} — "
             f"extraction produced no text for them",

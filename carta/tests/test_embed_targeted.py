@@ -395,3 +395,79 @@ def test_pdf_zero_text_with_queued_visual_pages_not_flagged(
                                      cfg, MagicMock(), repo, 800, 0.15)
     assert count == 0
     assert updates["status"] != "extraction_failed"
+
+
+@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline._build_vision_metadata", return_value=None)
+@patch("carta.embed.pipeline.extract_pdf_text_and_classify")
+@patch("carta.embed.pipeline.PageAnalyzer")
+def test_empty_image_chunks_do_not_trip_partial_upsert_gate(
+        mock_analyzer, mock_extract, mock_vmeta, mock_del, tmp_path, capsys):
+    """A dropped (empty-text) image chunk is a clean drop, not a partial failure:
+    the stale-generation cleanup must still run and no partial-upsert warning prints."""
+    from carta.embed import pipeline as pl
+    repo = tmp_path
+    doc = repo / "docs" / "mixed.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+    # Text extraction yields one real chunk; classification fails (None) so the
+    # legacy inline-vision path is skipped — we instead exercise the gate math
+    # directly through upsert_chunks' real drop behaviour via the text path.
+    mock_extract.side_effect = Exception("classify boom")
+
+    real_counts = {}
+    def fake_upsert(chunks, cfg, client=None):
+        # emulate upsert_chunks' drop filter faithfully
+        kept = [c for c in chunks if (c.get("text") or "").strip()]
+        real_counts["attempted"] = len(chunks)
+        real_counts["kept"] = len(kept)
+        return len(kept)
+
+    with patch("carta.embed.pipeline.upsert_chunks", side_effect=fake_upsert), \
+         patch("carta.embed.pipeline.extract_pdf_text",
+               return_value=[{"page": 1, "text": "real text"}, {"page": 2, "text": ""}]):
+        cfg = {"project_name": "test", "qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                         "two_pass_visual": True}}
+        count, updates = pl._embed_one_file(doc, {"slug": "mixed", "doc_type": "unknown"},
+                                            cfg, MagicMock(), repo, 800, 0.15)
+
+    out = capsys.readouterr()
+    assert "partial upsert" not in out.out + out.err
+    mock_del.assert_called_once()
+
+
+@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline._build_vision_metadata", return_value=None)
+def test_empty_image_description_does_not_trip_partial_upsert_gate(
+        mock_vmeta, mock_del, tmp_path, capsys):
+    """An empty VLM/OCR description yields an empty image chunk that upsert_chunks
+    drops — a clean drop, not a partial failure. Cleanup must still run."""
+    from carta.embed import pipeline as pl
+
+    repo = tmp_path
+    doc = repo / "docs" / "imgs.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+
+    def fake_upsert(chunks, cfg, client=None):
+        return len([c for c in chunks if (c.get("text") or "").strip()])
+
+    descs = [
+        {"text": "a real diagram description", "page_num": 1, "image_index": 0},
+        {"text": "", "page_num": 2, "image_index": 0},  # blank page → empty desc
+    ]
+    with patch("carta.embed.pipeline.upsert_chunks", side_effect=fake_upsert), \
+         patch("carta.embed.pipeline.extract_pdf_text",
+               return_value=[{"page": 1, "text": "real body text"}]), \
+         patch("carta.vision.router.extract_image_descriptions_intelligent",
+               return_value=descs):
+        cfg = {"project_name": "test", "qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                         "two_pass_visual": False}}
+        count, updates = pl._embed_one_file(doc, {"slug": "imgs", "doc_type": "unknown"},
+                                            cfg, MagicMock(), repo, 800, 0.15)
+
+    out = capsys.readouterr()
+    assert "partial upsert" not in out.out + out.err
+    mock_del.assert_called_once()

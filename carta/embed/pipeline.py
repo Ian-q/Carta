@@ -503,7 +503,11 @@ def _embed_one_file(
                                 "model_used": desc.get("model_used", "llava"),
                                 "content_type": desc.get("content_type", "visual"),
                             })
-                    expected_images = len(image_chunks)
+                    # Count only non-empty chunks — upsert_chunks drops empty ones,
+                    # and a clean drop must not read as a partial upsert to the gate.
+                    expected_images = sum(
+                        1 for c in image_chunks if (c.get("text") or "").strip()
+                    )
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                     if verbose:
                         print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
@@ -536,7 +540,9 @@ def _embed_one_file(
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
                                 "text": desc["text"],
                             })
-                        expected_images = len(image_chunks)
+                        expected_images = sum(
+                            1 for c in image_chunks if (c.get("text") or "").strip()
+                        )
                         image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                         if verbose:
                             print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
