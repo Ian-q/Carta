@@ -551,3 +551,35 @@ class TestDoctorIntegrityJsonScanError:
         out = capsys.readouterr().out
         doc = json.loads(out)
         assert doc["corpus_integrity"] == {"skipped": "qdrant unreachable"}
+
+
+class TestDoctorJsonOutsideProject:
+    def test_json_outside_project_emits_preflight_only(self, capsys):
+        import json
+        from unittest.mock import MagicMock, patch
+        from carta import cli
+
+        with patch("carta.cli.find_config", side_effect=FileNotFoundError("no project")), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            result = MagicMock()
+            result.fixable_failures = []
+            result.critical_failures = []
+            result.can_proceed.return_value = True
+            result.is_healthy.return_value = True
+            result.warnings = []
+            result.to_json.return_value = '{"checks": []}'
+            MockChecker.return_value.run.return_value = result
+
+            args = MagicMock()
+            args.json = True
+            args.fix = False
+            args.yes = True
+            args.verbose = False
+            try:
+                cli.cmd_doctor(args)
+            except SystemExit:
+                pass
+
+        doc = json.loads(capsys.readouterr().out)
+        assert "corpus_integrity" not in doc

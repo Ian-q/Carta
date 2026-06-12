@@ -483,10 +483,10 @@ def cmd_doctor(args):
     except Exception:
         cfg_path = None
     if cfg_path is not None:
+        import json as _json
         try:
             from carta.config import load_config
             from carta.embed.integrity import scan_corpus_integrity
-            import json as _json
             cfg = load_config(cfg_path)
             repo_root = cfg_path.parent.parent
             report = scan_corpus_integrity(cfg, repo_root)
@@ -515,7 +515,6 @@ def cmd_doctor(args):
             if args.json:
                 # Still emit one valid JSON document; note the skipped check
                 # instead of leaving consumers with empty stdout.
-                import json as _json
                 doc = result.to_dict()
                 doc["corpus_integrity"] = {"skipped": str(e)}
                 print(_json.dumps(doc, indent=2))
