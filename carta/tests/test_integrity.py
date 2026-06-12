@@ -122,10 +122,12 @@ class TestScanCorpusIntegrity:
         mm_hash = compute_file_hash(src_mm)
         _write_sidecar(tmp_path, "docs/mismatch.md", 5, "embedded", mm_hash)
 
+        # chunk_count matches Qdrant (1 point) — purely stuck-stale, no mismatch,
+        # so it must NOT reach affected_files (repair fixes its status in place).
         src_stale = tmp_path / "docs" / "stale.md"
         src_stale.write_text("stale content")
         stale_hash = compute_file_hash(src_stale)
-        _write_sidecar(tmp_path, "docs/stale.md", 2, "stale", stale_hash)
+        _write_sidecar(tmp_path, "docs/stale.md", 1, "stale", stale_hash)
 
         pts = [
             _point("docs/ci/README.md", "readme", 0, "x"),
@@ -177,3 +179,36 @@ class TestScanCorpusIntegrity:
         assert report["slug_collisions"] == {}
         # scroll was called twice
         assert client.scroll.call_count == 2
+
+
+class TestStuckStaleCountMismatch:
+    """A stuck-stale sidecar (status stale, hash matches disk) with a count
+    mismatch must appear in BOTH stuck_stale and count_mismatches, so repair
+    re-embeds it in one pass instead of converging over two runs."""
+
+    def test_stuck_stale_with_mismatch_is_in_both(self, tmp_path):
+        src = tmp_path / "docs" / "stuck.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("unchanged content with lost chunks")
+        real_hash = compute_file_hash(src)
+        _write_sidecar(tmp_path, "docs/stuck.md", 5, "stale", real_hash)
+
+        pts = [
+            _point("docs/stuck.md", "stuck", 8, "x"),
+            _point("docs/stuck.md", "stuck", 9, "y"),
+        ]
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
+        assert "docs/stuck.md" in report["stuck_stale"]
+        assert report["count_mismatches"] == {"docs/stuck.md": {"sidecar": 5, "qdrant": 2}}
+        assert "docs/stuck.md" in report["affected_files"]
+
+    def test_genuinely_stale_mismatch_is_exempt(self, tmp_path):
+        src = tmp_path / "docs" / "pending.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("edited content awaiting re-embed")
+        _write_sidecar(tmp_path, "docs/pending.md", 5, "stale", "0000deadbeef")
+
+        pts = [_point("docs/pending.md", "pending", 0, "old text")]
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
+        assert report["count_mismatches"] == {}
+        assert report["stuck_stale"] == []

@@ -97,13 +97,29 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
             if not rel:
                 continue
 
-            # Count mismatch: sidecar chunk_count differs from Qdrant point count.
-            # Only meaningful for "embedded" status — stale/pending sidecars are
-            # expected to be out of sync with Qdrant.
+            status = sc.get("status")
             qdrant_count = per_file_counts.get(rel)
             sidecar_count = sc.get("chunk_count")
+
+            # Stuck-stale: status is "stale" but file hash matches disk — a bug
+            # artifact, not a pending re-embed.
+            is_stuck = False
+            if status == "stale":
+                src = repo_root / rel
+                if src.exists():
+                    try:
+                        if compute_file_hash(src) == sc.get("file_hash"):
+                            is_stuck = True
+                            stuck_stale.append(rel)
+                    except OSError:
+                        pass
+
+            # Count mismatch: sidecar chunk_count differs from Qdrant point count.
+            # Checked for "embedded" sidecars AND stuck-stale ones (their counts
+            # should agree with Qdrant — nothing is pending). Genuinely-stale
+            # sidecars (hash differs) are expected to be out of sync and exempt.
             if (
-                sc.get("status") == "embedded"
+                (status == "embedded" or is_stuck)
                 and qdrant_count is not None
                 and sidecar_count is not None
                 and sidecar_count != qdrant_count
@@ -112,16 +128,6 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
                     "sidecar": sidecar_count,
                     "qdrant": qdrant_count,
                 }
-
-            # Stuck-stale: status is "stale" but file hash matches disk
-            if sc.get("status") == "stale":
-                src = repo_root / rel
-                if src.exists():
-                    try:
-                        if compute_file_hash(src) == sc.get("file_hash"):
-                            stuck_stale.append(rel)
-                    except OSError:
-                        pass
 
     # affected_files: union of everything needing re-embed or purge
     # (stuck_stale excluded — repair marks them pending without full re-embed)
