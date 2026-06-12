@@ -50,3 +50,59 @@ def test_single_collection_preserves_order():
     visual = [_visual("v0", 30), _visual("v1", 20), _visual("v2", 10)]
     merged = _rrf_merge_collections([visual], top_n=5)
     assert [m["source"] for m in merged] == ["v0", "v1", "v2"]
+
+
+def test_cap_is_noop_without_visual_lane():
+    # A capping ratio must not change output when there are no visual hits.
+    text = [_text(f"t{i}", 0.5 - i * 0.01) for i in range(6)]
+    capped = _rrf_merge_collections([text], top_n=5, visual_max_ratio=0.2)
+    uncapped = _rrf_merge_collections([text], top_n=5, visual_max_ratio=1.0)
+    assert [m["source"] for m in capped] == [m["source"] for m in uncapped]
+    assert [m["source"] for m in capped] == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_visual_cap_limits_visual_share():
+    # cap = round(0.2 * 5) = 1 -> exactly one visual survives, text keeps the rest.
+    text = [_text(f"t{i}", 0.5 - i * 0.01) for i in range(5)]
+    visual = [_visual(f"v{i}", 30 - i) for i in range(5)]
+    merged = _rrf_merge_collections([text, visual], top_n=5, visual_max_ratio=0.2)
+    types = [m["type"] for m in merged]
+    assert types.count("visual") == 1
+    assert types.count("text") == 4
+    # RRF order preserved among admitted hits (text-first tie at rank 0).
+    assert [m["source"] for m in merged] == ["t0", "v0", "t1", "t2", "t3"]
+
+
+def test_overflow_backfills_when_text_exhausted():
+    # Few text hits, many visual, cap = 1: pool must still fill to top_n from the
+    # diverted (overflow) visual hits, in RRF order.
+    text = [_text("t0", 0.5), _text("t1", 0.49)]
+    visual = [_visual(f"v{i}", 30 - i) for i in range(6)]
+    merged = _rrf_merge_collections([text, visual], top_n=5, visual_max_ratio=0.2)
+    assert len(merged) == 5
+    assert [m["source"] for m in merged] == ["t0", "v0", "t1", "v1", "v2"]
+
+
+def test_admitted_hits_keep_rrf_order():
+    # cap = round(0.25 * 6) = 2: two visual admitted, interleave order preserved, no backfill.
+    text = [_text(f"t{i}", 0.5 - i * 0.01) for i in range(4)]
+    visual = [_visual(f"v{i}", 30 - i) for i in range(4)]
+    merged = _rrf_merge_collections([text, visual], top_n=6, visual_max_ratio=0.25)
+    assert [m["source"] for m in merged] == ["t0", "v0", "t1", "v1", "t2", "t3"]
+
+
+def test_ratio_one_disables_cap():
+    # visual_max_ratio = 1.0 (the function default) -> full RRF interleave, unchanged.
+    text = [_text(f"t{i}", 0.5 - i * 0.01) for i in range(3)]
+    visual = [_visual(f"v{i}", 30 - i) for i in range(3)]
+    merged = _rrf_merge_collections([text, visual], top_n=6, visual_max_ratio=1.0)
+    assert [m["source"] for m in merged] == ["t0", "v0", "t1", "v1", "t2", "v2"]
+
+
+def test_ratio_zero_excludes_visual_when_text_fills_pool():
+    # cap = round(0.0 * 5) = 0 -> no visual admitted while text can fill the pool.
+    text = [_text(f"t{i}", 0.5 - i * 0.01) for i in range(5)]
+    visual = [_visual(f"v{i}", 30 - i) for i in range(3)]
+    merged = _rrf_merge_collections([text, visual], top_n=5, visual_max_ratio=0.0)
+    assert all(m["type"] == "text" for m in merged)
+    assert [m["source"] for m in merged] == ["t0", "t1", "t2", "t3", "t4"]
