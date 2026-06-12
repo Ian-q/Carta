@@ -157,8 +157,8 @@ class TestRunEmbedFileMinimalPath:
                             # status should remain "embedded"
                             assert updated["status"] == "embedded"
 
-    def test_hash_mismatch_increments_generation_marks_stale(self, temp_repo, mock_qdrant):
-        """Hash mismatch -> generation incremented, status='stale', stale_as_of set."""
+    def test_hash_mismatch_increments_generation_embeds(self, temp_repo, mock_qdrant):
+        """Hash mismatch -> generation incremented, re-embed runs, status='embedded', stale_as_of=None."""
         repo_root, cfg = temp_repo
 
         # Create test file
@@ -217,10 +217,10 @@ class TestRunEmbedFileMinimalPath:
 
                                     # Generation should increment
                                     assert updated["generation"] == 3
-                                    # Status should be stale
-                                    assert updated["status"] == "stale"
-                                    # stale_as_of should be set
-                                    assert "stale_as_of" in updated
+                                    # Status should be embedded (not stale — Bug A fix)
+                                    assert updated["status"] == "embedded"
+                                    # stale_as_of should be None after successful re-embed
+                                    assert updated.get("stale_as_of") is None
                                     # file_hash should be updated
                                     assert updated["file_hash"] == new_hash
                                     # version_history should have new entry

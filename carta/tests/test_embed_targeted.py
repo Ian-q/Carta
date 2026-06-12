@@ -471,3 +471,140 @@ def test_empty_image_description_does_not_trip_partial_upsert_gate(
     out = capsys.readouterr()
     assert "partial upsert" not in out.out + out.err
     mock_del.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Sidecar status bookkeeping fix + true force re-embed
+# ---------------------------------------------------------------------------
+
+class TestRunEmbedFileLifecycle:
+    def _cfg(self):
+        return {
+            "project_name": "test",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+        }
+
+    def _setup_repo(self, tmp_path):
+        """Create a minimal repo with .carta dir and a doc file."""
+        repo = tmp_path
+        (repo / ".carta").mkdir()
+        doc = repo / "docs" / "a.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("# hi\n\ncontent\n")
+        return repo, doc
+
+    @patch("carta.embed.pipeline.QdrantClient")
+    @patch("carta.embed.pipeline.ensure_collection")
+    @patch("carta.embed.pipeline.mark_sidecar_stale")
+    @patch("carta.embed.pipeline._embed_one_file",
+           return_value=(3, {"status": "embedded", "chunk_count": 3}))
+    @patch("carta.embed.pipeline.find_config")
+    def test_successful_embed_ends_embedded_not_stale(
+            self, mock_fc, mock_embed, mock_mark, mock_ensure, mock_qc, tmp_path):
+        """After successful re-embed: sidecar status == 'embedded' and stale_as_of is None."""
+        from carta.embed.pipeline import run_embed_file
+        from carta.embed.induct import sidecar_path, read_sidecar
+        repo, doc = self._setup_repo(tmp_path)
+        mock_fc.return_value = repo / ".carta" / "config.yaml"
+
+        result = run_embed_file(doc, self._cfg(), force=True)
+
+        assert result["status"] == "ok"
+        sc = read_sidecar(sidecar_path(doc, repo))
+        assert sc["status"] == "embedded", (
+            f"Expected status='embedded' after successful re-embed, got {sc['status']!r}. "
+            f"Bug: lifecycle_updates clobbered _embed_one_file's status."
+        )
+        assert sc["stale_as_of"] is None, (
+            f"Expected stale_as_of=None after successful re-embed, got {sc['stale_as_of']!r}."
+        )
+
+    @patch("carta.embed.pipeline.QdrantClient")
+    @patch("carta.embed.pipeline.ensure_collection")
+    @patch("carta.embed.pipeline.mark_sidecar_stale")
+    @patch("carta.embed.pipeline._embed_one_file",
+           return_value=(0, {"status": "extraction_failed", "chunk_count": 0}))
+    @patch("carta.embed.pipeline.find_config")
+    def test_extraction_failed_status_survives_lifecycle_merge(
+            self, mock_fc, mock_embed, mock_mark, mock_ensure, mock_qc, tmp_path):
+        """extraction_failed from _embed_one_file must not be overwritten by lifecycle_updates."""
+        from carta.embed.pipeline import run_embed_file
+        from carta.embed.induct import sidecar_path, read_sidecar
+        repo, doc = self._setup_repo(tmp_path)
+        mock_fc.return_value = repo / ".carta" / "config.yaml"
+
+        result = run_embed_file(doc, self._cfg(), force=True)
+
+        assert result["status"] == "ok"
+        sc = read_sidecar(sidecar_path(doc, repo))
+        assert sc["status"] == "extraction_failed", (
+            f"Expected status='extraction_failed' to survive lifecycle merge, got {sc['status']!r}. "
+            f"Bug: lifecycle_updates clobbered the extraction_failed status."
+        )
+        assert sc["stale_as_of"] is None, (
+            f"Expected stale_as_of=None even on extraction_failed, got {sc['stale_as_of']!r}."
+        )
+
+    @patch("carta.embed.pipeline.QdrantClient")
+    @patch("carta.embed.pipeline.ensure_collection")
+    @patch("carta.embed.pipeline.mark_sidecar_stale")
+    @patch("carta.embed.pipeline.find_config")
+    def test_force_reembeds_even_when_hash_unchanged(
+            self, mock_fc, mock_mark, mock_ensure, mock_qc, tmp_path):
+        """force=True must bypass the hash short-circuit — _embed_one_file called on both runs."""
+        from carta.embed.pipeline import run_embed_file
+        repo, doc = self._setup_repo(tmp_path)
+        mock_fc.return_value = repo / ".carta" / "config.yaml"
+        cfg = self._cfg()
+
+        embed_returns = [
+            (3, {"status": "embedded", "chunk_count": 3}),
+            (3, {"status": "embedded", "chunk_count": 3}),
+        ]
+        with patch("carta.embed.pipeline._embed_one_file",
+                   side_effect=embed_returns) as mock_embed:
+            # First run: inducts the file (no existing sidecar)
+            result1 = run_embed_file(doc, cfg, force=True)
+            assert result1["status"] == "ok"
+            assert mock_embed.call_count == 1
+
+            # Second run with force=True: same file, same content — must still re-embed
+            result2 = run_embed_file(doc, cfg, force=True)
+            assert result2["status"] == "ok", (
+                f"Expected force=True to re-embed unchanged file, got status={result2['status']!r}. "
+                f"Bug: hash short-circuit still fires when force=True."
+            )
+            assert mock_embed.call_count == 2, (
+                f"Expected _embed_one_file called twice (force bypasses hash), "
+                f"got {mock_embed.call_count} calls."
+            )
+
+    @patch("carta.embed.pipeline.QdrantClient")
+    @patch("carta.embed.pipeline.ensure_collection")
+    @patch("carta.embed.pipeline.mark_sidecar_stale")
+    @patch("carta.embed.pipeline.find_config")
+    def test_no_force_hash_unchanged_still_skips(
+            self, mock_fc, mock_mark, mock_ensure, mock_qc, tmp_path):
+        """Without force, a file whose hash matches the sidecar must be skipped on the second run."""
+        from carta.embed.pipeline import run_embed_file
+        repo, doc = self._setup_repo(tmp_path)
+        mock_fc.return_value = repo / ".carta" / "config.yaml"
+        cfg = self._cfg()
+
+        with patch("carta.embed.pipeline._embed_one_file",
+                   return_value=(3, {"status": "embedded", "chunk_count": 3})) as mock_embed:
+            # First run with force=True to seed the sidecar with the current hash
+            result1 = run_embed_file(doc, cfg, force=True)
+            assert result1["status"] == "ok"
+            assert mock_embed.call_count == 1
+
+            # Second run WITHOUT force: hash is unchanged — must skip
+            result2 = run_embed_file(doc, cfg, force=False)
+            assert result2["status"] == "skipped", (
+                f"Expected 'skipped' when force=False and hash unchanged, got {result2['status']!r}."
+            )
+            # _embed_one_file must NOT have been called again
+            assert mock_embed.call_count == 1, (
+                f"Expected _embed_one_file NOT called on skip, but call count is {mock_embed.call_count}."
+            )

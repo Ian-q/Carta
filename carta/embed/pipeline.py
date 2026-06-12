@@ -1148,7 +1148,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     old_hash = sidecar_data.get("file_hash")
     current_mtime = os.path.getmtime(str(file_path))
 
-    if current_hash == old_hash and old_hash is not None:
+    if not force and current_hash == old_hash and old_hash is not None:
         # Hash unchanged: just update mtime and fast-path fields
         _update_sidecar(sc_path, {
             "file_mtime": current_mtime,
@@ -1177,15 +1177,15 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     if len(version_history) > max_gens:
         version_history = version_history[-max_gens:]
 
-    # Prepare lifecycle updates
+    # Prepare lifecycle updates.
     # VISUAL_DONE_KEY is reset to [] so add_pending_pages no longer excludes these pages;
     # pass-1 re-queues image-heavy pages and the visual drainer re-processes them.
     # VISUAL_PENDING_KEY is intentionally omitted — pass-1's fresh queuing merges into it
     # and any stale pending pages re-drain idempotently (point IDs overwrite in place).
+    # NOTE: "status" and "stale_as_of" are intentionally excluded here — they are set
+    # after the embed completes based on what _embed_one_file returns (Bug A fix).
     lifecycle_updates = {
         "generation": new_generation,
-        "status": "stale",
-        "stale_as_of": now.isoformat(),
         "file_hash": current_hash,
         "file_mtime": current_mtime,
         "last_hash_check_at": now.isoformat(),
@@ -1217,10 +1217,14 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     count, sidecar_updates = _embed_one_file(
         file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose, progress
     )
-    # Merge lifecycle updates with embedding updates
-    sidecar_updates.update(lifecycle_updates)
-    sidecar_updates.pop("_vision_events", None)  # temp key — never written to sidecar
-    _update_sidecar(sc_path, sidecar_updates)
+    # Merge lifecycle updates with embedding updates.
+    # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
+    # or "extraction_failed") — apply lifecycle fields first, then let embed results win.
+    merged = {**lifecycle_updates, **sidecar_updates}
+    merged.setdefault("status", "embedded")   # belt-and-braces: _embed_one_file always sets it
+    merged["stale_as_of"] = None              # re-embed completed — no longer stale
+    merged.pop("_vision_events", None)        # temp key — never written to sidecar
+    _update_sidecar(sc_path, merged)
     return {"status": "ok", "chunks": count}
 
 
