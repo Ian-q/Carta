@@ -41,6 +41,17 @@ def _write_sidecar(tmp_path, rel_path, chunk_count, status, file_hash):
     return sc_path
 
 
+def _write_sidecar_at_production_path(tmp_path, rel_path, chunk_count, status, file_hash):
+    """Write a sidecar where sidecar_path() will look for it (with_suffix semantics)."""
+    from carta.embed.induct import sidecar_path
+    sc = sidecar_path(tmp_path / rel_path, tmp_path)
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    with open(sc, "w") as f:
+        yaml.dump({"current_path": rel_path, "chunk_count": chunk_count,
+                   "status": status, "file_hash": file_hash}, f)
+    return sc
+
+
 class TestScanCorpusIntegrity:
     def test_detects_slug_collisions(self, tmp_path):
         pts = [
@@ -293,9 +304,37 @@ class TestRunRepair:
         f = tmp_path / "docs" / "scan.pdf"
         f.parent.mkdir(parents=True)
         f.write_bytes(b"%PDF-1.4 fake")
+        # The re-embed wrote an extraction_failed sidecar (zero usable text)
+        _write_sidecar_at_production_path(tmp_path, "docs/scan.pdf",
+                                          0, "extraction_failed", "abc")
         mock_reembed.return_value = {"status": "ok", "chunks": 0}
         summary = run_repair(tmp_path, CFG)
         assert summary["flagged"] == 1
+        assert summary.get("queued_visual", 0) == 0
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_zero_chunks_but_embedded_counts_queued_visual_not_flagged(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path, capsys):
+        """A two-pass-visual PDF re-embeds with 0 chunks but a HEALTHY sidecar
+        (pages queued for pass-2). It must not be reported as extraction_failed."""
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": ["docs/imgheavy.pdf"],
+            "partial_empty_files": {}, "count_mismatches": {}, "stuck_stale": [],
+            "affected_files": ["docs/imgheavy.pdf"],
+        }
+        f = tmp_path / "docs" / "imgheavy.pdf"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(b"%PDF-1.4 fake")
+        _write_sidecar_at_production_path(tmp_path, "docs/imgheavy.pdf",
+                                          0, "embedded", "abc")
+        mock_reembed.return_value = {"status": "ok", "chunks": 0}
+        summary = run_repair(tmp_path, CFG)
+        assert summary["flagged"] == 0
+        assert summary["queued_visual"] == 1
+        out = capsys.readouterr().out
+        assert "extraction_failed" not in out.split("Repair complete")[0]
 
     @patch("carta.embed.repair.run_embed_file")
     @patch("carta.embed.repair.scan_corpus_integrity")
