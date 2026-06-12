@@ -878,9 +878,9 @@ def _visual_embed_one_page(
 
     if chunks:
         image_chunks = []
-        # Stamp the sidecar's current generation onto every pass-2 chunk so
-        # delete_other_generations (keyed on doc_generation) does not delete them
-        # when the file is re-embedded at a later generation.
+        # Stamp the sidecar's current generation onto every pass-2 chunk
+        # (observability metadata). Cleanup is ID-set-based: a text re-embed
+        # deletes these points and re-queues the pages for re-drain.
         doc_generation = int(sidecar.get("generation") or 1)
         for chunk in chunks:
             for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
