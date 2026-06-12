@@ -273,3 +273,125 @@ def test_partial_upsert_skips_cleanup_and_warns(mock_upsert, mock_del, tmp_path,
         f"  stdout: {captured.out!r}\n"
         f"  stderr: {captured.err!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: zero-usable-chunks files are flagged extraction_failed
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.pipeline.upsert_chunks", return_value=0)
+def test_zero_usable_chunks_marks_extraction_failed(mock_upsert, tmp_path, capsys):
+    """A file that yields zero usable text chunks gets status=extraction_failed.
+
+    An empty markdown file produces zero chunks (not empty-text chunks), so the
+    check must handle the case where len(enriched) == 0 directly.
+    """
+    from carta.embed.pipeline import _embed_one_file
+
+    repo = tmp_path
+    doc = repo / "docs" / "scan.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("")  # extraction yields nothing
+
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    count, updates = _embed_one_file(
+        doc, {"slug": "scan", "doc_type": "unknown"},
+        cfg, MagicMock(), repo, 800, 0.15,
+    )
+    assert count == 0
+    assert updates["status"] == "extraction_failed"
+    captured = capsys.readouterr()
+    assert "0 extractable characters" in captured.out or "0 extractable characters" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Test 5: partial-empty enriched list — cleanup gate uses non-empty count
+# ---------------------------------------------------------------------------
+
+@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.upsert_chunks", return_value=2)
+def test_partial_empty_chunks_cleanup_gate_uses_nonempty_count(mock_upsert, mock_del, tmp_path):
+    """When some chunks are empty and upsert_chunks returns 2 (non-empty count),
+    cleanup SHOULD be called — expected_text must count only non-empty chunks.
+
+    This verifies that the expected_text fix doesn't accidentally break the gate
+    for files where some (but not all) chunks are empty.
+    """
+    from carta.embed.pipeline import _embed_one_file
+
+    repo = tmp_path
+    doc = repo / "docs" / "c.md"
+    doc.parent.mkdir(parents=True)
+    # Write content that produces chunks; upsert_chunks is patched to return 2
+    # (simulating 3 raw chunks of which 1 was empty and dropped by the guard).
+    doc.write_text("# Title\n\nsome content\n\nmore content\n\neven more content\n")
+
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    file_info = {"slug": "c", "doc_type": "unknown", "generation": 1}
+
+    # Patch chunk_text to return 3 chunks where 1 is empty-text, 2 are real.
+    # This simulates the scenario where upsert_chunks drops 1 empty, returns 2.
+    with patch("carta.embed.pipeline.chunk_text") as mock_chunk:
+        mock_chunk.return_value = [
+            {"chunk_index": 0, "text": "real content one"},
+            {"chunk_index": 1, "text": ""},  # empty — will be dropped by guard
+            {"chunk_index": 2, "text": "real content two"},
+        ]
+        _embed_one_file(doc, file_info, cfg, MagicMock(), repo, 800, 0.15)
+
+    # With expected_text = 2 (non-empty) and upsert returning 2, gate must pass
+    mock_del.assert_called_once()
+
+
+@patch("carta.embed.pipeline.upsert_chunks", return_value=0)
+@patch("carta.embed.pipeline.extract_pdf_text_and_classify")
+@patch("carta.embed.pipeline.PageAnalyzer")
+def test_pdf_zero_usable_no_queue_marks_extraction_failed(
+        mock_analyzer, mock_extract, mock_upsert, tmp_path, capsys):
+    """A PDF with no extractable text and no pages queued for pass-2 is flagged."""
+    from carta.embed.pipeline import _embed_one_file
+    repo = tmp_path
+    doc = repo / "docs" / "scan.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+    mock_extract.return_value = ([{"page": 1, "text": ""}], [])
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    count, updates = _embed_one_file(doc, {"slug": "scan", "doc_type": "unknown"},
+                                     cfg, MagicMock(), repo, 800, 0.15)
+    assert count == 0
+    assert updates["status"] == "extraction_failed"
+    assert "0 extractable characters" in capsys.readouterr().out
+
+
+@patch("carta.embed.pipeline._mark_or_collect_visual_pages")
+@patch("carta.embed.pipeline.upsert_chunks", return_value=0)
+@patch("carta.embed.pipeline.extract_pdf_text_and_classify")
+@patch("carta.embed.pipeline.PageAnalyzer")
+def test_pdf_zero_text_with_queued_visual_pages_not_flagged(
+        mock_analyzer, mock_extract, mock_upsert, mock_mark, tmp_path):
+    """A PDF awaiting pass-2 visual embedding is NOT extraction_failed."""
+    from carta.embed.pipeline import _embed_one_file
+    from carta.embed.visual_queue import VISUAL_PENDING_KEY
+    repo = tmp_path
+    doc = repo / "docs" / "scan.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+    mock_extract.return_value = ([{"page": 1, "text": ""}], [object()])
+    mock_mark.return_value = {VISUAL_PENDING_KEY: [1]}
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    count, updates = _embed_one_file(doc, {"slug": "scan", "doc_type": "unknown"},
+                                     cfg, MagicMock(), repo, 800, 0.15)
+    assert count == 0
+    assert updates["status"] != "extraction_failed"

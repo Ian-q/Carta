@@ -184,6 +184,22 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     Returns:
         Number of points upserted.
     """
+    # Drop empty/whitespace-only chunks before doing any work. Empty chunks produce
+    # identical embedding-of-empty-string vectors — unfindable noise in the index.
+    n_total = len(chunks)
+    original_chunks = chunks  # keep reference for warning message when all are empty
+    chunks = [c for c in chunks if (c.get("text") or "").strip()]
+    n_dropped = n_total - len(chunks)
+    if n_dropped:
+        src = chunks[0].get("file_path") if chunks else original_chunks[0].get("file_path", "(unknown)")
+        print(
+            f"Warning: dropped {n_dropped} empty chunk(s) for {src} — "
+            f"extraction produced no text for them",
+            flush=True,
+        )
+    if not chunks:
+        return 0
+
     # Route by the batch's doc_type (batches come from a single file, so they are
     # doc_type-homogeneous). Note types (quirk/bug-note/helpful-note) land in
     # {project}_notes; everything else (incl. image/visual chunk types) stays in _doc.

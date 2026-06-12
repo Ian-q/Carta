@@ -269,6 +269,14 @@ def cmd_embed(args):
         skipped=summary["skipped"],
         errors=len(summary["errors"]),
     )
+    failed_extractions = summary.get("extraction_failed", 0)
+    if failed_extractions:
+        print(
+            f"\nWarning: {failed_extractions} file(s) yielded no extractable text "
+            f"(scanned PDFs? OCR may be required) — flagged extraction_failed, "
+            f"nothing embedded for them.",
+            file=sys.stderr,
+        )
     timed_out = summary.get("timed_out", [])
     if timed_out:
         current = cfg.get("embed", {}).get("file_timeout_s", 600)

@@ -349,9 +349,29 @@ def _embed_one_file(
         metadata["frontmatter"] = frontmatter_meta
 
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
-    # NOTE: expected_text tracks what upsert_chunks attempts. If a later task drops
-    # empty chunks inside upsert_chunks, this line must be updated to match.
-    expected_text = len(enriched)
+    # expected_text counts only non-empty chunks — upsert_chunks drops empty ones
+    # before embedding, so the cleanup gate must compare against the same set.
+    expected_text = sum(1 for c in enriched if (c.get("text") or "").strip())
+
+    # Zero usable text: for non-PDF files there's no image-chunk rescue path, so
+    # flag immediately. PDFs may still produce content via the vision path below.
+    if expected_text == 0 and file_path.suffix != ".pdf":
+        print(
+            f"Warning: {file_path.name}: 0 extractable characters — "
+            f"skipped (empty or unreadable file)",
+            flush=True,
+        )
+        return 0, {
+            "status": "extraction_failed",
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+            "chunk_count": 0,
+            "image_count": 0,
+            "image_chunks": 0,
+            "file_mtime": os.path.getmtime(str(file_path)),
+            "visual_pages": 0,
+            "_vision_events": [],
+        }
+
     count = upsert_chunks(enriched, cfg, client=client)
 
     # Vision progress tracking — events collected by callback, passed to caller via sidecar_updates
@@ -553,6 +573,18 @@ def _embed_one_file(
         sidecar_updates.update(_visual_queue_updates)
 
     sidecar_updates["_vision_events"] = _page_events
+
+    # Nothing extractable anywhere: no text was attempted, no image chunks were
+    # attempted, and no pages are queued for pass-2 visual embedding. Flag the
+    # file instead of recording a silent no-op as "embedded".
+    if (expected_text == 0 and expected_images == 0
+            and not (_visual_queue_updates.get(VISUAL_PENDING_KEY) or [])):
+        sidecar_updates["status"] = "extraction_failed"
+        print(
+            f"Warning: {file_path.name}: 0 extractable characters — skipped "
+            f"(scanned PDF? OCR may be required)",
+            flush=True,
+        )
 
     # File fully embedded — clear any per-page resume checkpoint.
     if file_path.suffix == ".pdf":
@@ -1195,9 +1227,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
         verbose: if True, print progress to stdout. If False, stdout is silent.
 
     Returns:
-        {"embedded": int, "skipped": int, "errors": list[str], "timed_out": list[str]}
+        {"embedded": int, "skipped": int, "extraction_failed": int,
+         "errors": list[str], "timed_out": list[str]}
     """
-    summary: dict = {"embedded": 0, "skipped": 0, "errors": [], "timed_out": []}
+    summary: dict = {"embedded": 0, "skipped": 0, "extraction_failed": 0,
+                     "errors": [], "timed_out": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
     migrate_sidecars(repo_root, verbose=verbose)
@@ -1367,7 +1401,10 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                         progress.vision_done(vision_events)
                 elif verbose:
                     print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-                summary["embedded"] += 1
+                if sidecar_updates.get("status") == "extraction_failed":
+                    summary["extraction_failed"] += 1
+                else:
+                    summary["embedded"] += 1
                 _write_perf_log_entry(perf_log_path, {
                     **perf_context, "file": rel_file, "status": "ok",
                     "chunks": count, "elapsed_s": round(elapsed, 2),

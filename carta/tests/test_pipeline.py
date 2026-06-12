@@ -1140,3 +1140,41 @@ class TestRunSearchDocType:
             results = run_search("q", cfg)
 
         assert results and results[0]["doc_type"] == "quirk"
+
+
+class TestRunEmbedExtractionFailedSummary:
+    """Files flagged extraction_failed must not count as embedded in the summary."""
+
+    def test_extraction_failed_counted_separately(self, tmp_path):
+        repo_root = tmp_path
+        (repo_root / ".carta").mkdir()
+        doc = repo_root / "docs" / "scan.pdf"
+        doc.parent.mkdir(parents=True)
+        doc.write_bytes(b"%PDF-1.4 fake")
+        sc_path = repo_root / ".carta" / "sidecars" / "docs" / "scan.embed-meta.yaml"
+        sc_path.parent.mkdir(parents=True)
+        sc_path.write_text("status: pending\n")
+
+        cfg = {
+            "project_name": "test", "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                      "status_file": False},
+        }
+        file_info = {"slug": "scan", "doc_type": "unknown",
+                     "file_path": doc, "sidecar_path": sc_path}
+
+        with patch("carta.embed.pipeline.find_config") as mock_find_cfg, \
+             patch("carta.embed.pipeline.QdrantClient"), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline.discover_pending_files", return_value=[file_info]), \
+             patch("carta.embed.pipeline.discover_stale_files", return_value=[]), \
+             patch("carta.embed.pipeline._embed_one_file") as mock_embed, \
+             patch("carta.embed.pipeline._update_sidecar"), \
+             patch("builtins.print"):
+            mock_find_cfg.return_value = repo_root / ".carta" / "config.yaml"
+            mock_embed.return_value = (0, {"status": "extraction_failed",
+                                           "chunk_count": 0, "_vision_events": []})
+            summary = run_embed(repo_root, cfg, verbose=False)
+
+        assert summary["extraction_failed"] == 1
+        assert summary["embedded"] == 0

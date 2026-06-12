@@ -323,3 +323,49 @@ class TestPathBasedPointIds:
         points = mock_client.upsert.call_args.kwargs["points"]
         expected = _point_id_versioned("docs/ci/README.md", 0, 1)
         assert points[0].id == expected
+
+
+class TestEmptyChunkGuard:
+    """upsert_chunks must drop empty/whitespace-only chunks before embedding."""
+
+    @patch("carta.embed.embed.requests.post")
+    @patch("carta.embed.embed.collection_is_hybrid", return_value=False)
+    @patch("carta.embed.embed.ensure_collection")
+    def test_empty_chunks_are_not_upserted(self, mock_ensure, mock_hybrid, mock_post):
+        """Empty and whitespace-only chunks are dropped; only real content is upserted."""
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"embedding": [0.1] * 768}
+        mock_client = MagicMock()
+        mock_client.collection_exists.return_value = True
+        info = MagicMock()
+        info.config.params.vectors = None
+        info.config.params.sparse_vectors = None
+        mock_client.get_collection.return_value = info
+        cfg = {
+            "project_name": "test", "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                      "embedding_workers": 1},
+        }
+        chunks = [
+            {"slug": "d", "file_path": "d.pdf", "chunk_index": 0, "text": ""},
+            {"slug": "d", "file_path": "d.pdf", "chunk_index": 1, "text": "   \n"},
+            {"slug": "d", "file_path": "d.pdf", "chunk_index": 2, "text": "real content"},
+        ]
+        count = upsert_chunks(chunks, cfg, client=mock_client)
+        assert count == 1
+        points = mock_client.upsert.call_args.kwargs["points"]
+        assert len(points) == 1
+        assert points[0].payload["text"] == "real content"
+
+    def test_all_empty_returns_zero_without_upsert(self):
+        """When all chunks are empty, upsert is never called and 0 is returned."""
+        mock_client = MagicMock()
+        mock_client.collection_exists.return_value = True
+        cfg = {
+            "project_name": "test", "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+        }
+        chunks = [{"slug": "d", "file_path": "d.pdf", "chunk_index": 0, "text": ""}]
+        count = upsert_chunks(chunks, cfg, client=mock_client)
+        assert count == 0
+        mock_client.upsert.assert_not_called()
