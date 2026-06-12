@@ -493,7 +493,7 @@ class TestVisionIntegration:
             with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Sample text"}]):
                 with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk 1", "page": 1}]):
                     with patch("carta.vision.router.extract_image_descriptions_intelligent") as mock_vision:
-                        with patch("carta.embed.pipeline.upsert_chunks"):
+                        with patch("carta.embed.pipeline.upsert_chunks", return_value=0):
                             with patch("carta.embed.pipeline.write_sidecar"):
                                 # Vision returns 2 image chunks with Phase 999.4 metadata
                                 mock_vision.return_value = [
@@ -541,7 +541,7 @@ class TestVisionIntegration:
             with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Text content"}]):
                 with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1}]):
                     with patch("carta.vision.router.extract_image_descriptions_intelligent") as mock_vision:
-                        with patch("carta.embed.pipeline.upsert_chunks"):
+                        with patch("carta.embed.pipeline.upsert_chunks", return_value=0):
                             with patch("carta.embed.pipeline.write_sidecar"):
                                 # Vision model unavailable: returns empty (fail-open)
                                 mock_vision.return_value = []

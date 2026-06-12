@@ -116,3 +116,31 @@ def test_targeted_multiple_files_all_processed(mock_find_config, mock_load_confi
 
         assert exc_info.value.code == 1
         assert mock_run_embed_file.call_count == 3
+
+
+@patch("carta.embed.pipeline.upsert_chunks", return_value=2)
+@patch("carta.embed.pipeline.delete_other_generations")
+def test_embed_one_file_cleans_other_generations(mock_del, mock_upsert, tmp_path):
+    """_embed_one_file calls delete_other_generations with correct file_path and generation."""
+    from carta.embed.pipeline import _embed_one_file
+
+    repo = tmp_path
+    doc = repo / "docs" / "a.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("# Title\n\nsome content here\n")
+    cfg = {
+        "project_name": "test",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    file_info = {"slug": "a", "doc_type": "unknown", "generation": 2}
+    count, updates = _embed_one_file(doc, file_info, cfg, MagicMock(), repo, 800, 0.15)
+
+    mock_del.assert_called_once()
+    args = mock_del.call_args.args
+    assert args[2] == "docs/a.md"
+    assert args[3] == 2
+
+    # Verify chunks passed to upsert carry doc_generation == 2
+    upsert_call_chunks = mock_upsert.call_args.args[0]
+    assert all(c.get("doc_generation") == 2 for c in upsert_call_chunks)

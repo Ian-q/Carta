@@ -17,7 +17,7 @@ from qdrant_client import models as qmodels
 from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
-from carta.config import collection_name, find_config
+from carta.config import collection_name, collection_for_doc_type, find_config
 from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import (
     ensure_collection,
@@ -30,7 +30,7 @@ from carta.embed.embed import (
 )
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
-from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
+from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_generations
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
 from carta.embed.status import StatusWriter
@@ -338,10 +338,12 @@ def _embed_one_file(
         print(f"    built {len(raw_chunks)} chunk(s); embedding + upserting...", flush=True)
 
     slug = file_info.get("slug", file_path.stem)
+    generation = int(file_info.get("generation") or 1)
     metadata = {
         "slug": slug,
         "file_path": str(file_path.relative_to(repo_root)),
         "doc_type": file_info.get("doc_type", "unknown"),
+        "doc_generation": generation,
     }
     if frontmatter_meta:
         metadata["frontmatter"] = frontmatter_meta
@@ -468,6 +470,7 @@ def _embed_one_file(
                                 "slug": slug,
                                 "file_path": str(file_path.relative_to(repo_root)),
                                 "doc_type": "image_description",
+                                "doc_generation": generation,
                                 "page_num": desc["page_num"],
                                 "image_index": desc["image_index"],
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
@@ -502,6 +505,7 @@ def _embed_one_file(
                                 "slug": slug,
                                 "file_path": str(file_path.relative_to(repo_root)),
                                 "doc_type": "image_description",
+                                "doc_generation": generation,
                                 "page_num": desc["page_num"],
                                 "image_index": desc["image_index"],
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
@@ -551,6 +555,14 @@ def _embed_one_file(
             cp.unlink(missing_ok=True)
         except OSError:
             pass
+
+    # Delete stale-generation points for this file (best-effort; errors are logged not raised).
+    # Also organically removes any legacy slug-keyed points that share the same file_path.
+    if count + image_chunk_count > 0:
+        coll = collection_for_doc_type(cfg, file_info.get("doc_type", "unknown"))
+        delete_other_generations(
+            client, coll, str(file_path.relative_to(repo_root)), generation
+        )
 
     return count + image_chunk_count, sidecar_updates
 
@@ -1131,6 +1143,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         "doc_type": sidecar_data.get("doc_type", "unknown"),
         "sidecar_path": sc_path,
         "file_path": file_path,
+        "generation": new_generation,
     }
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
