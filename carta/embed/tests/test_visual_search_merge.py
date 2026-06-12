@@ -4,6 +4,8 @@ Bug: text (cosine/RRF, ~0-1) and visual (ColPali MaxSim, ~10-40) hits were merge
 by raw score, so visual always won every slot — enabling colpali_enabled dropped
 recall to 0. The fix fuses by rank (RRF across collections), which is scale-free.
 """
+from unittest.mock import MagicMock
+
 from carta.embed.pipeline import _rrf_merge_collections
 
 
@@ -106,3 +108,29 @@ def test_ratio_zero_excludes_visual_when_text_fills_pool():
     merged = _rrf_merge_collections([text, visual], top_n=5, visual_max_ratio=0.0)
     assert all(m["type"] == "text" for m in merged)
     assert [m["source"] for m in merged] == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_run_search_forwards_configured_visual_max_ratio(monkeypatch, tmp_path):
+    # The configured search.fusion.visual_max_ratio must reach _rrf_merge_collections.
+    import carta.embed.pipeline as pipeline
+
+    captured = {}
+
+    def fake_merge(per_collection, top_n, k=60, visual_max_ratio=1.0):
+        captured["ratio"] = visual_max_ratio
+        return []
+
+    monkeypatch.setattr(pipeline, "_rrf_merge_collections", fake_merge)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(pipeline, "find_config", lambda: str(tmp_path / ".carta" / "config.yaml"))
+    # No collections -> the per-collection loop is skipped and the merge is still called.
+    monkeypatch.setattr("carta.search.scoped.get_search_collections", lambda cfg, scope: [])
+
+    cfg = {
+        "project_name": "proj",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://localhost:11434", "ollama_model": "nomic-embed-text"},
+        "search": {"top_n": 5, "fusion": {"visual_max_ratio": 0.34}},
+    }
+    pipeline.run_search("query", cfg)
+    assert captured["ratio"] == 0.34

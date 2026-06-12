@@ -1772,7 +1772,12 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     
     # Fuse across collections by rank (RRF) — scale-free, so visual MaxSim scores
     # can't swamp text cosine/RRF scores. fetch_limit keeps the rerank pool wide.
-    all_results = _rrf_merge_collections(per_collection, fetch_limit)
+    # visual_max_ratio caps the visual lane's share so text questions keep their depth.
+    fusion_cfg = cfg.get("search", {}).get("fusion", {})
+    visual_max_ratio = fusion_cfg.get("visual_max_ratio", 1.0)
+    all_results = _rrf_merge_collections(
+        per_collection, fetch_limit, visual_max_ratio=visual_max_ratio
+    )
 
     # Graph-aware expansion: promote related:-adjacent docs into the pool the reranker
     # sees. Fail-open. Off by default (opt in via search.graph.enabled); when enabled,
