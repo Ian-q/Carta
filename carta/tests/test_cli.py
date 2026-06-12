@@ -316,3 +316,270 @@ class TestCmdRemember:
         code, _ = self._run(self._args(), capture_error=ValueError("bad"))
         assert code == 1
         assert "bad" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# cmd_doctor — Corpus integrity section (Task 6)
+# ---------------------------------------------------------------------------
+
+class TestDoctorCorpusIntegrity:
+    """cmd_doctor wires in a read-only corpus-integrity section."""
+
+    _ISSUES_REPORT = {
+        "slug_collisions": {"readme": ["docs/a/README.md", "docs/b/README.md"]},
+        "empty_files": ["docs/scan.pdf"],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": ["docs/a/README.md", "docs/b/README.md", "docs/scan.pdf"],
+    }
+
+    _CLEAN_REPORT = {
+        "slug_collisions": {},
+        "empty_files": [],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": [],
+    }
+
+    def _make_args(self, json_flag=False):
+        from unittest.mock import MagicMock
+        args = MagicMock()
+        args.json = json_flag
+        args.fix = False
+        args.yes = True
+        args.verbose = False
+        return args
+
+    def _make_preflight_mock(self, MockChecker):
+        from unittest.mock import MagicMock
+        result = MagicMock()
+        result.fixable_failures = []
+        result.critical_failures = []
+        result.can_proceed.return_value = True
+        result.is_healthy.return_value = True
+        result.warnings = []
+        instance = MagicMock()
+        instance.run.return_value = result
+        MockChecker.return_value = instance
+        return result
+
+    def test_doctor_prints_integrity_section_inside_project(self, tmp_path, capsys):
+        from unittest.mock import patch, MagicMock
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._ISSUES_REPORT) as mock_scan, \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "Corpus integrity" in out
+        assert "readme" in out
+        assert "docs/scan.pdf" in out
+        assert "carta embed --repair" in out
+
+    def test_doctor_integrity_clean(self, tmp_path, capsys):
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._CLEAN_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "Corpus integrity" in out
+        assert "no issues found" in out
+        assert "carta embed --repair" not in out
+
+    def test_doctor_outside_project(self, capsys):
+        """find_config raises FileNotFoundError — doctor finishes, no integrity section."""
+        from unittest.mock import patch
+        from carta import cli
+
+        with patch("carta.cli.find_config",
+                   side_effect=FileNotFoundError("no config")), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "Corpus integrity" not in out
+
+    def test_doctor_integrity_scan_error(self, tmp_path, capsys):
+        """scan_corpus_integrity raises — doctor prints 'check skipped' and does not crash."""
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   side_effect=RuntimeError("qdrant unreachable")), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "check skipped" in out
+
+    def test_doctor_json_includes_corpus_integrity(self, tmp_path, capsys):
+        """With --json, corpus_integrity key is merged into the single JSON document."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        preflight_dict = {
+            "status": "healthy",
+            "can_proceed": True,
+            "summary": {"total": 1, "passed": 1, "failed": 0,
+                        "warnings": 0, "skipped": 0, "fixable": 0},
+            "checks": [],
+        }
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._ISSUES_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            mock_result = MagicMock()
+            mock_result.fixable_failures = []
+            mock_result.critical_failures = []
+            mock_result.can_proceed.return_value = True
+            mock_result.is_healthy.return_value = True
+            mock_result.warnings = []
+            mock_result.to_dict.return_value = preflight_dict
+            mock_result.to_json.return_value = json.dumps(preflight_dict)
+            instance = MagicMock()
+            instance.run.return_value = mock_result
+            MockChecker.return_value = instance
+            try:
+                cli.cmd_doctor(self._make_args(json_flag=True))
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        parsed = json.loads(out)
+        assert "corpus_integrity" in parsed
+        assert "slug_collisions" in parsed["corpus_integrity"]
+        assert "readme" in parsed["corpus_integrity"]["slug_collisions"]
+
+
+class TestDoctorIntegrityJsonScanError:
+    """JSON mode must emit exactly one valid JSON document even when the
+    integrity scan fails — empty stdout would break consumers."""
+
+    def test_json_scan_error_still_emits_json(self, tmp_path, capsys):
+        import json
+        from unittest.mock import MagicMock, patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   side_effect=RuntimeError("qdrant unreachable")), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            result = MagicMock()
+            result.fixable_failures = []
+            result.critical_failures = []
+            result.can_proceed.return_value = True
+            result.is_healthy.return_value = True
+            result.warnings = []
+            result.to_dict.return_value = {"checks": []}
+            MockChecker.return_value.run.return_value = result
+
+            args = MagicMock()
+            args.json = True
+            args.fix = False
+            args.yes = True
+            args.verbose = False
+            try:
+                cli.cmd_doctor(args)
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        doc = json.loads(out)
+        assert doc["corpus_integrity"] == {"skipped": "qdrant unreachable"}
+
+
+class TestDoctorJsonOutsideProject:
+    def test_json_outside_project_emits_preflight_only(self, capsys):
+        import json
+        from unittest.mock import MagicMock, patch
+        from carta import cli
+
+        with patch("carta.cli.find_config", side_effect=FileNotFoundError("no project")), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            result = MagicMock()
+            result.fixable_failures = []
+            result.critical_failures = []
+            result.can_proceed.return_value = True
+            result.is_healthy.return_value = True
+            result.warnings = []
+            result.to_json.return_value = '{"checks": []}'
+            MockChecker.return_value.run.return_value = result
+
+            args = MagicMock()
+            args.json = True
+            args.fix = False
+            args.yes = True
+            args.verbose = False
+            try:
+                cli.cmd_doctor(args)
+            except SystemExit:
+                pass
+
+        doc = json.loads(capsys.readouterr().out)
+        assert "corpus_integrity" not in doc
