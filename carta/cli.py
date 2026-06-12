@@ -512,7 +512,14 @@ def cmd_doctor(args):
                     print(f"  → run `carta embed --repair` to fix "
                           f"({len(report['affected_files'])} file(s) affected)")
         except Exception as e:
-            if not getattr(args, "json", False):
+            if args.json:
+                # Still emit one valid JSON document; note the skipped check
+                # instead of leaving consumers with empty stdout.
+                import json as _json
+                doc = result.to_dict()
+                doc["corpus_integrity"] = {"skipped": str(e)}
+                print(_json.dumps(doc, indent=2))
+            else:
                 print(f"\n📦 Corpus integrity: check skipped ({e})")
     elif args.json:
         # Outside a project: emit the preflight JSON with no corpus_integrity key

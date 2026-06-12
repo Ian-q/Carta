@@ -507,3 +507,47 @@ class TestDoctorCorpusIntegrity:
         assert "corpus_integrity" in parsed
         assert "slug_collisions" in parsed["corpus_integrity"]
         assert "readme" in parsed["corpus_integrity"]["slug_collisions"]
+
+
+class TestDoctorIntegrityJsonScanError:
+    """JSON mode must emit exactly one valid JSON document even when the
+    integrity scan fails — empty stdout would break consumers."""
+
+    def test_json_scan_error_still_emits_json(self, tmp_path, capsys):
+        import json
+        from unittest.mock import MagicMock, patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   side_effect=RuntimeError("qdrant unreachable")), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            result = MagicMock()
+            result.fixable_failures = []
+            result.critical_failures = []
+            result.can_proceed.return_value = True
+            result.is_healthy.return_value = True
+            result.warnings = []
+            result.to_dict.return_value = {"checks": []}
+            MockChecker.return_value.run.return_value = result
+
+            args = MagicMock()
+            args.json = True
+            args.fix = False
+            args.yes = True
+            args.verbose = False
+            try:
+                cli.cmd_doctor(args)
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        doc = json.loads(out)
+        assert doc["corpus_integrity"] == {"skipped": "qdrant unreachable"}
