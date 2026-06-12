@@ -92,13 +92,20 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
     sidecars_root = repo_root / ".carta" / "sidecars"
     if sidecars_root.exists():
         for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
-            sc = read_sidecar(sc_path) or {}
+            sc = read_sidecar(sc_path)
+            if not isinstance(sc, dict):
+                # Corrupt sidecar (valid YAML but not a mapping) — one bad file
+                # must not blind the whole scan.
+                continue
             rel = sc.get("current_path")
             if not rel:
                 continue
 
             status = sc.get("status")
-            qdrant_count = per_file_counts.get(rel)
+            # Missing entry means ZERO surviving points — a fully-lost file
+            # (e.g. every chunk shadowed by a legacy ID collision) is the
+            # strongest mismatch of all, not an exemption.
+            qdrant_count = per_file_counts.get(rel, 0)
             sidecar_count = sc.get("chunk_count")
 
             # Stuck-stale: status is "stale" but file hash matches disk — a bug
@@ -120,7 +127,6 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
             # sidecars (hash differs) are expected to be out of sync and exempt.
             if (
                 (status == "embedded" or is_stuck)
-                and qdrant_count is not None
                 and sidecar_count is not None
                 and sidecar_count != qdrant_count
             ):

@@ -212,3 +212,27 @@ class TestStuckStaleCountMismatch:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
         assert report["count_mismatches"] == {}
         assert report["stuck_stale"] == []
+
+
+class TestScannerRobustness:
+    def test_non_dict_sidecar_yaml_does_not_abort_scan(self, tmp_path):
+        """A corrupt sidecar that parses to a list/str must be skipped, not crash."""
+        bad = tmp_path / ".carta" / "sidecars" / "docs" / "bad.embed-meta.yaml"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("- a\n- b\n")
+        pts = [_point("docs/ok.md", "ok", 0, "fine")]
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
+        assert report["affected_files"] == []
+
+    def test_fully_lost_file_is_a_count_mismatch(self, tmp_path):
+        """A sidecar claiming chunks for a file with ZERO surviving points must
+        reach count_mismatches/affected_files (fully shadowed by legacy collisions)."""
+        src = tmp_path / "docs" / "lost.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("content whose points were all overwritten")
+        _write_sidecar(tmp_path, "docs/lost.md", 5, "embedded",
+                       compute_file_hash(src))
+        pts = [_point("docs/other.md", "other", 0, "fine")]
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
+        assert report["count_mismatches"] == {"docs/lost.md": {"sidecar": 5, "qdrant": 0}}
+        assert "docs/lost.md" in report["affected_files"]
