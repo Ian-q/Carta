@@ -193,6 +193,15 @@ def cmd_embed(args):
     if timeout_override is not None:
         cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
 
+    # --repair: detect and fix corpus-integrity issues, then exit.
+    # `is True` (not `if args.repair`) — rejects truthy MagicMocks in tests.
+    if getattr(args, "repair", False) is True:
+        from carta.embed.repair import run_repair
+        repo_root = cfg_path.parent.parent
+        summary = run_repair(repo_root, cfg, verbose=True)
+        _notify_if_update(cfg_path, cfg)
+        sys.exit(1 if summary["failed"] else 0)
+
     # --visual: slow pass-2 drainer — OCR text + ColPali per pending page, then exit.
     # `is True` (not `if args.visual`) — rejects truthy MagicMocks in tests.
     if getattr(args, "visual", False) is True:
@@ -732,6 +741,12 @@ def main():
         "--visual",
         action="store_true",
         help="Run the slow visual pass: drain visual_pending pages (OCR text + ColPali).",
+    )
+    embed_p.add_argument(
+        "--repair",
+        action="store_true",
+        help="Detect and repair corpus-integrity issues (point-ID collisions, "
+             "empty chunks, count mismatches), then exit.",
     )
 
     audit_p = sub.add_parser(

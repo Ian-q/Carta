@@ -1,10 +1,11 @@
 """Tests for corpus-integrity scanning (doctor + embed --repair)."""
 import yaml
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from carta.embed.integrity import scan_corpus_integrity
 from carta.embed.lifecycle import compute_file_hash
+from carta.embed.repair import run_repair
 
 
 def _point(file_path, slug, chunk_index, text):
@@ -236,3 +237,174 @@ class TestScannerRobustness:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
         assert report["count_mismatches"] == {"docs/lost.md": {"sidecar": 5, "qdrant": 0}}
         assert "docs/lost.md" in report["affected_files"]
+
+
+class TestRunRepair:
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_repair_deletes_points_then_reembeds_each_affected_file(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        mock_scan.return_value = {
+            "slug_collisions": {"readme": ["docs/a/README.md", "docs/b/README.md"]},
+            "empty_files": [], "partial_empty_files": {}, "count_mismatches": {},
+            "stuck_stale": [],
+            "affected_files": ["docs/a/README.md", "docs/b/README.md"],
+        }
+        mock_reembed.return_value = {"status": "ok", "chunks": 5}
+        for rel in ("docs/a/README.md", "docs/b/README.md"):
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("# x\ncontent\n")
+
+        summary = run_repair(tmp_path, CFG)
+
+        client = mock_qc.return_value
+        assert client.delete.call_count == 2          # one purge per file
+        assert mock_reembed.call_count == 2
+        assert summary["repaired"] == 2
+        assert summary["purged_only"] == 0
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_missing_file_is_purged_not_reembedded(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": ["docs/gone.pdf"],
+            "partial_empty_files": {}, "count_mismatches": {}, "stuck_stale": [],
+            "affected_files": ["docs/gone.pdf"],
+        }
+        summary = run_repair(tmp_path, CFG)
+        assert mock_qc.return_value.delete.call_count == 1
+        mock_reembed.assert_not_called()
+        assert summary["purged_only"] == 1
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_extraction_failed_counts_as_flagged(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": ["docs/scan.pdf"],
+            "partial_empty_files": {}, "count_mismatches": {}, "stuck_stale": [],
+            "affected_files": ["docs/scan.pdf"],
+        }
+        f = tmp_path / "docs" / "scan.pdf"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(b"%PDF-1.4 fake")
+        mock_reembed.return_value = {"status": "ok", "chunks": 0}
+        summary = run_repair(tmp_path, CFG)
+        assert summary["flagged"] == 1
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_stuck_stale_sidecars_fixed_in_place(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        """Stuck-stale file not in affected_files: sidecar gets status fixed, no delete/re-embed."""
+        from carta.embed.induct import sidecar_path as _sidecar_path
+        # Create the source file
+        src = tmp_path / "docs" / "s.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("content")
+        # Write sidecar at the path sidecar_path() would compute (production path)
+        sc_path = _sidecar_path(src, tmp_path)
+        sc_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(sc_path, "w") as f:
+            yaml.dump({"current_path": "docs/s.md", "chunk_count": 3,
+                       "status": "stale", "file_hash": "abc123"}, f)
+
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": [], "partial_empty_files": {},
+            "count_mismatches": {}, "stuck_stale": ["docs/s.md"],
+            "affected_files": [],
+        }
+
+        summary = run_repair(tmp_path, CFG)
+
+        # No delete or re-embed for stuck-stale-only file
+        mock_qc.return_value.delete.assert_not_called()
+        mock_reembed.assert_not_called()
+        assert summary["stale_fixed"] == 1
+
+        # Sidecar YAML should now have status "embedded" and stale_as_of None
+        with open(sc_path) as f:
+            updated = yaml.safe_load(f)
+        assert updated["status"] == "embedded"
+        assert updated.get("stale_as_of") is None
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_stuck_stale_also_affected_not_double_handled(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        """File in BOTH stuck_stale and affected_files → re-embedded once, stale_fixed == 0."""
+        src = tmp_path / "docs" / "both.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("content")
+
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": [], "partial_empty_files": {},
+            "count_mismatches": {"docs/both.md": {"sidecar": 5, "qdrant": 2}},
+            "stuck_stale": ["docs/both.md"],
+            "affected_files": ["docs/both.md"],
+        }
+        mock_reembed.return_value = {"status": "ok", "chunks": 5}
+
+        summary = run_repair(tmp_path, CFG)
+
+        # Re-embedded exactly once (via affected_files loop)
+        assert mock_reembed.call_count == 1
+        # stale_fixed == 0: the sidecar was already rewritten by re-embed
+        assert summary["stale_fixed"] == 0
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_reembed_exception_counts_failed(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        """run_embed_file raising RuntimeError → failed count increments, loop continues."""
+        for rel in ("docs/a.md", "docs/b.md"):
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("content")
+
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": [], "partial_empty_files": {},
+            "count_mismatches": {}, "stuck_stale": [],
+            "affected_files": ["docs/a.md", "docs/b.md"],
+        }
+        # First call raises, second succeeds
+        mock_reembed.side_effect = [RuntimeError("boom"), {"status": "ok", "chunks": 3}]
+
+        summary = run_repair(tmp_path, CFG)
+
+        assert summary["failed"] == 1
+        assert summary["repaired"] == 1   # second file still processed
+        assert mock_reembed.call_count == 2
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_clean_corpus_noop(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path, capsys):
+        """Empty report → all counters 0, no client.delete, friendly message printed."""
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": [], "partial_empty_files": {},
+            "count_mismatches": {}, "stuck_stale": [],
+            "affected_files": [],
+        }
+
+        summary = run_repair(tmp_path, CFG)
+
+        mock_qc.return_value.delete.assert_not_called()
+        mock_reembed.assert_not_called()
+        assert summary["affected"] == 0
+        assert summary["repaired"] == 0
+        assert summary["purged_only"] == 0
+        assert summary["flagged"] == 0
+        assert summary["failed"] == 0
+        assert summary["stale_fixed"] == 0
+        out = capsys.readouterr().out
+        assert "nothing to repair" in out.lower()
