@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 from carta.embed import pipeline
 from carta.embed.pipeline import _visual_chunk_index_pass2
-from carta.embed.embed import _point_id
+from carta.embed.embed import _point_id_versioned
 from carta.embed.visual_queue import VISUAL_PENDING_KEY, VISUAL_DONE_KEY
 
 
@@ -84,27 +84,27 @@ def test_drainer_preflight_when_visual_unavailable(monkeypatch, tmp_path):
 def test_pass2_point_ids_disjoint_from_pass1():
     """Pass-2 visual/OCR chunk IDs must never collide with pass-1 text chunk IDs.
 
-    upsert_chunks derives the Qdrant point ID as _point_id(slug, chunk_index),
-    i.e. md5("{slug}:{chunk_index}").
+    upsert_chunks derives the Qdrant point ID as _point_id_versioned(file_path,
+    chunk_index, generation), i.e. md5("{file_path}:{chunk_index}:g{gen}").
 
-    Pass-1 uses integer chunk_index values  → md5("{slug}:0"), md5("{slug}:1"), …
-    Pass-2 uses _visual_chunk_index_pass2() → md5("{slug}:visual:{page}:{i}")
+    Pass-1 uses integer chunk_index values  → md5("{key}:0:g1"), md5("{key}:1:g1"), …
+    Pass-2 uses _visual_chunk_index_pass2() → md5("{key}:visual:{page}:{i}:g1")
 
     An integer string can never equal "visual:{page}:{i}" so the two namespaces
     are provably disjoint.  This test confirms the MD5 outputs don't collide in
     practice across a representative sample.
     """
-    slug = "my-doc"
+    key = "docs/my-doc.md"
 
     # Pass-1: simulate up to 1000 text chunks (generous upper bound)
-    pass1_ids = {_point_id(slug, ci) for ci in range(1000)}
+    pass1_ids = {_point_id_versioned(key, ci, 1) for ci in range(1000)}
 
     # Pass-2: pages 1..5, sub-indices 0..9 each
     pass2_ids = set()
     for page in range(6):  # includes page 0 edge case
         for i in range(10):
             ci = _visual_chunk_index_pass2(page, i)
-            pass2_ids.add(_point_id(slug, ci))
+            pass2_ids.add(_point_id_versioned(key, ci, 1))
 
     assert pass1_ids.isdisjoint(pass2_ids), (
         "Pass-1 and pass-2 point IDs collide — namespace isolation is broken"

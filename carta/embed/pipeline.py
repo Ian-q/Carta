@@ -734,12 +734,13 @@ def _visual_chunk_index_pass2(page: int, i: int) -> str:
 
     Pass-2 chunks set ``chunk_index`` to this string (e.g. ``"visual:1:0"``).
     ``upsert_chunks`` then derives the Qdrant point ID via
-    ``_point_id(slug, chunk_index)`` → ``md5("{slug}:visual:{page}:{i}")``.
+    ``_point_id_versioned(file_path, chunk_index, generation)``
+    → ``md5("{file_path}:visual:{page}:{i}:g{gen}")``.
 
     This namespace is structurally disjoint from pass-1 text chunks, which
-    always use integer chunk_index values (e.g. ``md5("{slug}:0")``).  An
-    integer can never equal the string ``"visual:{page}:{i}"``, so collision
-    between pass-1 and pass-2 chunks for the same slug is impossible by
+    always use integer chunk_index values (e.g. ``md5("{file_path}:0:g1")``).
+    An integer can never equal the string ``"visual:{page}:{i}"``, so collision
+    between pass-1 and pass-2 chunks for the same file is impossible by
     construction.
     """
     return f"visual:{page}:{i}"

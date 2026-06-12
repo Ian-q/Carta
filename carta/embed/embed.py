@@ -151,19 +151,20 @@ def collection_is_hybrid(client: QdrantClient, coll_name: str) -> bool:
     return has_named_dense and has_sparse
 
 
-def _point_id(slug: str, chunk_index: int) -> str:
-    """Deterministic UUID from slug + chunk_index for idempotent upserts."""
-    raw = f"{slug}:{chunk_index}"
+def _point_id_versioned(key: str, chunk_index: int, generation: int) -> str:
+    """Deterministic UUID from key + chunk_index + generation.
+
+    `key` is the repo-relative file_path (collision-free); legacy points used
+    the filename-stem slug, which collided across same-stem files. Different
+    generations produce different UUIDs, enabling retries without collisions.
+    """
+    raw = f"{key}:{chunk_index}:g{generation}"
     return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
 
 
-def _point_id_versioned(slug: str, chunk_index: int, generation: int) -> str:
-    """Deterministic UUID from slug + chunk_index + generation for generation-aware upserts.
-
-    Used when chunks carry doc_generation metadata (Plan 999.1-02+).
-    Different generations produce different UUIDs, enabling retries without collisions.
-    """
-    raw = f"{slug}:{chunk_index}:g{generation}"
+def _visual_point_id(key: str, page_num: int) -> str:
+    """Deterministic UUID for visual page embeddings, keyed by file path."""
+    raw = f"{key}:visual:{page_num}"
     return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
 
 
@@ -210,12 +211,10 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
         payload["sidecar_id"] = chunk.get("sidecar_id", "")
         payload["chunk_source_hash"] = chunk.get("chunk_source_hash", "")
 
-        if chunk.get("doc_generation") is not None:
-            point_id = _point_id_versioned(
-                chunk["slug"], chunk["chunk_index"], chunk["doc_generation"]
-            )
-        else:
-            point_id = _point_id(chunk["slug"], chunk["chunk_index"])
+        id_key = chunk.get("file_path") or chunk["slug"]
+        point_id = _point_id_versioned(
+            id_key, chunk["chunk_index"], chunk.get("doc_generation", 1)
+        )
 
         if is_hybrid:
             from carta.embed.sparse import embed_sparse_document
@@ -309,20 +308,6 @@ def ensure_visual_collection(client: QdrantClient, coll_name: str) -> None:
         )
 
 
-def _visual_point_id(slug: str, page_num: int) -> str:
-    """Deterministic UUID for visual page embeddings.
-
-    Args:
-        slug: Document slug identifier.
-        page_num: 1-indexed page number.
-
-    Returns:
-        UUID string for the point ID.
-    """
-    raw = f"{slug}:visual:{page_num}"
-    return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
-
-
 def upsert_visual_pages(
     pages: list[dict],
     cfg: dict,
@@ -376,7 +361,8 @@ def upsert_visual_pages(
             }
             payload["doc_type"] = page.get("doc_type", "visual_page")
 
-            point_id = _visual_point_id(page["slug"], page["page_num"])
+            id_key = page.get("file_path") or page["slug"]
+            point_id = _visual_point_id(id_key, page["page_num"])
 
             point = PointStruct(
                 id=point_id,

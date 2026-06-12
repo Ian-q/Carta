@@ -2,22 +2,18 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from carta.embed.embed import _point_id, _point_id_versioned, upsert_chunks
+from carta.embed.embed import _point_id_versioned, _visual_point_id, upsert_chunks
 from carta.config import collection_for_doc_type
 
 
 class TestPointIdVersioned:
     """Test PAYLOAD-01: _point_id_versioned generates generation-aware UUIDs."""
 
-    def test_point_id_versioned_differs_from_point_id(self):
-        """_point_id_versioned produces different UUID than _point_id for same slug/chunk_index."""
-        slug = "test-doc"
-        chunk_index = 0
-
-        legacy_id = _point_id(slug, chunk_index)
-        versioned_id = _point_id_versioned(slug, chunk_index, 1)
-
-        assert legacy_id != versioned_id
+    def test_point_id_versioned_differs_per_key(self):
+        """Different keys produce different UUIDs."""
+        id_a = _point_id_versioned("docs/a/test-doc.md", 0, 1)
+        id_b = _point_id_versioned("docs/b/test-doc.md", 0, 1)
+        assert id_a != id_b
 
     def test_point_id_versioned_differs_per_generation(self):
         """Different generations produce different UUIDs."""
@@ -60,6 +56,7 @@ class TestUpsertChunksPayload:
         chunks = [
             {
                 "slug": "doc1",
+                "file_path": "docs/sub/doc1.md",
                 "chunk_index": 0,
                 "text": "chunk text",
                 "doc_generation": 2,
@@ -69,20 +66,19 @@ class TestUpsertChunksPayload:
 
         upsert_chunks(chunks, cfg, client=mock_client)
 
-        # Verify upsert was called with versioned ID
+        # Verify upsert was called with versioned ID derived from file_path
         mock_client.upsert.assert_called_once()
         points = mock_client.upsert.call_args[1]["points"]
         assert len(points) == 1
         point = points[0]
 
-        # Versioned ID should differ from legacy ID
-        legacy_id = _point_id("doc1", 0)
-        assert str(point.id) != legacy_id
+        expected_id = _point_id_versioned("docs/sub/doc1.md", 0, 2)
+        assert str(point.id) == expected_id
 
     @patch("carta.embed.embed.requests.post")
     @patch("carta.embed.embed.QdrantClient")
-    def test_upsert_chunks_without_doc_generation_uses_legacy_id(self, mock_client_class, mock_post):
-        """When chunk lacks doc_generation, upsert_chunks uses _point_id (backward compat)."""
+    def test_upsert_chunks_without_doc_generation_uses_file_path_id(self, mock_client_class, mock_post):
+        """When chunk lacks doc_generation, upsert_chunks uses _point_id_versioned with generation=1."""
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
         mock_client.collection_exists.return_value = True
@@ -102,9 +98,10 @@ class TestUpsertChunksPayload:
         chunks = [
             {
                 "slug": "doc1",
+                "file_path": "docs/sub/doc1.md",
                 "chunk_index": 0,
                 "text": "chunk text",
-                # No doc_generation key
+                # No doc_generation key — defaults to generation=1
             }
         ]
 
@@ -114,8 +111,8 @@ class TestUpsertChunksPayload:
         points = mock_client.upsert.call_args[1]["points"]
         point = points[0]
 
-        # Should use legacy ID
-        expected_id = _point_id("doc1", 0)
+        # Should use path-based versioned ID with generation=1
+        expected_id = _point_id_versioned("docs/sub/doc1.md", 0, 1)
         assert str(point.id) == expected_id
 
     @patch("carta.embed.embed.requests.post")
@@ -282,3 +279,47 @@ class TestUpsertChunksRouting:
 
     def test_image_description_still_routes_to_doc(self):
         assert self._run("image_description") == "p_doc"
+
+
+class TestPathBasedPointIds:
+    """Same-stem files must never share point IDs (the README-collision bug)."""
+
+    def test_same_stem_different_paths_get_distinct_ids(self):
+        id_a = _point_id_versioned("docs/ci/README.md", 0, 1)
+        id_b = _point_id_versioned("docs/diagrams/README.md", 0, 1)
+        assert id_a != id_b
+
+    def test_id_is_deterministic(self):
+        assert (_point_id_versioned("docs/ci/README.md", 3, 2)
+                == _point_id_versioned("docs/ci/README.md", 3, 2))
+
+    def test_visual_same_stem_different_paths_distinct(self):
+        id_a = _visual_point_id("docs/a/spec.pdf", 1)
+        id_b = _visual_point_id("docs/b/spec.pdf", 1)
+        assert id_a != id_b
+
+    @patch("carta.embed.embed.requests.post")
+    @patch("carta.embed.embed.collection_is_hybrid", return_value=False)
+    @patch("carta.embed.embed.ensure_collection")
+    def test_upsert_uses_file_path_for_point_id(self, mock_ensure, mock_hybrid, mock_post):
+        """build_point derives the ID from chunk['file_path'], not slug."""
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"embedding": [0.1] * 768}
+        mock_client = MagicMock()
+
+        cfg = {
+            "project_name": "test",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "nomic-embed-text:latest",
+                "embedding_workers": 1,
+            },
+        }
+        chunk = {"slug": "readme", "file_path": "docs/ci/README.md",
+                 "chunk_index": 0, "text": "hello world", "doc_type": "unknown"}
+        upsert_chunks([chunk], cfg, client=mock_client)
+
+        points = mock_client.upsert.call_args.kwargs["points"]
+        expected = _point_id_versioned("docs/ci/README.md", 0, 1)
+        assert points[0].id == expected
