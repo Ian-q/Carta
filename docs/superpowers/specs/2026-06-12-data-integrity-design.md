@@ -94,9 +94,10 @@ generation-arithmetic strategy and closes holes it could not cover:
 `_embed_one_file` also persists `generation` to `sidecar_updates` so that bulk
 sidecars correctly record the generation after their first embed.
 
-- Add a keyword payload index on `file_path` at `ensure_collection` time (new
-  collections) to keep filtered deletes fast; absence of the index on existing
-  collections is acceptable (full-scan delete at local corpus sizes).
+- The keyword payload index on `file_path` originally planned for
+  `ensure_collection` is **deferred** (recorded at final review): filtered
+  deletes full-scan, which is acceptable at local corpus sizes; revisit if
+  collections grow past ~10⁵ points.
 
 ### 3. Empty-chunk guard (Bug B)
 
