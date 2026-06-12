@@ -19,7 +19,7 @@ from carta.embed.induct import (
     write_sidecar,
     sidecar_path,
 )
-from carta.embed.embed import _point_id, ensure_collection, get_embedding, upsert_chunks
+from carta.embed.embed import _point_id_versioned, ensure_collection, get_embedding, upsert_chunks
 from carta.embed.parse import extract_pdf_text
 from carta.embed.pipeline import (
     discover_pending_files,
@@ -360,24 +360,24 @@ def test_extract_pdf_text_multi_page(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# embed.py — _point_id determinism
+# embed.py — _point_id_versioned determinism
 # ---------------------------------------------------------------------------
 
 def test_point_id_deterministic():
-    a = _point_id("my-slug", 0)
-    b = _point_id("my-slug", 0)
+    a = _point_id_versioned("docs/my-slug.md", 0, 1)
+    b = _point_id_versioned("docs/my-slug.md", 0, 1)
     assert a == b
 
 
 def test_point_id_unique_per_chunk():
-    a = _point_id("my-slug", 0)
-    b = _point_id("my-slug", 1)
+    a = _point_id_versioned("docs/my-slug.md", 0, 1)
+    b = _point_id_versioned("docs/my-slug.md", 1, 1)
     assert a != b
 
 
-def test_point_id_unique_per_slug():
-    a = _point_id("slug-a", 0)
-    b = _point_id("slug-b", 0)
+def test_point_id_unique_per_key():
+    a = _point_id_versioned("docs/a/slug.md", 0, 1)
+    b = _point_id_versioned("docs/b/slug.md", 0, 1)
     assert a != b
 
 
@@ -1131,8 +1131,8 @@ def test_visual_point_id_deterministic():
     """_visual_point_id should produce deterministic UUIDs."""
     from carta.embed.embed import _visual_point_id
 
-    a = _visual_point_id("datasheet", 42)
-    b = _visual_point_id("datasheet", 42)
+    a = _visual_point_id("docs/ref/datasheet.pdf", 42)
+    b = _visual_point_id("docs/ref/datasheet.pdf", 42)
     assert a == b
 
 
@@ -1140,8 +1140,8 @@ def test_visual_point_id_unique_per_page():
     """_visual_point_id should be unique per page number."""
     from carta.embed.embed import _visual_point_id
 
-    a = _visual_point_id("datasheet", 1)
-    b = _visual_point_id("datasheet", 2)
+    a = _visual_point_id("docs/ref/datasheet.pdf", 1)
+    b = _visual_point_id("docs/ref/datasheet.pdf", 2)
     assert a != b
 
 

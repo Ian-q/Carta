@@ -2,6 +2,33 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.0] — 2026-06-12
+
+### Fixed
+- **Point-ID collision (data loss).** Point IDs were hashed from the filename stem only, so
+  two files with the same stem (e.g. multiple `README.md` in different subdirectories) silently
+  overwrote each other's Qdrant points on every embed. IDs now hash the repo-relative file path;
+  visual page IDs fixed identically.
+- **Stale-generation cleanup.** Re-embeds stamped old points `stale` but left them searchable
+  forever. Old-generation points are now deleted after a **complete** upsert; partial upserts
+  keep the previous generation and print a warning. Pass-2 OCR chunks carry the file's
+  generation; `visual_done` resets on content change so affected pages re-queue.
+- **Empty-chunk guard.** PDF extraction failures produced points with identical
+  embedding-of-empty-string vectors (1,400+ observed in a real corpus). Empty chunks are dropped
+  at upsert; files yielding zero usable text are flagged `extraction_failed` with a loud warning
+  and counted separately in the embed summary.
+- **Sidecar status bookkeeping.** A successful re-embed now ends with `status: embedded`
+  instead of permanently `stale` (169/971 sidecars stuck in a real corpus). `carta embed FILE`
+  (force) now truly re-embeds even when the file hash is unchanged.
+
+### Added
+- **`carta doctor` corpus-integrity section.** Detects slug collisions, empty-text points,
+  sidecar/Qdrant chunk-count mismatches, and stuck-stale sidecars; findings merged into
+  doctor's JSON output alongside the existing environment checks.
+- **`carta embed --repair`.** Purges and force re-embeds files with integrity issues; fixes
+  stuck-stale sidecars in place. Summary distinguishes: repaired / purged / flagged
+  `extraction_failed` / queued-for-visual / failed.
+
 ## [0.10.0] — 2026-06-11
 
 ### Added

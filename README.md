@@ -466,6 +466,34 @@ carta embed --visual
 
 ---
 
+## Corpus integrity
+
+`carta doctor` includes a corpus-integrity section that checks your embedded knowledge base for
+data-quality issues — no Ollama calls required:
+
+- **Slug collisions** — multiple files with the same filename stem that would have silently
+  overwritten each other's Qdrant points (fixed in the embed pipeline; doctor flags any legacy cases).
+- **Empty-text points** — points stored with an embedding-of-empty-string (common after PDF
+  extraction failures) that are unfindable in practice.
+- **Chunk-count mismatches** — sidecar says N chunks but Qdrant holds a different count, indicating
+  a partial embed.
+- **Stuck-stale sidecars** — files whose sidecar never transitioned back to `embedded` after a
+  successful re-embed.
+
+Findings are included in `carta doctor`'s JSON output alongside the existing environment checks.
+
+**Repairing a corpus:**
+
+```bash
+carta embed --repair
+```
+
+Purges and force re-embeds all files flagged by the integrity checks, and fixes stuck-stale sidecars
+in place. The summary reports: repaired / purged / flagged `extraction_failed` / queued-for-visual /
+failed.
+
+---
+
 ## Status-line progress widget
 
 While `carta embed` runs, it writes `.carta/embed-status.json` with live progress. The `carta statusline` command reads that file and prints a compact segment for the Claude Code status line:

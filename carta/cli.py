@@ -193,6 +193,15 @@ def cmd_embed(args):
     if timeout_override is not None:
         cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
 
+    # --repair: detect and fix corpus-integrity issues, then exit.
+    # `is True` (not `if args.repair`) — rejects truthy MagicMocks in tests.
+    if getattr(args, "repair", False) is True:
+        from carta.embed.repair import run_repair
+        repo_root = cfg_path.parent.parent
+        summary = run_repair(repo_root, cfg, verbose=True)
+        _notify_if_update(cfg_path, cfg)
+        sys.exit(1 if summary["failed"] else 0)
+
     # --visual: slow pass-2 drainer — OCR text + ColPali per pending page, then exit.
     # `is True` (not `if args.visual`) — rejects truthy MagicMocks in tests.
     if getattr(args, "visual", False) is True:
@@ -269,6 +278,14 @@ def cmd_embed(args):
         skipped=summary["skipped"],
         errors=len(summary["errors"]),
     )
+    failed_extractions = summary.get("extraction_failed", 0)
+    if failed_extractions:
+        print(
+            f"\nWarning: {failed_extractions} file(s) yielded no extractable text "
+            f"(scanned PDFs? OCR may be required) — flagged extraction_failed, "
+            f"nothing embedded for them.",
+            file=sys.stderr,
+        )
     timed_out = summary.get("timed_out", [])
     if timed_out:
         current = cfg.get("embed", {}).get("file_timeout_s", 600)
@@ -446,10 +463,8 @@ def cmd_doctor(args):
     checker = PreflightChecker(interactive=interactive, verbose=args.verbose, project_root=Path.cwd())
     result = checker.run()
 
-    # Print report
-    if args.json:
-        print(result.to_json())
-    else:
+    # Print human-readable report (JSON deferred until after corpus-integrity merge)
+    if not args.json:
         result.print_report(verbose=args.verbose)
 
     # Offer to fix fixable failures (always interactive, --fix just auto-confirms)
@@ -470,6 +485,53 @@ def cmd_doctor(args):
             result.print_report(verbose=args.verbose)
     elif args.fix and not args.json:
         print("\n✅ No fixable issues found.")
+
+    # Corpus integrity (project-scoped, read-only). Never break doctor itself.
+    try:
+        cfg_path = find_config()
+    except Exception:
+        cfg_path = None
+    if cfg_path is not None:
+        import json as _json
+        try:
+            from carta.config import load_config
+            from carta.embed.integrity import scan_corpus_integrity
+            cfg = load_config(cfg_path)
+            repo_root = cfg_path.parent.parent
+            report = scan_corpus_integrity(cfg, repo_root)
+            if args.json:
+                doc = result.to_dict()
+                doc["corpus_integrity"] = report
+                print(_json.dumps(doc, indent=2))
+            else:
+                print("\n📦 Corpus integrity")
+                if not report["affected_files"] and not report["stuck_stale"]:
+                    print("  ✅ no issues found")
+                else:
+                    for slug, files in report["slug_collisions"].items():
+                        print(f"  ⚠️  slug collision '{slug}': {', '.join(files)}")
+                    for fp in report["empty_files"]:
+                        print(f"  ⚠️  all chunks empty: {fp}")
+                    for fp, n in report["partial_empty_files"].items():
+                        print(f"  ⚠️  {n} empty chunk(s): {fp}")
+                    for fp, c in report["count_mismatches"].items():
+                        print(f"  ⚠️  count mismatch: {fp} (sidecar {c['sidecar']} vs qdrant {c['qdrant']})")
+                    if report["stuck_stale"]:
+                        print(f"  ⚠️  {len(report['stuck_stale'])} sidecar(s) stuck 'stale' with unchanged files")
+                    print(f"  → run `carta embed --repair` to fix "
+                          f"({len(report['affected_files'])} file(s) affected)")
+        except Exception as e:
+            if args.json:
+                # Still emit one valid JSON document; note the skipped check
+                # instead of leaving consumers with empty stdout.
+                doc = result.to_dict()
+                doc["corpus_integrity"] = {"skipped": str(e)}
+                print(_json.dumps(doc, indent=2))
+            else:
+                print(f"\n📦 Corpus integrity: check skipped ({e})")
+    elif args.json:
+        # Outside a project: emit the preflight JSON with no corpus_integrity key
+        print(result.to_json())
 
     # Exit with error code if critical failures remain
     if not result.can_proceed():
@@ -679,6 +741,12 @@ def main():
         "--visual",
         action="store_true",
         help="Run the slow visual pass: drain visual_pending pages (OCR text + ColPali).",
+    )
+    embed_p.add_argument(
+        "--repair",
+        action="store_true",
+        help="Detect and repair corpus-integrity issues (point-ID collisions, "
+             "empty chunks, count mismatches), then exit.",
     )
 
     audit_p = sub.add_parser(

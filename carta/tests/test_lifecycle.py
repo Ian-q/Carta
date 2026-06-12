@@ -15,6 +15,7 @@ from carta.embed.lifecycle import (
     cleanup_expired_orphans,
     is_protected_doc_type,
     check_stale_alert,
+    delete_other_points,
 )
 
 
@@ -291,3 +292,36 @@ class TestCheckStaleAlert:
         assert result is not None
         assert isinstance(result, str)
         assert "carta embed --force-stale" in result
+
+
+class TestDeleteOtherPoints:
+    def test_deletes_by_file_path_excluding_keep_ids(self):
+        """Filter: must file_path match; must_not HasIdCondition with keep list."""
+        from qdrant_client.models import HasIdCondition
+        client = MagicMock()
+        keep_ids = ["id-a", "id-b"]
+        delete_other_points(client, "proj_doc", "docs/ci/README.md", keep_ids=keep_ids)
+
+        client.delete.assert_called_once()
+        kwargs = client.delete.call_args.kwargs
+        assert kwargs["collection_name"] == "proj_doc"
+        sel = kwargs["points_selector"]
+        # must: file_path == docs/ci/README.md
+        assert sel.must[0].key == "file_path"
+        assert sel.must[0].match.value == "docs/ci/README.md"
+        # must_not: HasIdCondition with our keep_ids
+        assert len(sel.must_not) == 1
+        assert isinstance(sel.must_not[0], HasIdCondition)
+        assert sel.must_not[0].has_id == keep_ids
+
+    def test_swallows_qdrant_errors(self):
+        """Cleanup is best-effort: a delete failure must not fail the embed."""
+        client = MagicMock()
+        client.delete.side_effect = RuntimeError("boom")
+        delete_other_points(client, "proj_doc", "x.md", keep_ids=["id-x"])  # no raise
+
+    def test_empty_keep_ids_still_calls_delete(self):
+        """Edge case: if keep_ids is empty, delete is still called (purges all points)."""
+        client = MagicMock()
+        delete_other_points(client, "proj_doc", "x.md", keep_ids=[])
+        client.delete.assert_called_once()

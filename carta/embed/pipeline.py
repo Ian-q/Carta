@@ -17,7 +17,7 @@ from qdrant_client import models as qmodels
 from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
-from carta.config import collection_name, find_config
+from carta.config import collection_name, collection_for_doc_type, find_config
 from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens
 from carta.embed.embed import (
     ensure_collection,
@@ -25,12 +25,13 @@ from carta.embed.embed import (
     get_embedding,
     upsert_visual_pages,
     collection_is_hybrid,
+    _point_id_versioned,
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
 )
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
-from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert
+from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_points
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
 from carta.embed.status import StatusWriter
@@ -338,15 +339,42 @@ def _embed_one_file(
         print(f"    built {len(raw_chunks)} chunk(s); embedding + upserting...", flush=True)
 
     slug = file_info.get("slug", file_path.stem)
+    generation = int(file_info.get("generation") or 1)
     metadata = {
         "slug": slug,
         "file_path": str(file_path.relative_to(repo_root)),
         "doc_type": file_info.get("doc_type", "unknown"),
+        "doc_generation": generation,
     }
     if frontmatter_meta:
         metadata["frontmatter"] = frontmatter_meta
 
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
+    # expected_text counts only non-empty chunks — upsert_chunks drops empty ones
+    # before embedding, so the cleanup gate must compare against the same set.
+    # kept_text_chunks mirrors the same filter so we can derive their point IDs.
+    kept_text_chunks = [c for c in enriched if (c.get("text") or "").strip()]
+    expected_text = len(kept_text_chunks)
+
+    # Zero usable text: for non-PDF files there's no image-chunk rescue path, so
+    # flag immediately. PDFs may still produce content via the vision path below.
+    if expected_text == 0 and file_path.suffix != ".pdf":
+        print(
+            f"Warning: {file_path.name}: 0 extractable characters — "
+            f"skipped (empty or unreadable file)",
+            flush=True,
+        )
+        return 0, {
+            "status": "extraction_failed",
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+            "chunk_count": 0,
+            "image_count": 0,
+            "image_chunks": 0,
+            "file_mtime": os.path.getmtime(str(file_path)),
+            "visual_pages": 0,
+            "_vision_events": [],
+        }
+
     count = upsert_chunks(enriched, cfg, client=client)
 
     # Vision progress tracking — events collected by callback, passed to caller via sidecar_updates
@@ -375,6 +403,8 @@ def _embed_one_file(
     # Vision: extract image descriptions for PDF files (fail-open per D-11, D-12)
     image_count = 0
     image_chunk_count = 0
+    expected_images = 0  # tracks chunks attempted; must equal image_chunk_count for cleanup gate
+    kept_image_chunks: list[dict] = []  # non-empty image chunks actually upserted (for ID derivation)
     vision_metadata = None
     visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
     _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
@@ -468,6 +498,7 @@ def _embed_one_file(
                                 "slug": slug,
                                 "file_path": str(file_path.relative_to(repo_root)),
                                 "doc_type": "image_description",
+                                "doc_generation": generation,
                                 "page_num": desc["page_num"],
                                 "image_index": desc["image_index"],
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
@@ -476,6 +507,10 @@ def _embed_one_file(
                                 "model_used": desc.get("model_used", "llava"),
                                 "content_type": desc.get("content_type", "visual"),
                             })
+                    # Count only non-empty chunks — upsert_chunks drops empty ones,
+                    # and a clean drop must not read as a partial upsert to the gate.
+                    kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
+                    expected_images = len(kept_image_chunks)
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                     if verbose:
                         print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
@@ -502,11 +537,14 @@ def _embed_one_file(
                                 "slug": slug,
                                 "file_path": str(file_path.relative_to(repo_root)),
                                 "doc_type": "image_description",
+                                "doc_generation": generation,
                                 "page_num": desc["page_num"],
                                 "image_index": desc["image_index"],
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
                                 "text": desc["text"],
                             })
+                        kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
+                        expected_images = len(kept_image_chunks)
                         image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                         if verbose:
                             print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
@@ -525,6 +563,7 @@ def _embed_one_file(
         "image_chunks": image_chunk_count,
         "file_mtime": os.path.getmtime(str(file_path)),
         "visual_pages": visual_pages_count,  # NEW: ColPali visual pages
+        "generation": generation,  # persist generation so bulk sidecars don't stay at 0
     }
 
     # Add vision metadata if available (Phase 999.4-04)
@@ -544,6 +583,18 @@ def _embed_one_file(
 
     sidecar_updates["_vision_events"] = _page_events
 
+    # Nothing extractable anywhere: no text was attempted, no image chunks were
+    # attempted, and no pages are queued for pass-2 visual embedding. Flag the
+    # file instead of recording a silent no-op as "embedded".
+    if (expected_text == 0 and expected_images == 0
+            and not (_visual_queue_updates.get(VISUAL_PENDING_KEY) or [])):
+        sidecar_updates["status"] = "extraction_failed"
+        print(
+            f"Warning: {file_path.name}: 0 extractable characters — skipped "
+            f"(scanned PDF? OCR may be required)",
+            flush=True,
+        )
+
     # File fully embedded — clear any per-page resume checkpoint.
     if file_path.suffix == ".pdf":
         cp = _vision_checkpoint_path(repo_root, slug)
@@ -551,6 +602,29 @@ def _embed_one_file(
             cp.unlink(missing_ok=True)
         except OSError:
             pass
+
+    # Delete every point for this file except the ones just written, but only when the
+    # upsert was complete.  A partial upsert leaves the new chunks incomplete; removing
+    # existing points would then lose data from BOTH old and new.  Require exact counts.
+    # ID-set-based cleanup (HasIdCondition) subsumes generation arithmetic and additionally
+    # removes: legacy slug-keyed duplicates, tail chunks of shrunken files, and any points
+    # from a same-generation re-embed that the old doc_generation!=g filter would have spared.
+    rel_path = str(file_path.relative_to(repo_root))
+    if count + image_chunk_count > 0 and count == expected_text and image_chunk_count == expected_images:
+        coll = collection_for_doc_type(cfg, file_info.get("doc_type", "unknown"))
+        keep_ids = [
+            _point_id_versioned(
+                c.get("file_path") or c["slug"], c["chunk_index"], c.get("doc_generation", 1)
+            )
+            for c in kept_text_chunks + kept_image_chunks
+        ]
+        delete_other_points(client, coll, rel_path=rel_path, keep_ids=keep_ids)
+    elif count + image_chunk_count > 0:
+        print(
+            f"Warning: partial upsert for {rel_path} ({count}/{expected_text} text, "
+            f"{image_chunk_count}/{expected_images} image) — keeping previous generation's points",
+            flush=True,
+        )
 
     return count + image_chunk_count, sidecar_updates
 
@@ -734,12 +808,13 @@ def _visual_chunk_index_pass2(page: int, i: int) -> str:
 
     Pass-2 chunks set ``chunk_index`` to this string (e.g. ``"visual:1:0"``).
     ``upsert_chunks`` then derives the Qdrant point ID via
-    ``_point_id(slug, chunk_index)`` → ``md5("{slug}:visual:{page}:{i}")``.
+    ``_point_id_versioned(file_path, chunk_index, generation)``
+    → ``md5("{file_path}:visual:{page}:{i}:g{gen}")``.
 
     This namespace is structurally disjoint from pass-1 text chunks, which
-    always use integer chunk_index values (e.g. ``md5("{slug}:0")``).  An
-    integer can never equal the string ``"visual:{page}:{i}"``, so collision
-    between pass-1 and pass-2 chunks for the same slug is impossible by
+    always use integer chunk_index values (e.g. ``md5("{file_path}:0:g1")``).
+    An integer can never equal the string ``"visual:{page}:{i}"``, so collision
+    between pass-1 and pass-2 chunks for the same file is impossible by
     construction.
     """
     return f"visual:{page}:{i}"
@@ -758,8 +833,8 @@ def _visual_embed_one_page(
     """OCR text + ColPali for a single 1-indexed page. Raise on failure.
 
     (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
-        Pass-2 chunks receive point IDs from _visual_point_id_pass2() so they are
-        disjoint from pass-1 text chunks for the same slug.
+        Pass-2 chunks receive a pass-2-specific chunk_index token so their point
+        IDs are disjoint from pass-1 text chunks for the same file.
     (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
         → upsert_visual_pages (_visual collection).
 
@@ -803,6 +878,10 @@ def _visual_embed_one_page(
 
     if chunks:
         image_chunks = []
+        # Stamp the sidecar's current generation onto every pass-2 chunk
+        # (observability metadata). Cleanup is ID-set-based: a text re-embed
+        # deletes these points and re-queues the pages for re-drain.
+        doc_generation = int(sidecar.get("generation") or 1)
         for chunk in chunks:
             for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
                 i = len(image_chunks)
@@ -810,10 +889,11 @@ def _visual_embed_one_page(
                     "slug": slug,
                     "file_path": current_path,
                     "doc_type": "image_description",
+                    "doc_generation": doc_generation,
                     "page_num": page,
                     "image_index": chunk.get("image_index", 0),
                     # Use a pass-2-specific chunk_index token so the Qdrant point
-                    # ID (derived by upsert_chunks as md5("{slug}:{chunk_index}"))
+                    # ID (derived by upsert_chunks as md5("{file_path}:{chunk_index}:g{gen}"))
                     # is disjoint from pass-1 text chunks (which use integer indices).
                     "chunk_index": _visual_chunk_index_pass2(page, i),
                     "text": part_text,
@@ -1079,7 +1159,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     old_hash = sidecar_data.get("file_hash")
     current_mtime = os.path.getmtime(str(file_path))
 
-    if current_hash == old_hash and old_hash is not None:
+    if not force and current_hash == old_hash and old_hash is not None:
         # Hash unchanged: just update mtime and fast-path fields
         _update_sidecar(sc_path, {
             "file_mtime": current_mtime,
@@ -1108,15 +1188,20 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     if len(version_history) > max_gens:
         version_history = version_history[-max_gens:]
 
-    # Prepare lifecycle updates
+    # Prepare lifecycle updates.
+    # VISUAL_DONE_KEY is reset to [] so add_pending_pages no longer excludes these pages;
+    # pass-1 re-queues image-heavy pages and the visual drainer re-processes them.
+    # VISUAL_PENDING_KEY is intentionally omitted — pass-1's fresh queuing merges into it
+    # and any stale pending pages re-drain idempotently (point IDs overwrite in place).
+    # NOTE: "status" and "stale_as_of" are intentionally excluded here — they are set
+    # after the embed completes based on what _embed_one_file returns (Bug A fix).
     lifecycle_updates = {
         "generation": new_generation,
-        "status": "stale",
-        "stale_as_of": now.isoformat(),
         "file_hash": current_hash,
         "file_mtime": current_mtime,
         "last_hash_check_at": now.isoformat(),
         "version_history": version_history,
+        VISUAL_DONE_KEY: [],
     }
 
     # Mark chunks as stale in Qdrant (with migration boundary guard)
@@ -1130,6 +1215,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         "doc_type": sidecar_data.get("doc_type", "unknown"),
         "sidecar_path": sc_path,
         "file_path": file_path,
+        "generation": new_generation,
     }
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
@@ -1142,10 +1228,14 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     count, sidecar_updates = _embed_one_file(
         file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose, progress
     )
-    # Merge lifecycle updates with embedding updates
-    sidecar_updates.update(lifecycle_updates)
-    sidecar_updates.pop("_vision_events", None)  # temp key — never written to sidecar
-    _update_sidecar(sc_path, sidecar_updates)
+    # Merge lifecycle updates with embedding updates.
+    # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
+    # or "extraction_failed") — apply lifecycle fields first, then let embed results win.
+    merged = {**lifecycle_updates, **sidecar_updates}
+    merged.setdefault("status", "embedded")   # belt-and-braces: _embed_one_file always sets it
+    merged["stale_as_of"] = None              # re-embed completed — no longer stale
+    merged.pop("_vision_events", None)        # temp key — never written to sidecar
+    _update_sidecar(sc_path, merged)
     return {"status": "ok", "chunks": count}
 
 
@@ -1158,9 +1248,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
         verbose: if True, print progress to stdout. If False, stdout is silent.
 
     Returns:
-        {"embedded": int, "skipped": int, "errors": list[str], "timed_out": list[str]}
+        {"embedded": int, "skipped": int, "extraction_failed": int,
+         "errors": list[str], "timed_out": list[str]}
     """
-    summary: dict = {"embedded": 0, "skipped": 0, "errors": [], "timed_out": []}
+    summary: dict = {"embedded": 0, "skipped": 0, "extraction_failed": 0,
+                     "errors": [], "timed_out": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
     migrate_sidecars(repo_root, verbose=verbose)
@@ -1330,7 +1422,10 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                         progress.vision_done(vision_events)
                 elif verbose:
                     print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-                summary["embedded"] += 1
+                if sidecar_updates.get("status") == "extraction_failed":
+                    summary["extraction_failed"] += 1
+                else:
+                    summary["embedded"] += 1
                 _write_perf_log_entry(perf_log_path, {
                     **perf_context, "file": rel_file, "status": "ok",
                     "chunks": count, "elapsed_s": round(elapsed, 2),
