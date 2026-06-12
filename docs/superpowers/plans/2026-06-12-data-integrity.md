@@ -10,7 +10,7 @@
 
 **Worktree:** Execute in an isolated worktree (branch `data-integrity`) created via superpowers:using-git-worktrees, matching prior release cycles.
 
-**Verification baseline:** Before Task 1, run `python3 -m pytest carta/tests/ -q` and record the pass count (expected: 798 passed, 2 skipped).
+**Verification baseline:** Before Task 1, run `python3 -m pytest carta/ -q` and record the pass count (expected: 798 passed, 2 skipped).
 
 ---
 
@@ -166,7 +166,7 @@ differ (or delete it — the new class covers it).
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `python3 -m pytest carta/tests/ -q`
+Run: `python3 -m pytest carta/ -q`
 Expected: PASS (798+4 new, 2 skipped). If other tests pinned `_point_id`,
 update them deliberately — the scheme change is the point of this task.
 
@@ -340,7 +340,7 @@ an inline `from carta.embed.lifecycle import delete_other_generations`).
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `python3 -m pytest carta/tests/ -q`
+Run: `python3 -m pytest carta/ -q`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -494,7 +494,7 @@ before editing; if threading the status through is invasive, count files whose
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `python3 -m pytest carta/tests/ -q`
+Run: `python3 -m pytest carta/ -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -611,7 +611,7 @@ flow.)
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `python3 -m pytest carta/tests/ -q`
+Run: `python3 -m pytest carta/ -q`
 Expected: PASS. Some existing lifecycle tests may assert the old
 `status: stale` end-state — update them deliberately (the old behavior is the
 bug).
@@ -933,7 +933,7 @@ stdout is one JSON document, merge instead: parse `result.to_json()`, add the
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `python3 -m pytest carta/tests/ -q`
+Run: `python3 -m pytest carta/ -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1142,7 +1142,7 @@ In `cmd_embed`, immediately after the module-enabled check (before the
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `python3 -m pytest carta/tests/ -q`
+Run: `python3 -m pytest carta/ -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1202,7 +1202,7 @@ match surrounding tone). Run `grep -n "doctor" README.md` to find the spot.
 
 - [ ] **Step 4: Run the full suite, commit**
 
-Run: `python3 -m pytest carta/tests/ -q` → PASS.
+Run: `python3 -m pytest carta/ -q` → PASS.
 
 ```bash
 git add carta/__init__.py pyproject.toml CHANGELOG.md README.md
@@ -1216,7 +1216,7 @@ git commit -m "chore: bump to 0.11.0, changelog + README for data-integrity rele
 - [ ] **Step 1: Integration review** — use superpowers:requesting-code-review against the spec (`docs/superpowers/specs/2026-06-12-data-integrity-design.md`); fix valid findings, rebut invalid ones with evidence.
 - [ ] **Step 2: Full suite + version sanity**
 
-Run: `python3 -m pytest carta/tests/ -q` → all pass.
+Run: `python3 -m pytest carta/ -q` → all pass.
 Run: `python3 -c "import carta; print(carta.__version__)"` → `0.11.0`.
 
 - [ ] **Step 3: PR** — push branch, `gh pr create` titled "Data integrity: path-based point IDs, empty-chunk guard, doctor/repair (v0.11.0)", body summarizing the four fixes + two features, linking issue #19 and the spec. Watch CI.
