@@ -759,8 +759,8 @@ def _visual_embed_one_page(
     """OCR text + ColPali for a single 1-indexed page. Raise on failure.
 
     (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
-        Pass-2 chunks receive point IDs from _visual_point_id_pass2() so they are
-        disjoint from pass-1 text chunks for the same slug.
+        Pass-2 chunks receive a pass-2-specific chunk_index token so their point
+        IDs are disjoint from pass-1 text chunks for the same file.
     (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
         → upsert_visual_pages (_visual collection).
 
@@ -814,7 +814,7 @@ def _visual_embed_one_page(
                     "page_num": page,
                     "image_index": chunk.get("image_index", 0),
                     # Use a pass-2-specific chunk_index token so the Qdrant point
-                    # ID (derived by upsert_chunks as md5("{slug}:{chunk_index}"))
+                    # ID (derived by upsert_chunks as md5("{file_path}:{chunk_index}:g{gen}"))
                     # is disjoint from pass-1 text chunks (which use integer indices).
                     "chunk_index": _visual_chunk_index_pass2(page, i),
                     "text": part_text,

@@ -1131,8 +1131,8 @@ def test_visual_point_id_deterministic():
     """_visual_point_id should produce deterministic UUIDs."""
     from carta.embed.embed import _visual_point_id
 
-    a = _visual_point_id("datasheet", 42)
-    b = _visual_point_id("datasheet", 42)
+    a = _visual_point_id("docs/ref/datasheet.pdf", 42)
+    b = _visual_point_id("docs/ref/datasheet.pdf", 42)
     assert a == b
 
 
@@ -1140,8 +1140,8 @@ def test_visual_point_id_unique_per_page():
     """_visual_point_id should be unique per page number."""
     from carta.embed.embed import _visual_point_id
 
-    a = _visual_point_id("datasheet", 1)
-    b = _visual_point_id("datasheet", 2)
+    a = _visual_point_id("docs/ref/datasheet.pdf", 1)
+    b = _visual_point_id("docs/ref/datasheet.pdf", 2)
     assert a != b
 
 
