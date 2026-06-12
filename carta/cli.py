@@ -454,10 +454,8 @@ def cmd_doctor(args):
     checker = PreflightChecker(interactive=interactive, verbose=args.verbose, project_root=Path.cwd())
     result = checker.run()
 
-    # Print report
-    if args.json:
-        print(result.to_json())
-    else:
+    # Print human-readable report (JSON deferred until after corpus-integrity merge)
+    if not args.json:
         result.print_report(verbose=args.verbose)
 
     # Offer to fix fixable failures (always interactive, --fix just auto-confirms)
@@ -478,6 +476,47 @@ def cmd_doctor(args):
             result.print_report(verbose=args.verbose)
     elif args.fix and not args.json:
         print("\n✅ No fixable issues found.")
+
+    # Corpus integrity (project-scoped, read-only). Never break doctor itself.
+    try:
+        cfg_path = find_config()
+    except Exception:
+        cfg_path = None
+    if cfg_path is not None:
+        try:
+            from carta.config import load_config
+            from carta.embed.integrity import scan_corpus_integrity
+            import json as _json
+            cfg = load_config(cfg_path)
+            repo_root = cfg_path.parent.parent
+            report = scan_corpus_integrity(cfg, repo_root)
+            if args.json:
+                doc = result.to_dict()
+                doc["corpus_integrity"] = report
+                print(_json.dumps(doc, indent=2))
+            else:
+                print("\n📦 Corpus integrity")
+                if not report["affected_files"] and not report["stuck_stale"]:
+                    print("  ✅ no issues found")
+                else:
+                    for slug, files in report["slug_collisions"].items():
+                        print(f"  ⚠️  slug collision '{slug}': {', '.join(files)}")
+                    for fp in report["empty_files"]:
+                        print(f"  ⚠️  all chunks empty: {fp}")
+                    for fp, n in report["partial_empty_files"].items():
+                        print(f"  ⚠️  {n} empty chunk(s): {fp}")
+                    for fp, c in report["count_mismatches"].items():
+                        print(f"  ⚠️  count mismatch: {fp} (sidecar {c['sidecar']} vs qdrant {c['qdrant']})")
+                    if report["stuck_stale"]:
+                        print(f"  ⚠️  {len(report['stuck_stale'])} sidecar(s) stuck 'stale' with unchanged files")
+                    print(f"  → run `carta embed --repair` to fix "
+                          f"({len(report['affected_files'])} file(s) affected)")
+        except Exception as e:
+            if not getattr(args, "json", False):
+                print(f"\n📦 Corpus integrity: check skipped ({e})")
+    elif args.json:
+        # Outside a project: emit the preflight JSON with no corpus_integrity key
+        print(result.to_json())
 
     # Exit with error code if critical failures remain
     if not result.can_proceed():
