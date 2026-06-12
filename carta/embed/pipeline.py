@@ -25,12 +25,13 @@ from carta.embed.embed import (
     get_embedding,
     upsert_visual_pages,
     collection_is_hybrid,
+    _point_id_versioned,
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
 )
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
-from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_generations
+from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_points
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
 from carta.embed.status import StatusWriter
@@ -351,7 +352,9 @@ def _embed_one_file(
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     # expected_text counts only non-empty chunks — upsert_chunks drops empty ones
     # before embedding, so the cleanup gate must compare against the same set.
-    expected_text = sum(1 for c in enriched if (c.get("text") or "").strip())
+    # kept_text_chunks mirrors the same filter so we can derive their point IDs.
+    kept_text_chunks = [c for c in enriched if (c.get("text") or "").strip()]
+    expected_text = len(kept_text_chunks)
 
     # Zero usable text: for non-PDF files there's no image-chunk rescue path, so
     # flag immediately. PDFs may still produce content via the vision path below.
@@ -401,6 +404,7 @@ def _embed_one_file(
     image_count = 0
     image_chunk_count = 0
     expected_images = 0  # tracks chunks attempted; must equal image_chunk_count for cleanup gate
+    kept_image_chunks: list[dict] = []  # non-empty image chunks actually upserted (for ID derivation)
     vision_metadata = None
     visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
     _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
@@ -505,9 +509,8 @@ def _embed_one_file(
                             })
                     # Count only non-empty chunks — upsert_chunks drops empty ones,
                     # and a clean drop must not read as a partial upsert to the gate.
-                    expected_images = sum(
-                        1 for c in image_chunks if (c.get("text") or "").strip()
-                    )
+                    kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
+                    expected_images = len(kept_image_chunks)
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                     if verbose:
                         print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
@@ -540,9 +543,8 @@ def _embed_one_file(
                                 "chunk_index": len(raw_chunks) + len(image_chunks),
                                 "text": desc["text"],
                             })
-                        expected_images = sum(
-                            1 for c in image_chunks if (c.get("text") or "").strip()
-                        )
+                        kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
+                        expected_images = len(kept_image_chunks)
                         image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
                         if verbose:
                             print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
@@ -561,6 +563,7 @@ def _embed_one_file(
         "image_chunks": image_chunk_count,
         "file_mtime": os.path.getmtime(str(file_path)),
         "visual_pages": visual_pages_count,  # NEW: ColPali visual pages
+        "generation": generation,  # persist generation so bulk sidecars don't stay at 0
     }
 
     # Add vision metadata if available (Phase 999.4-04)
@@ -600,14 +603,22 @@ def _embed_one_file(
         except OSError:
             pass
 
-    # Delete stale-generation points for this file only when the upsert was complete.
-    # A partial upsert (batch failure) leaves the new generation incomplete; deleting the
-    # old generation would then lose chunks from BOTH generations. Require exact counts.
-    # Also organically removes any legacy slug-keyed points that share the same file_path.
+    # Delete every point for this file except the ones just written, but only when the
+    # upsert was complete.  A partial upsert leaves the new chunks incomplete; removing
+    # existing points would then lose data from BOTH old and new.  Require exact counts.
+    # ID-set-based cleanup (HasIdCondition) subsumes generation arithmetic and additionally
+    # removes: legacy slug-keyed duplicates, tail chunks of shrunken files, and any points
+    # from a same-generation re-embed that the old doc_generation!=g filter would have spared.
     rel_path = str(file_path.relative_to(repo_root))
     if count + image_chunk_count > 0 and count == expected_text and image_chunk_count == expected_images:
         coll = collection_for_doc_type(cfg, file_info.get("doc_type", "unknown"))
-        delete_other_generations(client, coll, rel_path, generation)
+        keep_ids = [
+            _point_id_versioned(
+                c.get("file_path") or c["slug"], c["chunk_index"], c.get("doc_generation", 1)
+            )
+            for c in kept_text_chunks + kept_image_chunks
+        ]
+        delete_other_points(client, coll, rel_path=rel_path, keep_ids=keep_ids)
     elif count + image_chunk_count > 0:
         print(
             f"Warning: partial upsert for {rel_path} ({count}/{expected_text} text, "

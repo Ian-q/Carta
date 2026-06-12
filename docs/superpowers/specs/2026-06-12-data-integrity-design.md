@@ -73,14 +73,27 @@ Out of scope (deferred, tracked as v0.12.0 candidates):
 
 ### 2. Generation cleanup on re-embed
 
-After a successful upsert of generation *g* for a file, delete points where
-`file_path == <file>` AND `doc_generation != g` (Qdrant filtered delete).
-Consequences:
-- Stale-generation chunks no longer linger in search results.
-- Legacy-scheme points are organically migrated: any file that is re-embedded
-  has all its old points (whatever their IDs) removed by the file_path filter.
-  Unchanged files keep their old-scheme points harmlessly. **No forced
-  migration**; existing healthy corpora are not regressed.
+After a successful, complete upsert for a file, delete every point where
+`file_path == <file>` EXCEPT the point IDs just written (`HasIdCondition`
+exclusion — Qdrant filtered delete). Generation remains as a payload field
+(`doc_generation`) for observability but is no longer the cleanup key.
+
+This ID-set-based approach (`delete_other_points`) subsumes the earlier
+generation-arithmetic strategy and closes holes it could not cover:
+- **Tail chunks of shrunken files**: a file that loses chunks on re-embed at
+  the *same* generation still has its orphaned tail removed, because those
+  points are not in the just-written ID set.
+- **Legacy slug-keyed duplicates**: old points with different IDs (keyed by
+  filename stem instead of file path) are caught by the file_path filter and
+  excluded from the keep set, so they are deleted on first re-embed.
+- **Bulk-path generation reuse (C1)**: bulk sidecars initialised at
+  `generation: 0` caused the first re-embed to reuse generation 1; the old
+  `doc_generation != g` filter then spared all prior gen-1 points. The ID-set
+  approach is independent of generation arithmetic and is unaffected by this.
+
+`_embed_one_file` also persists `generation` to `sidecar_updates` so that bulk
+sidecars correctly record the generation after their first embed.
+
 - Add a keyword payload index on `file_path` at `ensure_collection` time (new
   collections) to keep filtered deletes fast; absence of the index on existing
   collections is acceptable (full-scan delete at local corpus sizes).

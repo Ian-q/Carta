@@ -119,10 +119,11 @@ def test_targeted_multiple_files_all_processed(mock_find_config, mock_load_confi
 
 
 @patch("carta.embed.pipeline.upsert_chunks", return_value=1)
-@patch("carta.embed.pipeline.delete_other_generations")
-def test_embed_one_file_cleans_other_generations(mock_del, mock_upsert, tmp_path):
-    """_embed_one_file calls delete_other_generations with correct file_path and generation."""
+@patch("carta.embed.pipeline.delete_other_points")
+def test_embed_one_file_cleans_other_points(mock_del, mock_upsert, tmp_path):
+    """_embed_one_file calls delete_other_points with correct file_path and keep_ids."""
     from carta.embed.pipeline import _embed_one_file
+    from carta.embed.embed import _point_id_versioned
 
     repo = tmp_path
     doc = repo / "docs" / "a.md"
@@ -137,20 +138,104 @@ def test_embed_one_file_cleans_other_generations(mock_del, mock_upsert, tmp_path
     count, updates = _embed_one_file(doc, file_info, cfg, MagicMock(), repo, 800, 0.15)
 
     mock_del.assert_called_once()
-    args = mock_del.call_args.args
-    assert args[2] == "docs/a.md"
-    assert args[3] == 2
+    kwargs = mock_del.call_args.kwargs
+    assert kwargs["rel_path"] == "docs/a.md"
+    # keep_ids must be path-derived (not slug-derived), at generation 2
+    keep_ids = kwargs["keep_ids"]
+    assert len(keep_ids) >= 1
+    for kid in keep_ids:
+        # Every ID must be derivable from the file_path (not slug) at gen 2
+        assert kid == _point_id_versioned("docs/a.md", 0, 2) or any(
+            kid == _point_id_versioned("docs/a.md", i, 2) for i in range(10)
+        )
 
     # Verify chunks passed to upsert carry doc_generation == 2
     upsert_call_chunks = mock_upsert.call_args.args[0]
     assert all(c.get("doc_generation") == 2 for c in upsert_call_chunks)
 
 
+@patch("carta.embed.pipeline.upsert_chunks", return_value=1)
+@patch("carta.embed.pipeline.delete_other_points")
+def test_c1_regression_same_generation_cleanup(mock_del, mock_upsert, tmp_path):
+    """C1 regression: re-embed without a generation key (bulk path, generation defaults to 1)
+    must still call delete_other_points with the correct path-derived keep_ids.
+
+    Before the fix, bulk sidecars had generation=0 → first re-embed computed
+    new_generation=0+1=1, reusing generation 1, so delete_other_generations skipped
+    all prior gen-1 points. This test pins that cleanup no longer depends on
+    generation arithmetic — it deletes by ID-set.
+    """
+    from carta.embed.pipeline import _embed_one_file
+    from carta.embed.embed import _point_id_versioned
+
+    repo = tmp_path
+    doc = repo / "docs" / "bulk.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("# Bulk\n\nsome content for bulk embed\n")
+
+    cfg = {
+        "project_name": "test",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    # Bulk path: file_info has NO generation key — defaults to 1 inside _embed_one_file
+    file_info = {"slug": "bulk", "doc_type": "unknown"}
+    count, updates = _embed_one_file(doc, file_info, cfg, MagicMock(), repo, 800, 0.15)
+
+    # delete_other_points MUST be called even when generation stays at 1
+    mock_del.assert_called_once()
+    kwargs = mock_del.call_args.kwargs
+    assert kwargs["rel_path"] == "docs/bulk.md"
+
+    # keep_ids must be path-derived at generation 1
+    keep_ids = kwargs["keep_ids"]
+    assert len(keep_ids) >= 1
+    expected_id_0 = _point_id_versioned("docs/bulk.md", 0, 1)
+    assert expected_id_0 in keep_ids, (
+        f"Expected path-derived ID for chunk 0 gen 1 ({expected_id_0!r}) in keep_ids, "
+        f"but got: {keep_ids}"
+    )
+
+
+@patch("carta.embed.pipeline.upsert_chunks", return_value=1)
+@patch("carta.embed.pipeline.delete_other_points")
+def test_bulk_path_persists_generation_in_sidecar_updates(mock_del, mock_upsert, tmp_path):
+    """Part 2 — bulk path (no generation in file_info) must include generation: 1 in sidecar_updates.
+
+    Before the fix, bulk sidecars stayed at generation=0, so the next targeted
+    re-embed computed new_generation = 0+1 = 1, reusing generation 1, and the
+    old generation-arithmetic cleanup skipped all prior gen-1 points.
+    """
+    from carta.embed.pipeline import _embed_one_file
+
+    repo = tmp_path
+    doc = repo / "docs" / "bulk2.md"
+    doc.parent.mkdir(parents=True)
+    doc.write_text("# Bulk Gen Persistence\n\nsome content to embed\n")
+
+    cfg = {
+        "project_name": "test",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    # Bulk path: no generation key in file_info
+    file_info = {"slug": "bulk2", "doc_type": "unknown"}
+    count, sidecar_updates = _embed_one_file(doc, file_info, cfg, MagicMock(), repo, 800, 0.15)
+
+    assert "generation" in sidecar_updates, (
+        "sidecar_updates must include 'generation' so the bulk sidecar tracks the "
+        "correct generation and future re-embeds don't reuse stale generation numbers"
+    )
+    assert sidecar_updates["generation"] == 1, (
+        f"Expected generation=1 in sidecar_updates (bulk default), got {sidecar_updates.get('generation')!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 2: run_embed_file resets visual_done on hash-changed re-embed
 # ---------------------------------------------------------------------------
 
-@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.delete_other_points")
 @patch("carta.embed.pipeline.upsert_chunks", return_value=3)
 @patch("carta.embed.pipeline.mark_sidecar_stale")
 @patch("carta.embed.pipeline.ensure_collection")
@@ -174,7 +259,7 @@ def test_run_embed_file_resets_visual_done_on_hash_change(
     mock_ensure_collection,
     mock_mark_stale,
     mock_upsert,
-    mock_del,
+    mock_del_other_points,
     tmp_path,
 ):
     """run_embed_file on a hash-changed file must write visual_done: [] into the sidecar.
@@ -234,10 +319,10 @@ def test_run_embed_file_resets_visual_done_on_hash_change(
 
 
 # ---------------------------------------------------------------------------
-# Test 3: partial upsert skips delete_other_generations and prints warning
+# Test 3: partial upsert skips delete_other_points and prints warning
 # ---------------------------------------------------------------------------
 
-@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.delete_other_points")
 @patch("carta.embed.pipeline.upsert_chunks", return_value=1)   # partial: returns 1, expected >= 2
 def test_partial_upsert_skips_cleanup_and_warns(mock_upsert, mock_del, tmp_path, capsys):
     """When upsert_chunks returns fewer chunks than attempted, cleanup must be skipped
@@ -311,7 +396,7 @@ def test_zero_usable_chunks_marks_extraction_failed(mock_upsert, tmp_path, capsy
 # Test 5: partial-empty enriched list — cleanup gate uses non-empty count
 # ---------------------------------------------------------------------------
 
-@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.delete_other_points")
 @patch("carta.embed.pipeline.upsert_chunks", return_value=2)
 def test_partial_empty_chunks_cleanup_gate_uses_nonempty_count(mock_upsert, mock_del, tmp_path):
     """When some chunks are empty and upsert_chunks returns 2 (non-empty count),
@@ -397,7 +482,7 @@ def test_pdf_zero_text_with_queued_visual_pages_not_flagged(
     assert updates["status"] != "extraction_failed"
 
 
-@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.delete_other_points")
 @patch("carta.embed.pipeline._build_vision_metadata", return_value=None)
 @patch("carta.embed.pipeline.extract_pdf_text_and_classify")
 @patch("carta.embed.pipeline.PageAnalyzer")
@@ -437,7 +522,7 @@ def test_empty_image_chunks_do_not_trip_partial_upsert_gate(
     mock_del.assert_called_once()
 
 
-@patch("carta.embed.pipeline.delete_other_generations")
+@patch("carta.embed.pipeline.delete_other_points")
 @patch("carta.embed.pipeline._build_vision_metadata", return_value=None)
 def test_empty_image_description_does_not_trip_partial_upsert_gate(
         mock_vmeta, mock_del, tmp_path, capsys):

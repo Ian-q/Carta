@@ -1,9 +1,10 @@
 """carta embed --repair: fix corpus-integrity issues found by integrity.scan.
 
-Per affected file: delete ALL of its points (any generation, any legacy ID),
-then force re-embed through the fixed pipeline. Files that no longer exist on
-disk, or whose extraction yields nothing, end up purged + flagged rather than
-re-upserted. Stuck-stale sidecars get their status corrected in place.
+Per affected file: delete ALL of its points from the _doc collection (any
+generation, any legacy ID), then force re-embed through the fixed pipeline.
+Files that no longer exist on disk, or whose extraction yields nothing, end up
+purged + flagged rather than re-upserted. Stuck-stale sidecars get their status
+corrected in place.
 """
 from __future__ import annotations
 

@@ -14,7 +14,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue, DatetimeRange
+from qdrant_client.models import FieldCondition, Filter, HasIdCondition, MatchValue, DatetimeRange
 
 
 def compute_file_hash(path: Path) -> str:
@@ -168,24 +168,25 @@ def is_protected_doc_type(doc_type: str) -> bool:
     return doc_type in PROTECTED_DOC_TYPES
 
 
-def delete_other_generations(
-    client, collection_name: str, rel_path: str, keep_generation: int
+def delete_other_points(
+    client, collection_name: str, rel_path: str, keep_ids: list[str]
 ) -> None:
-    """Delete a file's points from every generation except keep_generation.
+    """Delete every point for a file except the ones just written.
 
-    Runs after a successful upsert so stale-generation chunks (and any
-    legacy slug-keyed points for this file) stop appearing in search.
-    Best-effort: errors are reported but never fail the embed that
-    just succeeded.
+    Runs after a successful, complete upsert. Catches everything the
+    generation arithmetic missed: legacy slug-keyed points (different IDs),
+    stale generations, and tail chunks of files that shrank — regardless of
+    what doc_generation they carry.  Best-effort: errors are reported but
+    never fail the embed that just succeeded.
     """
     selector = Filter(
         must=[FieldCondition(key="file_path", match=MatchValue(value=rel_path))],
-        must_not=[FieldCondition(key="doc_generation", match=MatchValue(value=keep_generation))],
+        must_not=[HasIdCondition(has_id=keep_ids)],
     )
     try:
         client.delete(collection_name=collection_name, points_selector=selector)
     except Exception as e:
-        print(f"Warning: stale-generation cleanup failed for {rel_path} — {e}", flush=True)
+        print(f"Warning: stale-point cleanup failed for {rel_path} — {e}", flush=True)
 
 
 def check_stale_alert(stale_count: int, total_count: int, threshold: float) -> str | None:
