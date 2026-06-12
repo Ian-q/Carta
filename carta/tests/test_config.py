@@ -136,3 +136,10 @@ def test_graph_defaults_present():
     assert graph["hops"] == 1
     assert graph["seed_count"] == 10
     assert graph["candidate_depth"] == 50
+
+
+def test_fusion_defaults_present():
+    from carta.config import DEFAULTS
+    fusion = DEFAULTS["search"]["fusion"]
+    # Provisional cap; finalized by the ratio sweep (see RESULTS.md 2026-06-12).
+    assert fusion["visual_max_ratio"] == 0.34

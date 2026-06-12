@@ -52,6 +52,15 @@ DEFAULTS = {
             "seed_count": 10,       # how many top fused hits seed the walk
             "candidate_depth": 50,  # deep-fetch size when graph expansion is enabled
         },
+        "fusion": {
+            # Ceiling on the visual (_visual/ColPali) collection's share of the fused
+            # candidate pool, as a fraction of pool size (cap = round(ratio * pool)).
+            # RRF interleaves text and visual ~1:1 by rank, which halves text depth on
+            # every query once a _visual collection exists; this bounds visual so text
+            # questions keep their depth. 1.0 disables the cap (legacy behaviour). No
+            # effect on pure-text corpora. Eval-swept optimum — see RESULTS.md 2026-06-12.
+            "visual_max_ratio": 0.34,
+        },
     },
     "embed": {
         "reference_docs_path": "docs/reference/",
