@@ -136,3 +136,11 @@ def test_graph_defaults_present():
     assert graph["hops"] == 1
     assert graph["seed_count"] == 10
     assert graph["candidate_depth"] == 50
+
+
+def test_fusion_defaults_present():
+    from carta.config import DEFAULTS
+    fusion = DEFAULTS["search"]["fusion"]
+    # Eval-swept optimum: maximizes ET-embed 62q text recall (0.839->0.887) while
+    # holding the 14q visual eval flat at 0.857 (see RESULTS.md 2026-06-13).
+    assert fusion["visual_max_ratio"] == 0.2
