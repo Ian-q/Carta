@@ -2,7 +2,19 @@
 
 All notable changes to **carta-cc** are documented here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.11.0] — 2026-06-12
+## [Unreleased]
+
+### Fixed
+- **Visual pool dilution (#36).** Cross-collection RRF fusion interleaved text and visual
+  hits ~1:1 by rank, so once a `_visual` collection had content ~half of every query's
+  candidate pool was visual — including pure-text questions — halving effective text depth.
+  A new `search.fusion.visual_max_ratio` knob caps the visual lane's share of the fused pool
+  (default `0.2`; cap = round(ratio × pool size); freed slots backfill with deeper text).
+  `1.0` restores the old behaviour, and pure-text corpora are unaffected. The cap lives in
+  the cross-collection merge, so it lifts both the hybrid-alone results and the rerank pool.
+  Measured on the 62-query ET-embed eval: hybrid-alone recall@5 **0.839 → 0.887** (3 misses
+  recovered, none regressed), the 14-query visual eval held flat at 0.857, and the reranked
+  path unchanged at 0.935.
 
 ### Fixed
 - **Point-ID collision (data loss).** Point IDs were hashed from the filename stem only, so
