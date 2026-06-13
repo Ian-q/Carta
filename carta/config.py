@@ -58,8 +58,10 @@ DEFAULTS = {
             # RRF interleaves text and visual ~1:1 by rank, which halves text depth on
             # every query once a _visual collection exists; this bounds visual so text
             # questions keep their depth. 1.0 disables the cap (legacy behaviour). No
-            # effect on pure-text corpora. Eval-swept optimum — see RESULTS.md 2026-06-12.
-            "visual_max_ratio": 0.34,
+            # effect on pure-text corpora. Eval-swept optimum (ET-embed 62q hybrid
+            # 0.839->0.887, visual 14q held at 0.857, reranked neutral at 0.935) —
+            # see RESULTS.md 2026-06-13.
+            "visual_max_ratio": 0.2,
         },
     },
     "embed": {

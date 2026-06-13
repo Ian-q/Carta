@@ -141,5 +141,6 @@ def test_graph_defaults_present():
 def test_fusion_defaults_present():
     from carta.config import DEFAULTS
     fusion = DEFAULTS["search"]["fusion"]
-    # Provisional cap; finalized by the ratio sweep (see RESULTS.md 2026-06-12).
-    assert fusion["visual_max_ratio"] == 0.34
+    # Eval-swept optimum: maximizes ET-embed 62q text recall (0.839->0.887) while
+    # holding the 14q visual eval flat at 0.857 (see RESULTS.md 2026-06-13).
+    assert fusion["visual_max_ratio"] == 0.2
