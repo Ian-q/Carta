@@ -1506,7 +1506,12 @@ def _visual_collection_ready(client, coll_name: str) -> bool:
     return bool(count and count > 0)
 
 
-def _rrf_merge_collections(per_collection: list[list[dict]], top_n: int, k: int = 60) -> list[dict]:
+def _rrf_merge_collections(
+    per_collection: list[list[dict]],
+    top_n: int,
+    k: int = 60,
+    visual_max_ratio: float = 1.0,
+) -> list[dict]:
     """Fuse ranked hit lists from multiple collections with Reciprocal Rank Fusion.
 
     Each collection's native scores live on incomparable scales — text uses cosine
@@ -1515,10 +1520,20 @@ def _rrf_merge_collections(per_collection: list[list[dict]], top_n: int, k: int 
     hit.  RRF discards score magnitude and fuses by rank instead, so a rank-0 text
     hit and a rank-0 visual hit compete fairly regardless of scale.
 
+    RRF alone, however, interleaves text and visual ~1:1 by rank, so once a `_visual`
+    collection has hits ~half of every fused pool is visual — even for pure-text
+    questions — halving effective text depth.  `visual_max_ratio` caps the visual
+    lane's share of the returned pool: visual hits beyond the cap are dropped and the
+    freed slots are backfilled with deeper text (or, if text is exhausted, restored
+    from the diverted visual).  RRF order is preserved among everything admitted.
+
     Args:
         per_collection: one list per collection, each already ordered best-first.
         top_n: number of fused results to return.
         k: RRF damping constant (Qdrant's fusion default is 60).
+        visual_max_ratio: ceiling on the visual lane's share of the pool, as a
+            fraction of `top_n` (cap = round(visual_max_ratio * top_n)). 1.0 (default)
+            disables the cap; a corpus with no visual hits is unaffected either way.
 
     Returns:
         Flat list of the original hit dicts, best-first by RRF, length <= top_n.
@@ -1532,7 +1547,29 @@ def _rrf_merge_collections(per_collection: list[list[dict]], top_n: int, k: int 
             scored.append((rrf, coll_index, rank, hit))
     # -rrf: higher fused score first. coll_index/rank: deterministic, text-first ties.
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
-    return [hit for _, _, _, hit in scored[:top_n]]
+
+    # Cap the visual lane's share of the pool. No-op when no hit is visual or when
+    # visual_cap >= top_n (i.e. visual_max_ratio >= 1.0): the visual branch never
+    # diverts, so the walk reproduces scored[:top_n] exactly.
+    visual_cap = round(visual_max_ratio * top_n)
+    result: list[dict] = []
+    overflow: list[dict] = []
+    visual_admitted = 0
+    for _, _, _, hit in scored:
+        if len(result) >= top_n:
+            break
+        if hit.get("type") == "visual":
+            if visual_admitted < visual_cap:
+                result.append(hit)
+                visual_admitted += 1
+            else:
+                overflow.append(hit)
+        else:
+            result.append(hit)
+    # Text too shallow to fill the pool: restore diverted visual, still RRF order.
+    if len(result) < top_n and overflow:
+        result.extend(overflow[: top_n - len(result)])
+    return result
 
 
 def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[dict]:
@@ -1735,7 +1772,12 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     
     # Fuse across collections by rank (RRF) — scale-free, so visual MaxSim scores
     # can't swamp text cosine/RRF scores. fetch_limit keeps the rerank pool wide.
-    all_results = _rrf_merge_collections(per_collection, fetch_limit)
+    # visual_max_ratio caps the visual lane's share so text questions keep their depth.
+    fusion_cfg = cfg.get("search", {}).get("fusion", {})
+    visual_max_ratio = fusion_cfg.get("visual_max_ratio", 1.0)
+    all_results = _rrf_merge_collections(
+        per_collection, fetch_limit, visual_max_ratio=visual_max_ratio
+    )
 
     # Graph-aware expansion: promote related:-adjacent docs into the pool the reranker
     # sees. Fail-open. Off by default (opt in via search.graph.enabled); when enabled,
