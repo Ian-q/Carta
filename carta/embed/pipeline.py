@@ -18,7 +18,7 @@ from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, collection_for_doc_type, find_config
-from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens
+from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens, resolve_doc_title, apply_contextual_headers
 from carta.embed.embed import (
     ensure_collection,
     upsert_chunks,
@@ -333,6 +333,9 @@ def _embed_one_file(
     elif verbose:
         print(f"    extracted {len(pages)} page(s); chunking...", flush=True)
     raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
+    if cfg.get("embed", {}).get("chunking", {}).get("contextual_header", True):
+        doc_title = resolve_doc_title(frontmatter_meta, pages, file_path)
+        apply_contextual_headers(raw_chunks, doc_title)
     if progress:
         progress.step(f"embedding {len(raw_chunks)} chunks → Qdrant")
     elif verbose:
