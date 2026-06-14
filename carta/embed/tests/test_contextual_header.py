@@ -107,3 +107,59 @@ def test_apply_no_embed_text_when_header_empty():
     chunks = [{"text": "x", "section_heading": "", "chunk_index": 0}]
     apply_contextual_headers(chunks, "")  # no title, no heading -> empty header
     assert "embed_text" not in chunks[0]
+
+
+# ---------------------------------------------------------------------------
+# _embed_input + embed.py wiring
+# ---------------------------------------------------------------------------
+
+from carta.embed.embed import _embed_input
+
+
+def test_embed_input_prefers_embed_text():
+    assert _embed_input({"text": "body", "embed_text": "Title > H\n\nbody"}) == "Title > H\n\nbody"
+
+
+def test_embed_input_falls_back_to_text():
+    assert _embed_input({"text": "body"}) == "body"
+
+
+def test_embed_input_empty_embed_text_falls_back():
+    assert _embed_input({"text": "body", "embed_text": ""}) == "body"
+
+
+def test_upsert_embeds_header_but_payload_keeps_raw_text():
+    captured = {}
+
+    def fake_dense(text, **kw):
+        captured["dense"] = text
+        return [0.0] * 8
+
+    def fake_sparse(text, **kw):
+        captured["sparse"] = text
+        return SimpleNamespace(indices=[1], values=[0.5])
+
+    client = MagicMock()
+    cfg = {
+        "project_name": "t", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "u", "ollama_model": "m", "embedding_workers": 1},
+    }
+    chunk = {
+        "slug": "d", "file_path": "docs/d.md", "chunk_index": 0,
+        "doc_type": "unknown", "doc_generation": 1,
+        "text": "raw body", "embed_text": "D Title > Pinout\n\nraw body",
+    }
+    with patch("carta.embed.embed.get_embedding", side_effect=fake_dense), \
+         patch("carta.embed.sparse.embed_sparse_document", side_effect=fake_sparse), \
+         patch("carta.embed.embed.ensure_collection"), \
+         patch("carta.embed.embed.collection_is_hybrid", return_value=True):
+        from carta.embed.embed import upsert_chunks
+        upsert_chunks([chunk], cfg, client=client)
+
+    # Both vectors saw the header-augmented input
+    assert "D Title > Pinout" in captured["dense"]
+    assert "D Title > Pinout" in captured["sparse"]
+    # Payload stores raw text and does NOT leak embed_text
+    points = client.upsert.call_args.kwargs["points"]
+    assert points[0].payload["text"] == "raw body"
+    assert "embed_text" not in points[0].payload
