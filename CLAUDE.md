@@ -208,18 +208,19 @@ Carta is a semantic memory sidecar for Claude Code that gives agents automatic a
 - Relative path computation: Store relative-to-repo for sidecar metadata and scan results
 <!-- GSD:architecture-end -->
 
-<!-- GSD:workflow-start source:GSD defaults -->
-## GSD Workflow Enforcement
+## Development Workflow (Superpowers)
 
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
+This project uses the **Superpowers** skill flow, not GSD. Invoke skills before acting (see `using-superpowers`), and follow this progression for any non-trivial change:
 
-Use these entry points:
-- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd:debug` for investigation and bug fixing
-- `/gsd:execute-phase` for planned phase work
+- **`brainstorming`** — turn an idea/issue into an approved design before touching code. Mandatory before creative work.
+- **`writing-plans`** — convert the approved spec into a phased implementation plan. Specs live in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`.
+- **`test-driven-development`** — write the failing test before the implementation, for every feature and bugfix.
+- **`executing-plans` / `subagent-driven-development`** — execute the plan with review checkpoints.
+- **`systematic-debugging`** — for any bug, test failure, or unexpected behaviour, before proposing a fix.
+- **`verification-before-completion`** — run the verification commands and confirm output before claiming anything is done.
+- **`finishing-a-development-branch`** — decide merge/PR/cleanup once work is complete.
 
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
+Retrieval-quality changes are validated against the ET-embed eval corpus — see the eval workflow in auto-memory (`project_et-embed-eval-workflow`).
 
 
 
