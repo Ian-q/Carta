@@ -325,13 +325,18 @@ def build_chunk_header(doc_title: str, section_heading: str) -> str:
     return title or heading
 
 
-def apply_contextual_headers(chunks: list[dict], doc_title: str) -> list[dict]:
+def apply_contextual_headers(chunks: list[dict], doc_title: str,
+                             include_section: bool = True) -> list[dict]:
     """Set ``embed_text`` = "{header}\\n\\n{text}" on each chunk whose header is
     non-empty. The stored ``text`` is never modified — only the embedding input.
-    Mutates and returns ``chunks``.
+
+    With ``include_section=False`` the header is the document title alone (no
+    per-section heading): a lighter prefix that carries doc identity with less
+    chunk-specific dilution. Mutates and returns ``chunks``.
     """
     for chunk in chunks:
-        header = build_chunk_header(doc_title, chunk.get("section_heading", ""))
+        section = chunk.get("section_heading", "") if include_section else ""
+        header = build_chunk_header(doc_title, section)
         if header:
             chunk["embed_text"] = f"{header}\n\n{chunk['text']}"
     return chunks

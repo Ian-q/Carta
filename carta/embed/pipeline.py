@@ -333,9 +333,13 @@ def _embed_one_file(
     elif verbose:
         print(f"    extracted {len(pages)} page(s); chunking...", flush=True)
     raw_chunks = chunk_text(pages, max_tokens=max_tokens, overlap_fraction=overlap_fraction)
-    if cfg.get("embed", {}).get("chunking", {}).get("contextual_header", True):
+    chunking_cfg = cfg.get("embed", {}).get("chunking", {})
+    if chunking_cfg.get("contextual_header", True):
         doc_title = resolve_doc_title(frontmatter_meta, pages, file_path)
-        apply_contextual_headers(raw_chunks, doc_title)
+        apply_contextual_headers(
+            raw_chunks, doc_title,
+            include_section=chunking_cfg.get("contextual_header_section", True),
+        )
     if progress:
         progress.step(f"embedding {len(raw_chunks)} chunks → Qdrant")
     elif verbose:

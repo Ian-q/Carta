@@ -11,6 +11,11 @@ def test_default_enables_contextual_header():
     assert DEFAULTS["embed"]["chunking"]["contextual_header"] is True
 
 
+def test_default_header_is_title_only():
+    # Title-only validated as the better config on the ET-embed eval (#19).
+    assert DEFAULTS["embed"]["chunking"]["contextual_header_section"] is False
+
+
 # ---------------------------------------------------------------------------
 # resolve_doc_title
 # ---------------------------------------------------------------------------
@@ -107,6 +112,12 @@ def test_apply_no_embed_text_when_header_empty():
     chunks = [{"text": "x", "section_heading": "", "chunk_index": 0}]
     apply_contextual_headers(chunks, "")  # no title, no heading -> empty header
     assert "embed_text" not in chunks[0]
+
+
+def test_apply_title_only_when_section_excluded():
+    chunks = [{"text": "body", "section_heading": "## Pinout", "chunk_index": 0}]
+    apply_contextual_headers(chunks, "CTS Control Harness", include_section=False)
+    assert chunks[0]["embed_text"] == "CTS Control Harness\n\nbody"
 
 
 # ---------------------------------------------------------------------------
