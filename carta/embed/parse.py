@@ -287,6 +287,56 @@ def chunk_text(
     return chunks
 
 
+def resolve_doc_title(frontmatter_meta: dict, pages: list[dict], file_path: Path) -> str:
+    """Best-effort display title for a document, for contextual chunk headers.
+
+    Tiers (first non-empty wins):
+      1. frontmatter ``title:``
+      2. the first H1 line (``# Title``) found in the extracted pages
+      3. the humanized filename stem (``-``/``_`` -> space)
+    """
+    fm_title = (frontmatter_meta or {}).get("title")
+    if isinstance(fm_title, str) and fm_title.strip():
+        return fm_title.strip()
+    for page in pages:
+        for line in (page.get("text") or "").splitlines():
+            m = re.match(r"#\s+(\S.*)", line.strip())
+            if m:
+                return m.group(1).strip()
+    return file_path.stem.replace("-", " ").replace("_", " ").strip()
+
+
+def build_chunk_header(doc_title: str, section_heading: str) -> str:
+    """Compose the contextual header prefix for a chunk.
+
+    Returns ``"{title} > {heading}"``, ``"{title}"``, ``"{heading}"``, or ``""``.
+    Leading ``#`` markers are stripped from the heading; ``"(intro)"`` and blanks
+    count as "no heading"; a heading equal to the title (case-insensitive) is
+    deduped to the title alone.
+    """
+    title = (doc_title or "").strip()
+    heading = (section_heading or "").lstrip("#").strip()
+    if heading == "(intro)":
+        heading = ""
+    if heading and title and heading.lower() == title.lower():
+        heading = ""
+    if title and heading:
+        return f"{title} > {heading}"
+    return title or heading
+
+
+def apply_contextual_headers(chunks: list[dict], doc_title: str) -> list[dict]:
+    """Set ``embed_text`` = "{header}\\n\\n{text}" on each chunk whose header is
+    non-empty. The stored ``text`` is never modified — only the embedding input.
+    Mutates and returns ``chunks``.
+    """
+    for chunk in chunks:
+        header = build_chunk_header(doc_title, chunk.get("section_heading", ""))
+        if header:
+            chunk["embed_text"] = f"{header}\n\n{chunk['text']}"
+    return chunks
+
+
 def chunk_transcript(
     transcript_text: str,
     max_tokens: int = 400,
