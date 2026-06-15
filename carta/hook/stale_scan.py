@@ -80,6 +80,93 @@ def _stale_judge(section_text: str, candidate: dict, cfg: dict):
     return ollama_yesno(ollama_url, model, system, user, timeout_s=timeout_s)
 
 
+ZERO_OID = "0" * 40
+# git's canonical empty-tree object — diffing EMPTY_TREE..<sha> lists every file at <sha>
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def _git(repo_root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo_root, capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def _default_branch(repo_root: Path) -> str:
+    try:
+        ref = _git(repo_root, "rev-parse", "--abbrev-ref", "origin/HEAD").strip()
+        return ref.split("/", 1)[1] if "/" in ref else ref
+    except subprocess.CalledProcessError:
+        return "main"
+
+
+def _new_branch_range(repo_root: Path, local_sha: str) -> str:
+    """Range spec for a brand-new branch (remote has no tracking ref).
+
+    Prefer commits since the fork point off the default branch; when there is no
+    usable merge base (unrelated history, default branch absent, or the tip is
+    already contained in the default branch) fall back to the whole history at the
+    tip via git's empty-tree object so a first push still surfaces its docs."""
+    base = _default_branch(repo_root)
+    try:
+        mb = _git(repo_root, "merge-base", base, local_sha).strip()
+    except subprocess.CalledProcessError:
+        mb = ""
+    if mb and mb != local_sha:
+        return f"{mb}..{local_sha}"
+    return f"{EMPTY_TREE}..{local_sha}"
+
+
+def collect_staged(repo_root: Path, cfg: dict) -> list[ChangedDoc]:
+    out = _git(repo_root, "diff", "--cached", "--name-only", "--diff-filter=ACM")
+    docs: list[ChangedDoc] = []
+    for rel in out.splitlines():
+        rel = rel.strip()
+        if not rel or not _in_doc_scope(rel, cfg, repo_root):
+            continue
+        try:
+            text = _git(repo_root, "show", f":{rel}")
+        except subprocess.CalledProcessError:
+            continue
+        docs.append(ChangedDoc(path=rel, text=text))
+    return docs
+
+
+def collect_pushed(repo_root: Path, cfg: dict, stdin_lines: list[str]) -> list[ChangedDoc]:
+    ranges: list[tuple[str, str]] = []  # (range_spec, tip_sha)
+    for line in stdin_lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local_sha, remote_sha = parts[1], parts[3]
+        if set(local_sha) == {"0"}:
+            continue  # branch deletion — nothing to scan
+        if set(remote_sha) == {"0"}:
+            rng = _new_branch_range(repo_root, local_sha)
+        else:
+            rng = f"{remote_sha}..{local_sha}"
+        ranges.append((rng, local_sha))
+
+    if not stdin_lines:  # manual invocation — scan default-branch..HEAD
+        ranges = [(f"{_default_branch(repo_root)}..HEAD", "HEAD")]
+
+    seen: dict[str, ChangedDoc] = {}
+    for rng, tip in ranges:
+        try:
+            out = _git(repo_root, "diff", "--name-only", "--diff-filter=ACM", rng)
+        except subprocess.CalledProcessError:
+            continue
+        for rel in out.splitlines():
+            rel = rel.strip()
+            if not rel or rel in seen or not _in_doc_scope(rel, cfg, repo_root):
+                continue
+            try:
+                text = _git(repo_root, "show", f"{tip}:{rel}")
+            except subprocess.CalledProcessError:
+                continue
+            seen[rel] = ChangedDoc(path=rel, text=text)
+    return list(seen.values())
+
+
 def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=None) -> StaleScanResult:
     """Scan changed_docs for superseded sections.
 

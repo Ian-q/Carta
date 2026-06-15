@@ -141,3 +141,65 @@ def test_stale_judge_calls_ollama_with_both_excerpts():
     assert "micro-ROS UART section" in args[3]
     assert "COBS+JSON replaced micro-ROS" in args[3]
     assert kwargs["timeout_s"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Task 7: git collectors — collect_staged, collect_pushed
+# ---------------------------------------------------------------------------
+
+import subprocess
+import pytest
+from carta.hook.stale_scan import collect_staged, collect_pushed
+
+
+def _git(repo, *args):
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "t@t.t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "docs").mkdir()
+    return tmp_path
+
+
+def test_collect_staged_returns_scoped_docs(repo):
+    (repo / "docs" / "a.md").write_text("## A\nbody\n")
+    (repo / "src.py").write_text("print()\n")
+    _git(repo, "add", "docs/a.md", "src.py")
+    cfg = {"docs_root": "docs/", "excluded_paths": []}
+    docs = collect_staged(repo, cfg)
+    paths = [d.path for d in docs]
+    assert paths == ["docs/a.md"]              # .py excluded by scope
+    assert "## A" in docs[0].text
+
+
+def test_collect_pushed_uses_range_and_pushed_tip(repo):
+    (repo / "docs" / "a.md").write_text("v1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c1")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / "docs" / "a.md").write_text("## A\nv2 changed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c2")
+    tip = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    cfg = {"docs_root": "docs/", "excluded_paths": []}
+    stdin_lines = [f"refs/heads/main {tip} refs/heads/main {base}"]
+    docs = collect_pushed(repo, cfg, stdin_lines)
+    assert [d.path for d in docs] == ["docs/a.md"]
+    assert "v2 changed" in docs[0].text
+
+
+def test_collect_pushed_new_branch_zero_oid(repo):
+    # remote_sha is the zero OID -> fall back to default-branch merge-base range
+    (repo / "docs" / "a.md").write_text("## A\nnew branch content\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c1")
+    tip = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    cfg = {"docs_root": "docs/", "excluded_paths": []}
+    zero = "0" * 40
+    stdin_lines = [f"refs/heads/feature {tip} refs/heads/feature {zero}"]
+    docs = collect_pushed(repo, cfg, stdin_lines)
+    assert [d.path for d in docs] == ["docs/a.md"]
