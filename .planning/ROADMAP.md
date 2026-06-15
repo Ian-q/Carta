@@ -86,7 +86,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. `carta-prompt-hook.sh` invokes `carta-hook` after the enabled check — the Python hook module is reachable
   2. `carta-hook` exists on PATH after `pip install` (registered in `pyproject.toml [project.scripts]`)
-  3. On `TimeoutError` in `_judge_with_timeout`, the hook returns `True` (inject / fail open)
+  3. On `TimeoutError` in `_judge_with_timeout`, the hook returns `False` (no injection on timeout; prompt still proceeds unblocked) — per HOOK-05
   4. Flow C works end-to-end: Claude Code hook triggers → shell stub → Python hook → inject/discard
 **Plans:** 1 plan (1 complete)
 

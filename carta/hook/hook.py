@@ -5,9 +5,11 @@ run_search, and routes through three score zones:
 
   score > high_threshold  → fast-path inject (no Ollama)
   score < low_threshold   → noise gate (silent exit)
-  gray zone               → Ollama judge with timeout; inject on yes
+  gray zone               → Ollama judge with timeout; inject on yes,
+                            skip on no or timeout (HOOK-05: no injection on timeout)
 
-All paths exit 0 (fail-open). stdout is reserved for the JSON context block.
+All paths exit 0 (the prompt always proceeds unblocked). stdout is reserved for
+the JSON context block.
 All diagnostic output goes to stderr.
 """
 
@@ -199,17 +201,23 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
 def _judge_with_timeout(
     prompt: str, hits: list[dict], cfg: dict, timeout_s: int
 ) -> bool:
-    """Run Ollama judge in a thread; return True on timeout (fail-open per HOOK-05), False on other errors."""
+    """Run Ollama judge in a thread; return False on timeout and on other errors.
+
+    HOOK-05: on timeout we do NOT inject. The gray-zone hits are exactly the
+    borderline ones the judge exists to vet, so injecting them unvetted would be
+    the context noise Carta tries to avoid. The hook still exits 0 — the prompt
+    proceeds unblocked — it just stays silent.
+    """
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_call_ollama_judge, prompt, hits, cfg)
         try:
             return future.result(timeout=timeout_s)
         except concurrent.futures.TimeoutError:
             print(
-                f"carta-hook: judge timeout after {timeout_s}s (fail-open)",
+                f"carta-hook: judge timeout after {timeout_s}s (skipping injection)",
                 file=sys.stderr,
             )
-            return True
+            return False
         except Exception as e:
             print(f"carta-hook: judge exception (fail-open): {e}", file=sys.stderr)
             return False
