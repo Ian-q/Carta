@@ -85,3 +85,11 @@ def test_embed_state_running_via_live_lock(tmp_path, monkeypatch):
     snap = status.gather_project_status(root, name="proj", qdrant_url="u", now=100.0)
     assert snap["embed"]["state"] == "running"
     assert snap["embed"]["file_elapsed_s"] == 100.0
+
+
+def test_embed_state_running_via_lock_no_status(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    (root / ".carta" / "embed.lock").write_text("4242")
+    monkeypatch.setattr(status, "_pid_alive", lambda pid: True)
+    snap = status.gather_project_status(root, name="proj", qdrant_url="u")
+    assert snap["embed"]["state"] == "running"

@@ -19,14 +19,14 @@ _CORPUS_STATUSES = ("done", "pending", "stale", "extraction_failed")
 
 def _read_json(path: Path):
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(path.read_text())
     except Exception:
         return None
 
 
 def _lock_alive(lock_path: Path) -> bool:
     try:
-        pid = int(Path(lock_path).read_text().strip())
+        pid = int(lock_path.read_text().strip())
     except Exception:
         return False
     return pid > 0 and _pid_alive(pid)
@@ -34,24 +34,24 @@ def _lock_alive(lock_path: Path) -> bool:
 
 def _gather_embed(repo_root: Path, now: float) -> dict:
     carta_dir = Path(repo_root) / ".carta"
-    status = _read_json(carta_dir / "embed-status.json")
+    embed_status = _read_json(carta_dir / "embed-status.json")
     lock_alive = _lock_alive(carta_dir / "embed.lock")
 
-    if status is None:
+    if embed_status is None:
         return {"state": "running" if lock_alive else "never"}
 
     hostname = socket.gethostname()
-    pid = status.get("pid")
-    host = status.get("host")
+    pid = embed_status.get("pid")
+    host = embed_status.get("host")
 
     def _alive() -> bool:
         if lock_alive:
             return True
         if host == hostname and pid:
             return _pid_alive(pid)
-        return (now - float(status.get("updated_at") or 0)) <= STALE_WINDOW_S
+        return (now - float(embed_status.get("updated_at") or 0)) <= STALE_WINDOW_S
 
-    phase = status.get("phase")
+    phase = embed_status.get("phase")
     if phase == "running":
         state = "running" if _alive() else "interrupted"
     elif phase in ("done", "failed"):
@@ -61,19 +61,19 @@ def _gather_embed(repo_root: Path, now: float) -> dict:
 
     out = {
         "state": state,
-        "current_idx": status.get("current_idx", 0),
-        "total": status.get("total", 0),
-        "current_file": status.get("current_file"),
-        "embedded": status.get("embedded", 0),
-        "skipped": status.get("skipped", 0),
-        "errors": status.get("errors", 0),
-        "chunks": status.get("chunks", 0),
+        "current_idx": embed_status.get("current_idx", 0),
+        "total": embed_status.get("total", 0),
+        "current_file": embed_status.get("current_file"),
+        "embedded": embed_status.get("embedded", 0),
+        "skipped": embed_status.get("skipped", 0),
+        "errors": embed_status.get("errors", 0),
+        "chunks": embed_status.get("chunks", 0),
     }
-    started = status.get("current_file_started_at")
+    started = embed_status.get("current_file_started_at")
     if started is not None:
         out["file_elapsed_s"] = max(0.0, now - float(started))
-    finished = status.get("finished_at")
-    if finished:
+    finished = embed_status.get("finished_at")
+    if finished is not None:
         out["finished_at"] = finished
         out["age_s"] = max(0.0, now - float(finished))
     return out
