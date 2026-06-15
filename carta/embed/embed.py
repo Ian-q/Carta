@@ -28,6 +28,14 @@ VECTOR_DIM = 768
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "bm25"
 
+
+def _embed_input(chunk: dict) -> str:
+    """Text fed to the embedders for a chunk: the contextual-header-augmented
+    ``embed_text`` when present (see parse.apply_contextual_headers), else the raw
+    ``text``. The Qdrant payload always stores raw ``text`` — only vectors see the header.
+    """
+    return chunk.get("embed_text") or chunk["text"]
+
 # ColPali produces 128-dimensional patch vectors
 COLPALI_VECTOR_DIM = 128
 
@@ -223,7 +231,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
         # The payload's doc_generation and the generation baked into the point
         # ID must agree — generation cleanup deletes by payload value.
         generation = chunk.get("doc_generation", 1)
-        payload = {k: v for k, v in chunk.items() if k != "text"}
+        payload = {k: v for k, v in chunk.items() if k not in ("text", "embed_text")}
         payload["text"] = chunk["text"]
         payload["doc_generation"] = generation
         payload["stale_as_of"] = None
@@ -245,7 +253,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
 
         if is_hybrid:
             from carta.embed.sparse import embed_sparse_document
-            sv = embed_sparse_document(chunk["text"])
+            sv = embed_sparse_document(_embed_input(chunk))
             vector: dict | list = {
                 DENSE_VECTOR_NAME: vec,
                 SPARSE_VECTOR_NAME: SparseVector(indices=sv.indices, values=sv.values),
@@ -273,7 +281,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
         for chunk in chunks:
             chunk_id = f"{chunk.get('slug', '?')}[{chunk.get('chunk_index', '?')}]"
             try:
-                vec = get_embedding(chunk["text"], ollama_url=ollama_url, model=model)
+                vec = get_embedding(_embed_input(chunk), ollama_url=ollama_url, model=model)
                 batch.append(build_point(chunk, vec))
             except Exception as e:
                 print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
@@ -286,7 +294,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             max_workers=workers, thread_name_prefix="carta-embed"
         ) as ex:
             future_to_chunk = {
-                ex.submit(get_embedding, c["text"], ollama_url=ollama_url, model=model): c
+                ex.submit(get_embedding, _embed_input(c), ollama_url=ollama_url, model=model): c
                 for c in chunks
             }
             for fut in concurrent.futures.as_completed(future_to_chunk):

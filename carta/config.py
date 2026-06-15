@@ -89,6 +89,14 @@ DEFAULTS = {
             "max_tokens": 800,
             "overlap_fraction": 0.15,
             "preserve_tables": True,  # NEW: keep markdown tables whole
+            # Prepend "{doc_title} > {section_heading}" to each chunk's EMBEDDING
+            # input (not the stored excerpt) so vectors carry doc identity. Re-embed
+            # required to take effect. Set false to opt out. (issue #19)
+            "contextual_header": True,
+            # Title-only header by default: the per-section heading added dilution
+            # that cancelled the gain on the ET-embed eval (recall@5 0.887 flat with
+            # section vs 0.903 title-only). Set true to also include the section. (#19)
+            "contextual_header_section": False,
         },
         # ColPali/ColQwen2 multimodal embedding (Issue #1)
         # Uses native transformers API (no colpali-engine) — requires transformers>=4.49
