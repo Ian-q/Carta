@@ -139,7 +139,7 @@ class SmartRouter:
         self.cfg = cfg
         embed = cfg.get("embed", {})
         self.ocr_model: str = embed.get("ocr_model", "glm-ocr:latest")
-        self.vision_model: str = embed.get("ollama_vision_model", "qwen2.5vl:7b")
+        self.vision_model: str = embed.get("ollama_vision_model", "qwen3-vl:8b")
         self.ollama_url: str = embed.get("ollama_url", "http://localhost:11434")
         self.flattened_min_yield: int = embed.get("vision_flattened_min_yield", 50)
         self.max_images_per_page: int = embed.get("vision_max_images_per_page", 4)
