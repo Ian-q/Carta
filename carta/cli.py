@@ -794,6 +794,93 @@ def cmd_status(args):
             print(status_mod.format_other(snap, color=color))
 
 
+def _print_stale_result(result, scfg):
+    if not result.findings:
+        return
+    print(f"carta stale-scan: scanned {result.scanned} doc(s)...", file=sys.stderr)
+    for f in result.findings:
+        section = f"Section \"{f.section}\" " if f.section and f.section != "(intro)" else ""
+        print(f"  ⚠  {f.file}", file=sys.stderr)
+        print(
+            f"     {section}may be stale — knowledge base suggests it was replaced "
+            f"({f.candidate_path}, score {f.candidate_score:.2f}).",
+            file=sys.stderr,
+        )
+        if f.section and f.section != "(intro)":
+            print(f"     Run: /doc-search \"{f.section.lstrip('# ').strip()}\"", file=sys.stderr)
+    if result.skipped_overflow:
+        print(f"  ({result.skipped_overflow} more section(s) not checked — max_judge_calls cap)", file=sys.stderr)
+    if not scfg.get("block_on_stale", False):
+        print("  (warn-only; set hooks.stale_scan.block_on_stale: true to fail)", file=sys.stderr)
+
+
+def cmd_hook(args):
+    import subprocess as _subprocess
+
+    action = getattr(args, "hook_action", None)
+
+    # install/uninstall need only the git root — NOT a full Carta setup, so a
+    # user can install the hook before/independent of `carta init`.
+    if action == "install":
+        from carta.hook.git_hook import install_hook, uninstall_hook
+        try:
+            repo_root = Path(_subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip())
+        except (_subprocess.CalledProcessError, FileNotFoundError):
+            print("Not a git repository.", file=sys.stderr)
+            sys.exit(1)
+        stage = args.stage
+        if getattr(args, "uninstall", False):
+            print(f"carta hook ({stage}): {uninstall_hook(repo_root, stage)}")
+            return
+        try:
+            status = install_hook(repo_root, stage)
+        except FileExistsError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+        print(f"carta hook ({stage}): {status} → .git/hooks/{stage}")
+        return
+
+    if action == "check":
+        from carta.config import load_config
+        from carta.hook import stale_scan
+        try:
+            cfg_path = find_config()
+        except FileNotFoundError:
+            sys.exit(0)  # not a Carta repo → nothing to check, fail-open
+        cfg = load_config(cfg_path)
+        repo_root = cfg_path.parent.parent
+        scfg = cfg.get("hooks", {}).get("stale_scan", {})
+        if not scfg.get("enabled", True):
+            sys.exit(0)
+        stage = args.stage
+        try:
+            if stage == "pre-commit":
+                docs = stale_scan.collect_staged(repo_root, cfg)
+            else:
+                stdin_lines = [] if sys.stdin.isatty() else sys.stdin.read().splitlines()
+                docs = stale_scan.collect_pushed(repo_root, cfg, stdin_lines)
+        except Exception as e:
+            print(f"carta stale-scan: collection error (fail-open): {e}", file=sys.stderr)
+            sys.exit(0)
+        if not docs:
+            sys.exit(0)
+        try:
+            result = stale_scan.run_stale_scan(repo_root, cfg, docs)
+        except Exception as e:
+            print(f"carta stale-scan: scan error (fail-open): {e}", file=sys.stderr)
+            sys.exit(0)
+        _print_stale_result(result, scfg)
+        if result.findings and scfg.get("block_on_stale", False):
+            sys.exit(1)
+        sys.exit(0)
+
+    print("usage: carta hook {install,check} [--stage pre-push|pre-commit]", file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="carta")
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
@@ -939,6 +1026,14 @@ def main():
         "--json", action="store_true", help="Output status as JSON",
     )
 
+    hook_p = sub.add_parser("hook", help="Manage Carta git hooks (stale-reference scan)")
+    hook_sub = hook_p.add_subparsers(dest="hook_action")
+    hook_install = hook_sub.add_parser("install", help="Install/remove the managed git hook")
+    hook_install.add_argument("--stage", choices=["pre-push", "pre-commit"], default="pre-push")
+    hook_install.add_argument("--uninstall", action="store_true", help="Remove the managed hook")
+    hook_check = hook_sub.add_parser("check", help="Run the stale-reference scan (used by the git shim)")
+    hook_check.add_argument("--stage", choices=["pre-push", "pre-commit"], default="pre-push")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -955,6 +1050,7 @@ def main():
         "export": cmd_export,
         "import": cmd_import,
         "status": cmd_status,
+        "hook": cmd_hook,
     }
 
     if args.command not in dispatch:

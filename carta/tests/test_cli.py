@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import os
 import shutil
+import pytest
 
 from carta.install.bootstrap import CARTA_RUNTIME_SRC
 
@@ -722,3 +723,78 @@ class TestCmdStatus:
         assert doc["current"] is None
         assert doc["others"] == []
         assert doc["checked"] is False
+
+
+def test_cmd_hook_check_warn_only_exits_zero(tmp_path, monkeypatch, capsys):
+    import carta.cli as cli
+    from carta.hook.stale_scan import StaleFinding, StaleScanResult
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")  # contents irrelevant; load_config is patched
+
+    cfg = {"hooks": {"stale_scan": {"enabled": True, "block_on_stale": False}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+    monkeypatch.setattr("carta.hook.stale_scan.collect_staged", lambda r, c: [object()])
+    result = StaleScanResult(findings=[StaleFinding("docs/a.md", "## A", "snip", "docs/b.md", 0.9)], scanned=1)
+    monkeypatch.setattr("carta.hook.stale_scan.run_stale_scan", lambda r, c, d: result)
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-commit"})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 0
+    assert "may be stale" in capsys.readouterr().err
+
+
+def test_cmd_hook_check_block_on_stale_exits_one(tmp_path, monkeypatch):
+    import carta.cli as cli
+    from carta.hook.stale_scan import StaleFinding, StaleScanResult
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {"hooks": {"stale_scan": {"enabled": True, "block_on_stale": True}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+    monkeypatch.setattr("carta.hook.stale_scan.collect_staged", lambda r, c: [object()])
+    result = StaleScanResult(findings=[StaleFinding("docs/a.md", "## A", "s", "docs/b.md", 0.9)], scanned=1)
+    monkeypatch.setattr("carta.hook.stale_scan.run_stale_scan", lambda r, c, d: result)
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-commit"})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 1
+
+
+def test_cmd_hook_check_disabled_exits_zero(tmp_path, monkeypatch):
+    import carta.cli as cli
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {"hooks": {"stale_scan": {"enabled": False}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-commit"})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 0
+
+
+def test_cmd_hook_install_uses_git_root_not_carta_config(tmp_path):
+    """install works in a plain git repo (no carta init) — repo root from git."""
+    import subprocess
+    import carta.cli as cli
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    args = type("A", (), {"command": "hook", "hook_action": "install", "stage": "pre-push", "uninstall": False})()
+    # cmd_hook resolves the repo root via `git rev-parse` from cwd
+    import os
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        cli.cmd_hook(args)  # returns (no SystemExit) on success
+    finally:
+        os.chdir(cwd)
+    assert (tmp_path / ".git" / "hooks" / "pre-push").exists()
