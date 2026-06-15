@@ -1,6 +1,6 @@
 # Design — Contextual chunk headers (prepend doc title + section heading to the embedded text)
 
-**Date:** 2026-06-14 · **Status:** approved (brainstorm) · **Target:** carta-cc next minor (≈0.13.0) · **Phase:** first-stage recall — the lever identified by [#19](https://github.com/Ian-q/Carta/issues/19) after #36 (visual dilution, shipped) and #37 (reranker blend, abandoned — eval-disproven) both flowed back to "the gold doc isn't surfaced by first-stage retrieval at a useful rank." Header-only is the first experiment; chunk-size, query-expansion, and graph levers are documented as follow-ups.
+**Date:** 2026-06-14 · **Status:** shipped — **title-only** variant (modest win: ET-embed hybrid-alone recall@5 0.887→0.903, MRR ↑, visual guard held; the `title + section` variant was flat — section heading diluted; see RESULTS.md 2026-06-14). Generalization check (grow eval ~15–20q) is the follow-up. · **Target:** carta-cc next minor (≈0.13.0) · **Phase:** first-stage recall — the lever identified by [#19](https://github.com/Ian-q/Carta/issues/19) after #36 (visual dilution, shipped) and #37 (reranker blend, abandoned — eval-disproven) both flowed back to "the gold doc isn't surfaced by first-stage retrieval at a useful rank." Header-only is the first experiment; chunk-size, query-expansion, and graph levers are documented as follow-ups.
 
 ## Problem
 
