@@ -189,6 +189,79 @@ def test_default_root_whitelist_skips_common_root_docs(tmp_path):
     assert "LICENSE.md" not in doc_paths
 
 
+# ---------------------------------------------------------------------------
+# Scanner-noise exclusions — doc-audit #1 (#49 worktrees/build/temp, #52 skills/BUGS.md)
+# ---------------------------------------------------------------------------
+
+from carta.config import DEFAULTS as _DEFAULTS
+
+
+def _default_excluded_cfg():
+    return {"excluded_paths": list(_DEFAULTS["excluded_paths"])}
+
+
+def test_default_excludes_claude_worktrees(tmp_path):
+    """`.claude/worktrees/` copies of the whole repo must not be scanned (#49)."""
+    cfg = _default_excluded_cfg()
+    p = tmp_path / ".claude" / "worktrees" / "feat-x" / "NOTES.md"
+    assert is_excluded(p, cfg, tmp_path) is True
+
+
+def test_default_excludes_build_artifacts(tmp_path):
+    """`build/` packaging artifacts (build/lib mirrors) must not be scanned (#49)."""
+    cfg = _default_excluded_cfg()
+    p = tmp_path / "build" / "lib" / "carta" / "skills" / "doc-embed" / "SKILL.md"
+    assert is_excluded(p, cfg, tmp_path) is True
+
+
+def test_default_excludes_temp(tmp_path):
+    """`temp/` scratch dir must not be scanned (#49)."""
+    cfg = _default_excluded_cfg()
+    p = tmp_path / "temp" / "scratch.md"
+    assert is_excluded(p, cfg, tmp_path) is True
+
+
+def test_structural_dirs_excluded_regardless_of_config(tmp_path):
+    """Worktree/build/temp dirs are machine artifacts — excluded even when a
+    pre-existing config.yaml lists an older excluded_paths that omits them (#49).
+
+    `_deep_merge` replaces the list wholesale, so existing installs would never
+    pick up new DEFAULTS otherwise. Treat these like `.git`: always skipped.
+    """
+    cfg = {"excluded_paths": []}  # simulates a stale/empty user config
+    assert is_excluded(tmp_path / ".claude" / "worktrees" / "wt" / "X.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / "build" / "lib" / "X.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / "temp" / "X.md", cfg, tmp_path) is True
+    # A normal doc is still not excluded.
+    assert is_excluded(tmp_path / "docs" / "X.md", cfg, tmp_path) is False
+
+
+def test_homeless_skips_skills_dirs(tmp_path):
+    """SKILL.md files under skills/ and carta/skills/ are intentional homes (#52)."""
+    _make_tree(tmp_path, [
+        "docs/x.md",
+        "skills/doc-embed/SKILL.md",
+        "carta/skills/doc-embed/SKILL.md",
+    ])
+    cfg = _minimal_cfg(tmp_path)
+    issues = check_homeless_docs(tmp_path, cfg)
+    doc_paths = [i["doc"] for i in issues]
+    assert "skills/doc-embed/SKILL.md" not in doc_paths
+    assert "carta/skills/doc-embed/SKILL.md" not in doc_paths
+
+
+def test_homeless_skips_bugs_md(tmp_path):
+    """BUGS.md at repo root is an intentional location, not homeless (#52)."""
+    _make_tree(tmp_path, [
+        "docs/x.md",
+        "BUGS.md",
+    ])
+    cfg = _minimal_cfg(tmp_path)
+    issues = check_homeless_docs(tmp_path, cfg)
+    doc_paths = [i["doc"] for i in issues]
+    assert "BUGS.md" not in doc_paths
+
+
 def test_nested_docs_folder_detected(tmp_path):
     _make_tree(tmp_path, [
         "docs/ARCHITECTURE.md",
