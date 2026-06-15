@@ -39,13 +39,17 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
 
     Returns a dict with keys:
         slug_collisions:      {slug: [file_path, ...]} — slugs with >1 file_path
+                              (informational; path-based IDs make this harmless)
         empty_files:          [file_path] — every point for the file has empty text
         partial_empty_files:  {file_path: n_empty} — some (not all) points empty
         count_mismatches:     {file_path: {"sidecar": n, "qdrant": n}}
         stuck_stale:          [rel_path] — status="stale" but file hash matches disk
-        affected_files:       sorted union of files needing re-embed/purge
-                              (slug collision + empty + partial + mismatches;
-                               stuck_stale excluded — repair handles those separately)
+        affected_files:       sorted union of _doc files needing re-embed/purge
+                              (empty + partial + count mismatches; slug collisions
+                               and stuck_stale excluded)
+        visual_count_mismatches: {file_path: {"sidecar": n_done, "qdrant": n}} —
+                              sidecar visual_done count vs _visual point count
+        orphaned_visual_files: [file_path] — _visual points whose source is gone
     """
     if client is None:
         client = QdrantClient(url=cfg["qdrant_url"], timeout=30)
@@ -85,11 +89,24 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         if 0 < n < per_file_counts[fp]
     }
 
+    # _visual collection tallies: point count per file_path (#38 part 2).
+    visual_coll = collection_name(cfg, "visual")
+    visual_per_file_counts: dict[str, int] = defaultdict(int)
+    if client.collection_exists(visual_coll):
+        for payload in _scroll_all(client, visual_coll):
+            visual_per_file_counts[payload.get("file_path", "")] += 1
+    # Orphaned visual points: _visual points for a source no longer on disk.
+    orphaned_visual_files = sorted(
+        fp for fp in visual_per_file_counts
+        if fp and not (repo_root / fp).exists()
+    )
+
     # Sidecar-side checks. iter_canonical_sidecars skips corrupt/non-dict
     # sidecars, those without a current_path, and misplaced/nested junk copies
     # (e.g. an accidental .carta/sidecars/.worktrees/.../.carta/sidecars/... tree)
     # whose current_path resolves to a real file they do not own (#40).
     count_mismatches: dict[str, dict] = {}
+    visual_count_mismatches: dict[str, dict] = {}
     stuck_stale: list[str] = []
 
     for _sc_path, sc in iter_canonical_sidecars(repo_root):
@@ -129,6 +146,16 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
                 "qdrant": qdrant_count,
             }
 
+        # Visual count mismatch: sidecar visual_done count vs _visual point
+        # count. Files no longer on disk surface as orphaned_visual_files (#38).
+        visual_done_count = len(sc.get("visual_done") or [])
+        visual_qdrant = visual_per_file_counts.get(rel, 0)
+        if (repo_root / rel).exists() and visual_done_count != visual_qdrant:
+            visual_count_mismatches[rel] = {
+                "sidecar": visual_done_count,
+                "qdrant": visual_qdrant,
+            }
+
     # affected_files: union of everything needing re-embed or purge.
     # Slug collisions are intentionally EXCLUDED — with path-based point IDs
     # same-slug files coexist safely; genuine legacy-collision damage (chunks
@@ -143,4 +170,6 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         "count_mismatches": count_mismatches,
         "stuck_stale": sorted(stuck_stale),
         "affected_files": sorted(affected),
+        "visual_count_mismatches": visual_count_mismatches,
+        "orphaned_visual_files": orphaned_visual_files,
     }
