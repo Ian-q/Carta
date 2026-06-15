@@ -222,6 +222,57 @@ This project uses the **Superpowers** skill flow, not GSD. Invoke skills before 
 
 Retrieval-quality changes are validated against the ET-embed eval corpus — see the eval workflow in auto-memory (`project_et-embed-eval-workflow`).
 
+## Carta surface — authoritative reference
+
+> Hand-maintained. The GSD-generated blocks above are regenerated from `.planning/`
+> and currently lag the code (see #46); trust this section for the current surface.
+
+### CLI — `carta <command>` (or `python -m carta <command>`)
+
+| Command | Purpose |
+|---------|---------|
+| `init` | Bootstrap Carta in a repo (config, collections, skills, hook) |
+| `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
+| `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair` re-embeds damaged points |
+| `search` | Hybrid (BM25 + dense, RRF) semantic search |
+| `audit` | Embed-pipeline **data integrity** check → JSON |
+| `doctor` | Diagnose environment (Qdrant/Ollama/models); `--fix` auto-installs |
+| `eval` | Score retrieval quality against an eval set |
+| `remember` | Capture a curated note (quirk / bug-note / helpful-note) |
+| `status` | System-wide status across registered projects (`~/.carta/registry.json`) |
+| `statusline` | Status-line widget output (embed progress) |
+| `export` / `import` | Share / restore embeddings + sidecars |
+| `update` | Self-update the installed package |
+
+### MCP — `carta-mcp` (stdio, `carta/mcp/server.py`)
+
+Claude-initiated tools: `carta_search`, `carta_embed`, `carta_scan`, `carta_remember`.
+
+### Hook — `carta-hook` (+ `carta/hooks/*.sh`)
+
+Pre-prompt-submit proactive recall with a three-zone relevance gate: score >
+`high_threshold` → inject; score < `low_threshold` → silent; gray zone → small
+Ollama judge. All paths exit 0 (fail-open). Logic in `carta/hook/hook.py`.
+
+### Sidecars
+
+Embedding state lives at `.carta/sidecars/<source-path-relative-to-repo>.embed-meta.yaml`
+— mirrors the source tree, **not** colocated beside the file (`carta/embed/induct.py::sidecar_path`).
+
+### Module map (`carta/`)
+
+`embed/` extract→chunk→embed→upsert + sidecar lifecycle · `search/` hybrid
+retrieval/RRF/rerank/related-graph · `scanner/` structural scan · `audit/`
+embed-integrity scan · `eval/` retrieval eval · `vision/` PDF routing/OCR/ColPali ·
+`mcp/` MCP server · `hook/` recall judge (`hooks/` = shell entry) · `memory/` note
+capture · `install/` bootstrap/preflight/auto-fix · `update/` self-update · `ui/`
+status rendering.
+
+### Which command? (full table in README / AGENTS.md)
+
+`carta scan` / `/doc-audit` = doc structure · `carta audit` / `carta doctor` =
+embed-data integrity & environment · `carta eval` = retrieval quality.
+
 
 
 <!-- GSD:profile-start -->
