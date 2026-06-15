@@ -205,11 +205,12 @@ def test_gray_zone_judge_maybe_discards():
 
 
 # ---------------------------------------------------------------------------
-# Judge timeout: > judge_timeout_s fails open (HOOK-05)
+# Judge timeout: > judge_timeout_s skips injection (HOOK-05)
 # ---------------------------------------------------------------------------
 
-def test_judge_timeout_fails_open():
-    """Ollama judge sleeping 5s with 3s timeout: injects (fail-open per HOOK-05), completes within 6.5s."""
+def test_judge_timeout_skips_injection():
+    """Ollama judge sleeping 5s with 3s timeout: skips injection (HOOK-05: no
+    injection on timeout, prompt proceeds), completes within 6.5s."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg(judge_timeout_s=3)
 
@@ -228,10 +229,8 @@ def test_judge_timeout_fails_open():
         out = _capture_main()
     elapsed = time.time() - t_start
 
-    # HOOK-05: timeout is fail-open — inject context rather than discard
-    assert out.strip(), "Timeout should inject (fail-open per HOOK-05)"
-    data = json.loads(out.strip())
-    assert "context" in data
+    # HOOK-05: on timeout, do NOT inject the unvetted gray-zone hits — stay silent.
+    assert out.strip() == "", "Timeout should skip injection (HOOK-05: no injection on timeout)"
     # Hook logic completes at timeout (3s); thread pool shutdown waits for the
     # slow thread to finish (5s total). Allow up to 6.5s for full cleanup.
     assert elapsed < 6.5, f"Should complete within 6.5s, took {elapsed:.2f}s"
@@ -481,18 +480,18 @@ def test_call_ollama_judge_parses_no():
 
 
 # ---------------------------------------------------------------------------
-# _judge_with_timeout: HOOK-05 fail-open on timeout (returns True)
+# _judge_with_timeout: HOOK-05 no injection on timeout (returns False)
 # ---------------------------------------------------------------------------
 
-def test_judge_timeout_returns_true():
-    """TimeoutError in _judge_with_timeout returns True (fail-open per HOOK-05)."""
+def test_judge_timeout_returns_false():
+    """TimeoutError in _judge_with_timeout returns False (HOOK-05: no injection on timeout)."""
     import concurrent.futures
     from carta.hook.hook import _judge_with_timeout
     cfg = _make_cfg(judge_timeout_s=1)
     hits = [_make_hit(0.75)]
     with patch("carta.hook.hook._call_ollama_judge", side_effect=concurrent.futures.TimeoutError):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=1)
-    assert result is True, "TimeoutError must return True (fail-open = inject)"
+    assert result is False, "TimeoutError must return False (no injection on timeout)"
 
 
 def test_judge_exception_returns_false():
