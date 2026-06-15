@@ -27,8 +27,10 @@ CFG = {"project_name": "test", "qdrant_url": "http://localhost:6333",
 
 
 def _write_sidecar(tmp_path, rel_path, chunk_count, status, file_hash):
-    """Write a minimal sidecar YAML under tmp_path/.carta/sidecars/."""
-    sc_path = tmp_path / ".carta" / "sidecars" / (rel_path + ".embed-meta.yaml")
+    """Write a minimal sidecar YAML at its canonical .carta/sidecars/ location
+    (the path sidecar_path() produces — with_suffix semantics, matching prod)."""
+    from carta.embed.induct import sidecar_path
+    sc_path = sidecar_path(tmp_path / rel_path, tmp_path)
     sc_path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "current_path": rel_path,
@@ -62,6 +64,39 @@ class TestScanCorpusIntegrity:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
         assert report["slug_collisions"] == {
             "readme": sorted(["docs/ci/README.md", "docs/diagrams/README.md"])}
+
+    def test_slug_collisions_are_not_affected_files(self, tmp_path):
+        """Same-slug files are healthy under path-based IDs — reported as
+        informational but never queued for repair (#40)."""
+        pts = [
+            _point("docs/a/README.md", "readme", 0, "x"),
+            _point("docs/b/README.md", "readme", 0, "y"),
+        ]
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
+        assert "readme" in report["slug_collisions"]
+        assert report["affected_files"] == []
+
+    def test_nested_junk_sidecar_is_ignored(self, tmp_path):
+        """A misplaced/nested sidecar copy whose current_path resolves to a real
+        file must not produce phantom stuck-stale / count-mismatch entries (#40)."""
+        src = tmp_path / "docs" / "real.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("real content")
+        real_hash = compute_file_hash(src)
+        # Canonical sidecar: embedded, counts agree with Qdrant — perfectly clean.
+        _write_sidecar(tmp_path, "docs/real.md", 1, "embedded", real_hash)
+        # Junk nested copy claiming the same current_path but stuck-stale-looking.
+        junk = (tmp_path / ".carta" / "sidecars" / ".worktrees" / "x"
+                / ".carta" / "sidecars" / "docs" / "real.embed-meta.yaml")
+        junk.parent.mkdir(parents=True, exist_ok=True)
+        junk.write_text(yaml.dump({"current_path": "docs/real.md", "chunk_count": 99,
+                                   "status": "stale", "file_hash": real_hash}))
+
+        pts = [_point("docs/real.md", "real", 0, "real content")]
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
+        assert report["stuck_stale"] == []
+        assert report["count_mismatches"] == {}
+        assert report["affected_files"] == []
 
     def test_detects_empty_text_files(self, tmp_path):
         pts = [
@@ -152,15 +187,19 @@ class TestScanCorpusIntegrity:
         ]
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
 
+        # Slug collisions are informational only (healthy with path-based IDs),
+        # so the README pair must NOT be in affected_files (#40).
         expected_affected = sorted([
-            "docs/ci/README.md",
-            "docs/diagrams/README.md",
             "docs/empty.pdf",
             "docs/partial.pdf",
             "docs/mismatch.md",
         ])
         assert report["affected_files"] == expected_affected
         assert "docs/stale.md" not in report["affected_files"]
+        assert report["slug_collisions"] == {
+            "readme": sorted(["docs/ci/README.md", "docs/diagrams/README.md"])}
+        assert "docs/ci/README.md" not in report["affected_files"]
+        assert "docs/diagrams/README.md" not in report["affected_files"]
 
     def test_missing_collection(self, tmp_path):
         client = MagicMock()

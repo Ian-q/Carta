@@ -1,8 +1,9 @@
 """Tests for carta embed induction (sidecar generation)."""
 
 import pytest
+import yaml
 from pathlib import Path
-from carta.embed.induct import generate_sidecar_stub
+from carta.embed.induct import generate_sidecar_stub, iter_canonical_sidecars
 
 
 class TestGenerateSidecarStub:
@@ -109,3 +110,40 @@ class TestDocTypeResolution:
     def test_malformed_frontmatter_falls_back_to_path(self, tmp_path):
         stub = self._stub(tmp_path, "docs/quirks/x.md", "---\n: : bad yaml [\n---\nBody")
         assert stub["doc_type"] == "quirk"
+
+
+class TestIterCanonicalSidecars:
+    """iter_canonical_sidecars yields only well-placed, well-formed sidecars."""
+
+    def _write(self, repo_root, rel, data):
+        sc = repo_root / ".carta" / "sidecars" / rel
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text(yaml.dump(data))
+        return sc
+
+    def test_yields_canonical_sidecar(self, tmp_path):
+        sc = self._write(tmp_path, "docs/a.embed-meta.yaml",
+                         {"current_path": "docs/a.md", "status": "embedded"})
+        out = list(iter_canonical_sidecars(tmp_path))
+        assert [p for p, _ in out] == [sc]
+        assert out[0][1]["current_path"] == "docs/a.md"
+
+    def test_skips_nested_junk_copy(self, tmp_path):
+        # A misplaced copy whose current_path points at a real-looking repo file
+        # but whose on-disk location is NOT the canonical path for that file.
+        self._write(tmp_path, ".worktrees/x/.carta/sidecars/docs/a.embed-meta.yaml",
+                    {"current_path": "docs/a.md", "status": "embedded"})
+        assert list(iter_canonical_sidecars(tmp_path)) == []
+
+    def test_skips_non_dict_sidecar(self, tmp_path):
+        sc = tmp_path / ".carta" / "sidecars" / "bad.embed-meta.yaml"
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text("- just\n- a\n- list\n")
+        assert list(iter_canonical_sidecars(tmp_path)) == []
+
+    def test_skips_sidecar_without_current_path(self, tmp_path):
+        self._write(tmp_path, "docs/a.embed-meta.yaml", {"status": "embedded"})
+        assert list(iter_canonical_sidecars(tmp_path)) == []
+
+    def test_empty_when_no_sidecars_dir(self, tmp_path):
+        assert list(iter_canonical_sidecars(tmp_path)) == []
