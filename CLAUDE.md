@@ -1,4 +1,3 @@
-<!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
 **Carta**
@@ -13,9 +12,7 @@ Carta is a semantic memory sidecar for Claude Code that gives agents automatic a
 - **Compatibility:** Embed pipeline fixes must not regress existing sidecar state or Qdrant collections
 - **Sequencing:** MCP server wraps the same embed pipeline — reliability fixes (batch upsert, timeout) are prerequisites before exposing `carta_embed` via MCP
 - **Local only:** Ollama judge must be a small model (≤2B params) to keep hook latency acceptable; hook blocks prompt submission
-<!-- GSD:project-end -->
 
-<!-- GSD:stack-start source:codebase/STACK.md -->
 ## Technology Stack
 
 ## Languages
@@ -59,9 +56,7 @@ Carta is a semantic memory sidecar for Claude Code that gives agents automatic a
 - Runtime copied to `.carta/carta/` during `carta init` for self-contained execution
 - All embeddings use 768-dimensional vectors (nomic-embed-text standard)
 - Defined in `carta/embed/embed.py:17` and `carta/install/bootstrap.py:12`
-<!-- GSD:stack-end -->
 
-<!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
 ## Naming Patterns
@@ -125,92 +120,10 @@ Carta is a semantic memory sidecar for Claude Code that gives agents automatic a
 - Modules are cohesive: `embed.py` handles embedding/upserting, `parse.py` handles PDF extraction, `scanner.py` handles doc structure checking
 - Package `__init__.py` files are minimal (often empty except version in `carta/__init__.py`)
 - No re-exports of submodule contents
-<!-- GSD:conventions-end -->
-
-<!-- GSD:architecture-start source:ARCHITECTURE.md -->
-## Architecture
-
-## Pattern Overview
-- Command-driven entry point with subcommands for distinct workflows
-- Layered architecture: CLI → Pipeline → Core subsystems → External services
-- Configuration-driven initialization and multi-module feature gating
-- Vector database integration (Qdrant) for semantic search over embedded documents
-- File-based state management via sidecar metadata files
-## Layers
-- Purpose: Command-line interface and user-facing operations
-- Location: `carta/cli.py`
-- Contains: Argument parsing, command dispatch, process locking for concurrency control
-- Depends on: Config loading, pipeline orchestration modules
-- Used by: Direct user invocation via `carta` command
-- Purpose: Load, validate, and provide access to project settings
-- Location: `carta/config.py`
-- Contains: Configuration schema with defaults, YAML parsing, field validation
-- Depends on: PyYAML for parsing
-- Used by: All subsystems for accessing settings
-- Purpose: Coordinate multi-step workflows and resource management
-- Location: `carta/embed/pipeline.py`, `carta/scanner/scanner.py`
-- Contains: High-level workflow execution, error aggregation, state transitions
-- Depends on: Core subsystems (embed, parse, search), configuration
-- Used by: CLI commands
-- Purpose: Initialize projects with carta configuration and infrastructure
-- Location: `carta/install/bootstrap.py`
-- Contains: Environment detection, Git integration, runtime installation
-- Depends on: External service checks (Qdrant, Ollama), Git subprocess calls
-- Used by: `cmd_init` during project setup
-- Qdrant vector database: Persistent storage of document embeddings and metadata
-- Ollama: Local LLM inference for generating embeddings (nomic-embed-text model)
-- Git: Project detection, hook registration
-## Data Flow
-- YAML configuration: `.carta/config.yaml` — loaded once per command
-- Sidecar metadata: `*.embed-meta.yaml` — tracks embedding status per document
-- Lock file: `.carta/embed.lock` — PID-based concurrency control
-- Scan results: `.carta/scan-results.json` — output of audit
-- Qdrant collections: Named per project (e.g., `myproject_doc`, `myproject_session`, `myproject_quirk`)
-## Key Abstractions
-- Purpose: Single source of truth for all settings
-- Examples: `carta/config.py::load_config()`
-- Pattern: Deep merge of defaults + user YAML; dictionary-based access with get() fallback
-- Purpose: Track embedding lifecycle without modifying source documents
-- Examples: `carta/embed/induct.py::write_sidecar()`
-- Pattern: Colocated `.embed-meta.yaml` file with same stem as document; YAML serialization
-- Purpose: Atomic unit for embedding and storage
-- Structure: `{"slug", "text", "chunk_index", "doc_type", ...metadata}`
-- Used by: `upsert_chunks()` to generate vectors and store in Qdrant
-- Purpose: Namespace vectors by project and document type
-- Pattern: `{project_name}_{type}` (e.g., `myproject_doc`, `myproject_session`, `myproject_quirk`)
-- Location: `carta/config.py::collection_name()`
-## Entry Points
-- Location: `carta/__main__.py` → `carta/cli.py::main()`
-- Triggers: User executes `carta {init|scan|embed|search|--version}`
-- Responsibilities: Parse arguments, dispatch to command handler, catch exceptions, manage exit codes
-- Location: `carta/cli.py::cmd_init()`
-- Triggers: `carta init` in any project subdirectory
-- Responsibilities: Check PATH conflicts, run bootstrap (config creation, Qdrant collection setup)
-- Location: `carta/cli.py::cmd_scan()`
-- Triggers: `carta scan`
-- Responsibilities: Load config, run structural scanner, output issues JSON
-- Location: `carta/cli.py::cmd_embed()`
-- Triggers: `carta embed`
-- Responsibilities: Acquire lock, discover pending files, extract/chunk/embed, upsert to Qdrant
-- Location: `carta/cli.py::cmd_search()`
-- Triggers: `carta search "query"`
-- Responsibilities: Embed query, search Qdrant, format and display results
-## Error Handling
-## Cross-Cutting Concerns
-- Configuration: Schema validation in `load_config()` with type checking
-- Files: Exclusion patterns via `fnmatch`; YAML frontmatter optional but parsed safely
-- Inputs: CLI arguments parsed by argparse; query terms joined from positional args
-- Signal handlers in `cmd_embed()` to clean up lock file on SIGTERM/SIGINT
-- atexit handler for guaranteed lock removal
-- PID-based lock detection for cleanup of abandoned processes
-- Config lookup: Walk parent directories until `.carta/config.yaml` found
-- File discovery: Use `rglob()` with exclusion filtering
-- Relative path computation: Store relative-to-repo for sidecar metadata and scan results
-<!-- GSD:architecture-end -->
 
 ## Development Workflow (Superpowers)
 
-This project uses the **Superpowers** skill flow, not GSD. Invoke skills before acting (see `using-superpowers`), and follow this progression for any non-trivial change:
+This project uses the **Superpowers** skill flow. Invoke skills before acting (see `using-superpowers`), and follow this progression for any non-trivial change:
 
 - **`brainstorming`** — turn an idea/issue into an approved design before touching code. Mandatory before creative work.
 - **`writing-plans`** — convert the approved spec into a phased implementation plan. Specs live in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/`.
@@ -224,8 +137,7 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 
 ## Carta surface — authoritative reference
 
-> Hand-maintained. The GSD-generated blocks above are regenerated from `.planning/`
-> and currently lag the code (see #46); trust this section for the current surface.
+> Hand-maintained and authoritative for the current Carta surface.
 
 ### CLI — `carta <command>` (or `python -m carta <command>`)
 
@@ -273,13 +185,4 @@ status rendering.
 `carta scan` / `/doc-audit` = doc structure · `carta audit` / `carta doctor` =
 embed-data integrity & environment · `carta eval` = retrieval quality.
 
-
-
-<!-- GSD:profile-start -->
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-<!-- GSD:profile-end -->
-
-<!-- Carta is active. Collections: doc-audit-cc_doc, doc-audit-cc_session, doc-audit-cc_quirk -->
+<!-- Carta is active. Collections: doc-audit-cc_doc, doc-audit-cc_session, doc-audit-cc_notes -->
