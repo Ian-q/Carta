@@ -1,3 +1,12 @@
+---
+id: 2026-06-12-data-integrity-design
+title: "Carta v0.11.0 — Data Integrity: point-ID collisions, empty-chunk fail-open, corpus repair"
+status: shipped
+related:
+  - 2026-06-12-data-integrity
+date: 2026-06-12
+---
+
 # Carta v0.11.0 — Data Integrity: point-ID collisions, empty-chunk fail-open, corpus repair
 
 **Date:** 2026-06-12

@@ -1,7 +1,10 @@
 ---
-title: Interactive Progress Bar for carta embed and carta scan
+id: 2026-04-05-progress-bar-design
+title: "Interactive Progress Bar for carta embed and carta scan"
+status: shipped
+related:
+  - 2026-04-05-progress-bar
 date: 2026-04-05
-status: approved
 ---
 
 # Interactive Progress Bar for `carta embed` and `carta scan`

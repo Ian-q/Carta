@@ -1,3 +1,12 @@
+---
+id: 2026-04-10-embed-progress-targeted-design
+title: "Design: Embed Progress Bar + Targeted File Embed"
+status: shipped
+related:
+  - 2026-04-10-embed-progress-targeted
+date: 2026-04-10
+---
+
 # Design: Embed Progress Bar + Targeted File Embed
 
 **Date:** 2026-04-10  

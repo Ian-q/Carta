@@ -1,3 +1,12 @@
+---
+id: 2026-04-21-sidecar-relocation
+title: "Sidecar Relocation Implementation Plan"
+status: shipped
+related:
+  - 2026-04-21-sidecar-relocation-design
+date: 2026-04-21
+---
+
 # Sidecar Relocation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

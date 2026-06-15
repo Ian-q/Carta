@@ -1,3 +1,11 @@
+---
+id: 2026-06-05-carta-hybrid-retrieval-rerank-eval
+title: "Carta Hybrid Retrieval + Reranking + Eval Harness Implementation Plan"
+status: shipped
+related: []
+date: 2026-06-05
+---
+
 # Carta Hybrid Retrieval + Reranking + Eval Harness Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
