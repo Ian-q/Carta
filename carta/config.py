@@ -124,6 +124,16 @@ DEFAULTS = {
         "judge_timeout_s": 3,
         "ollama_model": "qwen3.5:0.8b",
     },
+    "hooks": {
+        "stale_scan": {
+            "enabled": True,
+            "block_on_stale": False,
+            "candidate_threshold": 0.65,
+            "judge_timeout_s": 5,
+            "ollama_model": "qwen3.5:0.8b",
+            "max_judge_calls": 30,
+        },
+    },
     "cross_project_recall": {
         "enabled": False,
         "scope": ["quirk"],
