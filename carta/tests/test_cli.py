@@ -583,3 +583,73 @@ class TestDoctorJsonOutsideProject:
 
         doc = json.loads(capsys.readouterr().out)
         assert "corpus_integrity" not in doc
+
+
+class TestCmdStatus:
+    """carta status: current project detail + other-project list."""
+
+    def _project(self, tmp_path, name):
+        root = tmp_path / name
+        (root / ".carta" / "sidecars").mkdir(parents=True)
+        (root / ".carta" / "config.yaml").write_text(
+            f"project_name: {name}\nqdrant_url: http://localhost:6333\n"
+        )
+        return root
+
+    def test_status_in_project_shows_detail_and_registers(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        import json
+        from carta.cli import cmd_status
+        monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+        root = self._project(tmp_path, "alpha")
+        monkeypatch.chdir(root)
+        cmd_status(argparse.Namespace(check=False, json=False))
+        out = capsys.readouterr().out
+        assert "carta · alpha" in out
+        reg = json.loads((tmp_path / "home" / "registry.json").read_text())
+        assert any(e["name"] == "alpha" for e in reg["projects"].values())
+
+    def test_status_lists_other_projects(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        from carta.cli import cmd_status
+        from carta.registry import register_project
+        monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+        other = self._project(tmp_path, "beta")
+        register_project(other, "beta", "http://localhost:6333", now=5.0)
+        current = self._project(tmp_path, "alpha")
+        monkeypatch.chdir(current)
+        cmd_status(argparse.Namespace(check=False, json=False))
+        out = capsys.readouterr().out
+        assert "carta · alpha" in out
+        assert "Other projects (1):" in out
+        assert "beta" in out
+
+    def test_status_outside_project_empty_registry(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        from carta.cli import cmd_status
+        monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+        empty = tmp_path / "nowhere"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        cmd_status(argparse.Namespace(check=False, json=False))
+        out = capsys.readouterr().out
+        assert "Not inside a carta project" in out
+
+    def test_status_json_output(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        import json
+        from carta.cli import cmd_status
+        monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+        root = self._project(tmp_path, "alpha")
+        monkeypatch.chdir(root)
+        cmd_status(argparse.Namespace(check=False, json=True))
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["current"]["name"] == "alpha"
+        assert doc["checked"] is False
+        assert isinstance(doc["others"], list)
+
+    def test_status_command_registered_in_help(self):
+        result = run_carta(["status", "--help"])
+        assert result.returncode == 0
+        assert "--check" in result.stdout
+        assert "--json" in result.stdout
