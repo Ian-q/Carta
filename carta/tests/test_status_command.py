@@ -255,3 +255,22 @@ def test_format_other_idle_plaintext():
     assert "idle" in line
     assert "881 docs" in line
     assert "all done" in line
+
+
+def test_format_current_color_emits_ansi():
+    snap = {
+        "name": "proj", "path": "/tmp/proj", "qdrant_url": "http://q",
+        "embed": {"state": "never"},
+        "corpus": {"total": 0, "done": 0, "pending": 0, "stale": 0,
+                   "extraction_failed": 0, "other": 0},
+        "check": None,
+    }
+    out = status.format_current(snap, color=True)
+    assert "\033[" in out  # ANSI escape present when color=True
+
+
+def test_home_path_respects_directory_boundary(monkeypatch):
+    import pathlib
+    monkeypatch.setattr(status.Path, "home", lambda: pathlib.Path("/home/ian"))
+    assert status._home_path("/home/ian/proj") == "~/proj"
+    assert status._home_path("/home/ian-backup/proj") == "/home/ian-backup/proj"

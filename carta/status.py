@@ -12,7 +12,10 @@ import time
 from pathlib import Path
 
 from carta.embed.induct import read_sidecar
-from carta.statusline import _pid_alive, _fmt_elapsed, _fmt_chunks, STALE_WINDOW_S
+from carta.statusline import (
+    _pid_alive, _fmt_elapsed, _fmt_chunks, STALE_WINDOW_S,
+    _RESET, _DIM, _CYAN, _GREEN, _RED,
+)
 
 _CORPUS_STATUSES = ("done", "pending", "stale", "extraction_failed")
 
@@ -144,12 +147,7 @@ def gather_project_status(repo_root, *, name: str, qdrant_url, check: bool = Fal
 # Rendering layer — pure string formatters, no I/O
 # ---------------------------------------------------------------------------
 
-_RESET = "\033[0m"
-_DIM = "\033[2m"
 _BOLD = "\033[1m"
-_CYAN = "\033[36m"
-_GREEN = "\033[32m"
-_RED = "\033[31m"
 _YELLOW = "\033[33m"
 
 
@@ -160,7 +158,7 @@ def _col(color: bool, code: str, text: str) -> str:
 def _home_path(path: str) -> str:
     try:
         home = str(Path.home())
-        if path.startswith(home):
+        if path == home or path.startswith(home + "/"):
             return "~" + path[len(home):]
     except Exception:
         pass
@@ -228,8 +226,11 @@ def _qdrant_lines(snap: dict, color: bool) -> list:
 
 def format_current(snap: dict, *, color: bool = True) -> str:
     """Render the detailed multi-line block for the current project."""
-    header = _col(color, _BOLD, "carta · " + snap["name"]) + "   " + \
-        _col(color, _DIM, _home_path(snap["path"]))
+    header = (
+        _col(color, _BOLD, "carta · " + snap["name"])
+        + "   "
+        + _col(color, _DIM, _home_path(snap["path"]))
+    )
     lines = [header, "  " + _embed_line(snap["embed"], color),
              "  " + _corpus_line(snap["corpus"], color)]
     lines += ["  " + ln for ln in _qdrant_lines(snap, color)]
