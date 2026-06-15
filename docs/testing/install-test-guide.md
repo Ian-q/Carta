@@ -206,7 +206,7 @@ Open a Claude Code session in the test repo and run:
 Expected:
 - Carta reads `.carta/scan-results.json`
 - Semantic contradiction check runs on recently changed docs
-- `AUDIT_REPORT.md` written (or updated) with `AUDIT-NNN` issue IDs
+- `docs/AUDIT_REPORT.md` written (or updated) with `AUDIT-NNN` issue IDs
 - If issues need triage, `docs/BACKLOG/TRIAGE.md` created or updated
 
 **Note: does the skill trigger correctly? Does it find the scan results? Does the report look sensible for this repo?**
@@ -304,7 +304,7 @@ rm -rf .carta/
 # (edit .claude/settings.json and remove the UserPromptSubmit and Stop entries)
 
 # Remove CLAUDE.md annotation (last line)
-# Remove AUDIT_REPORT.md if created
+# Remove docs/AUDIT_REPORT.md if created
 ```
 
 ---
