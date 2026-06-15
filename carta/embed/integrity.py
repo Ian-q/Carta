@@ -13,7 +13,7 @@ from qdrant_client import QdrantClient
 
 from carta.config import collection_name
 from carta.embed.lifecycle import compute_file_hash
-from carta.embed.induct import read_sidecar
+from carta.embed.induct import iter_canonical_sidecars
 
 
 def _scroll_all(client, coll: str):
@@ -85,61 +85,56 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         if 0 < n < per_file_counts[fp]
     }
 
-    # Sidecar-side checks
+    # Sidecar-side checks. iter_canonical_sidecars skips corrupt/non-dict
+    # sidecars, those without a current_path, and misplaced/nested junk copies
+    # (e.g. an accidental .carta/sidecars/.worktrees/.../.carta/sidecars/... tree)
+    # whose current_path resolves to a real file they do not own (#40).
     count_mismatches: dict[str, dict] = {}
     stuck_stale: list[str] = []
 
-    sidecars_root = repo_root / ".carta" / "sidecars"
-    if sidecars_root.exists():
-        for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
-            sc = read_sidecar(sc_path)
-            if not isinstance(sc, dict):
-                # Corrupt sidecar (valid YAML but not a mapping) — one bad file
-                # must not blind the whole scan.
-                continue
-            rel = sc.get("current_path")
-            if not rel:
-                continue
+    for _sc_path, sc in iter_canonical_sidecars(repo_root):
+        rel = sc["current_path"]
 
-            status = sc.get("status")
-            # Missing entry means ZERO surviving points — a fully-lost file
-            # (e.g. every chunk shadowed by a legacy ID collision) is the
-            # strongest mismatch of all, not an exemption.
-            qdrant_count = per_file_counts.get(rel, 0)
-            sidecar_count = sc.get("chunk_count")
+        status = sc.get("status")
+        # Missing entry means ZERO surviving points — a fully-lost file
+        # (e.g. every chunk shadowed by a legacy ID collision) is the
+        # strongest mismatch of all, not an exemption.
+        qdrant_count = per_file_counts.get(rel, 0)
+        sidecar_count = sc.get("chunk_count")
 
-            # Stuck-stale: status is "stale" but file hash matches disk — a bug
-            # artifact, not a pending re-embed.
-            is_stuck = False
-            if status == "stale":
-                src = repo_root / rel
-                if src.exists():
-                    try:
-                        if compute_file_hash(src) == sc.get("file_hash"):
-                            is_stuck = True
-                            stuck_stale.append(rel)
-                    except OSError:
-                        pass
+        # Stuck-stale: status is "stale" but file hash matches disk — a bug
+        # artifact, not a pending re-embed.
+        is_stuck = False
+        if status == "stale":
+            src = repo_root / rel
+            if src.exists():
+                try:
+                    if compute_file_hash(src) == sc.get("file_hash"):
+                        is_stuck = True
+                        stuck_stale.append(rel)
+                except OSError:
+                    pass
 
-            # Count mismatch: sidecar chunk_count differs from Qdrant point count.
-            # Checked for "embedded" sidecars AND stuck-stale ones (their counts
-            # should agree with Qdrant — nothing is pending). Genuinely-stale
-            # sidecars (hash differs) are expected to be out of sync and exempt.
-            if (
-                (status == "embedded" or is_stuck)
-                and sidecar_count is not None
-                and sidecar_count != qdrant_count
-            ):
-                count_mismatches[rel] = {
-                    "sidecar": sidecar_count,
-                    "qdrant": qdrant_count,
-                }
+        # Count mismatch: sidecar chunk_count differs from Qdrant point count.
+        # Checked for "embedded" sidecars AND stuck-stale ones (their counts
+        # should agree with Qdrant — nothing is pending). Genuinely-stale
+        # sidecars (hash differs) are expected to be out of sync and exempt.
+        if (
+            (status == "embedded" or is_stuck)
+            and sidecar_count is not None
+            and sidecar_count != qdrant_count
+        ):
+            count_mismatches[rel] = {
+                "sidecar": sidecar_count,
+                "qdrant": qdrant_count,
+            }
 
-    # affected_files: union of everything needing re-embed or purge
-    # (stuck_stale excluded — repair marks them pending without full re-embed)
+    # affected_files: union of everything needing re-embed or purge.
+    # Slug collisions are intentionally EXCLUDED — with path-based point IDs
+    # same-slug files coexist safely; genuine legacy-collision damage (chunks
+    # shadowed by an old slug-keyed ID) still surfaces as a count_mismatch (#40).
+    # (stuck_stale also excluded — repair marks them pending without full re-embed.)
     affected: set[str] = set(empty_files) | set(partial_empty_files) | set(count_mismatches)
-    for files in slug_collisions.values():
-        affected.update(files)
 
     return {
         "slug_collisions": slug_collisions,

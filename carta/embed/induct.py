@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import yaml
 
@@ -137,3 +137,38 @@ def read_sidecar(sidecar_path: Path) -> Optional[dict]:
             return yaml.safe_load(f)
     except (OSError, yaml.YAMLError):
         return None
+
+
+def iter_canonical_sidecars(repo_root: Path) -> Iterator[tuple[Path, dict]]:
+    """Yield ``(sidecar_path, data)`` for every canonically-located sidecar.
+
+    Walks ``.carta/sidecars/`` and yields only sidecars that:
+      - parse to a mapping (corrupt/non-dict files are skipped),
+      - carry a ``current_path``, and
+      - sit at the canonical location their ``current_path`` maps to — i.e.
+        their path under ``sidecars/`` equals ``sidecar_path(...)`` would
+        produce for that source.
+
+    This skips misplaced/nested junk copies (e.g. an accidental
+    ``.carta/sidecars/.worktrees/x/.carta/sidecars/foo.embed-meta.yaml`` whose
+    ``current_path`` resolves to a real repo file it does not own), which would
+    otherwise produce phantom duplicate entries in any sidecar scan.
+    """
+    sidecars_root = repo_root / ".carta" / "sidecars"
+    if not sidecars_root.exists():
+        return
+    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
+        data = read_sidecar(sc_path)
+        if not isinstance(data, dict):
+            continue
+        current_path = data.get("current_path")
+        if not current_path:
+            continue
+        expected_rel = Path(current_path).with_suffix(".embed-meta.yaml")
+        try:
+            actual_rel = sc_path.relative_to(sidecars_root)
+        except ValueError:
+            continue
+        if actual_rel != expected_rel:
+            continue
+        yield sc_path, data
