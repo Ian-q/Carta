@@ -98,7 +98,7 @@ def _gather_corpus(repo_root: Path) -> dict:
     return counts
 
 
-def _gather_check(name: str, qdrant_url, ollama_url) -> dict:
+def _gather_check(name: str, qdrant_url: str, ollama_url: str | None) -> dict:
     out = {"qdrant": {"reachable": False}, "ollama": {"reachable": False}}
     try:
         from qdrant_client import QdrantClient
@@ -107,7 +107,9 @@ def _gather_check(name: str, qdrant_url, ollama_url) -> dict:
         collections = {}
         for c in client.get_collections().collections:
             if c.name.startswith(prefix):
-                collections[c.name] = client.get_collection(c.name).points_count
+                # points_count is Optional[int] in qdrant-client (None while a
+                # collection optimizes); coerce so renderers can always format it.
+                collections[c.name] = client.get_collection(c.name).points_count or 0
         out["qdrant"] = {"reachable": True, "collections": collections}
     except Exception:
         out["qdrant"] = {"reachable": False}

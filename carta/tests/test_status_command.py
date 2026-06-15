@@ -153,3 +153,41 @@ def test_check_handles_unreachable_services(tmp_path, monkeypatch):
     assert snap["check"]["ollama"]["reachable"] is False
     # Local data still present despite service failures.
     assert snap["corpus"]["total"] == 0
+
+
+def test_check_coerces_null_points_count_to_zero(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+
+    class _Coll:
+        def __init__(self, name):
+            self.name = name
+
+    class _Colls:
+        collections = [_Coll("proj_doc")]
+
+    class _Info:
+        points_count = None  # qdrant-client returns None while optimizing
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_collections(self):
+            return _Colls()
+
+        def get_collection(self, name):
+            return _Info()
+
+    import qdrant_client
+    monkeypatch.setattr(qdrant_client, "QdrantClient", _FakeClient)
+
+    class _Resp:
+        status_code = 200
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+
+    snap = status.gather_project_status(
+        root, name="proj", qdrant_url="http://q", check=True, ollama_url="http://o"
+    )
+    assert snap["check"]["qdrant"]["collections"] == {"proj_doc": 0}
