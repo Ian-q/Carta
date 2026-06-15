@@ -188,6 +188,13 @@ def cmd_embed(args):
         print("doc_embed module is disabled in config.", file=sys.stderr)
         sys.exit(1)
 
+    # Best-effort: record this project in the global registry for `carta status`.
+    try:
+        from carta.registry import register_project
+        register_project(cfg_path.parent.parent, cfg["project_name"], cfg.get("qdrant_url"))
+    except Exception:
+        pass
+
     # --timeout overrides embed.file_timeout_s
     timeout_override = getattr(args, "timeout", None)
     if timeout_override is not None:
@@ -418,6 +425,16 @@ def cmd_init(args):
             )
     except Exception:
         pass  # status-line wiring is a convenience, never block init
+
+    # Best-effort: record the freshly-initialised project for `carta status`.
+    try:
+        from carta.config import load_config
+        from carta.registry import register_project
+        cp = find_config(Path.cwd())
+        c = load_config(cp)
+        register_project(cp.parent.parent, c["project_name"], c.get("qdrant_url"))
+    except Exception:
+        pass
 
     _notify_if_update()
 
@@ -708,6 +725,69 @@ def cmd_import(args):
         sys.exit(1)
 
 
+def cmd_status(args):
+    """Print a quick snapshot of carta state: current project + other projects."""
+    import json as _json
+    from carta.config import load_config
+    from carta.registry import register_project, load_registry
+    from carta import status as status_mod
+
+    check = getattr(args, "check", False)
+    as_json = getattr(args, "json", False)
+    color = sys.stdout.isatty() and not as_json
+
+    try:
+        cfg_path = find_config()
+    except FileNotFoundError:
+        cfg_path = None
+
+    current = None
+    current_path = None
+    if cfg_path is not None:
+        cfg = load_config(cfg_path)
+        repo_root = cfg_path.parent.parent
+        current_path = str(repo_root.resolve())
+        name = cfg["project_name"]
+        qdrant_url = cfg.get("qdrant_url")
+        ollama_url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+        try:
+            register_project(repo_root, name, qdrant_url)
+        except Exception:
+            pass
+        current = status_mod.gather_project_status(
+            repo_root, name=name, qdrant_url=qdrant_url,
+            check=check, ollama_url=ollama_url,
+        )
+
+    others = []
+    for entry in sorted(load_registry(), key=lambda e: e["last_seen"], reverse=True):
+        if current_path and str(Path(entry["path"]).resolve()) == current_path:
+            continue
+        others.append(status_mod.gather_project_status(
+            Path(entry["path"]), name=entry["name"], qdrant_url=entry["qdrant_url"],
+        ))
+
+    if as_json:
+        print(_json.dumps(
+            {"current": current, "others": others, "checked": bool(check)}, indent=2
+        ))
+        return
+
+    if current is None and not others:
+        print("Not inside a carta project, and none registered yet — "
+              "run a carta command inside a project first.")
+        return
+
+    if current is not None:
+        print(status_mod.format_current(current, color=color))
+    if others:
+        if current is not None:
+            print()
+        print(f"Other projects ({len(others)}):")
+        for snap in others:
+            print(status_mod.format_other(snap, color=color))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="carta")
     parser.add_argument("--version", action="version", version=f"carta {__version__}")
@@ -841,6 +921,18 @@ def main():
         help="Overwrite any collections that already exist",
     )
 
+    status_p = sub.add_parser(
+        "status",
+        help="Show carta status for this project and other known projects",
+    )
+    status_p.add_argument(
+        "--check", action="store_true",
+        help="Also query Qdrant/Ollama for the current project (live counts + health)",
+    )
+    status_p.add_argument(
+        "--json", action="store_true", help="Output status as JSON",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -856,6 +948,7 @@ def main():
         "statusline": cmd_statusline,
         "export": cmd_export,
         "import": cmd_import,
+        "status": cmd_status,
     }
 
     if args.command not in dispatch:
