@@ -12,9 +12,14 @@ VALID_STAGES = ("pre-push", "pre-commit")
 
 
 def _shim_block(stage: str) -> str:
+    # PATH-guarded so the hook fails open when `carta` is not on PATH (e.g. GUI
+    # git clients that don't inherit the user's shell PATH) — a missing binary
+    # must never block a push/commit. Only a real stale-scan failure exits non-zero.
     return (
         f"{SENTINEL_START}\n"
-        f"carta hook check --stage {stage} || exit $?\n"
+        f"if command -v carta >/dev/null 2>&1; then\n"
+        f"  carta hook check --stage {stage} || exit $?\n"
+        f"fi\n"
         f"{SENTINEL_END}\n"
     )
 

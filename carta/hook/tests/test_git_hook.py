@@ -21,6 +21,14 @@ def test_install_fresh_writes_executable_shim(tmp_path):
     assert hook.stat().st_mode & 0o100  # owner-executable
 
 
+def test_install_shim_is_path_guarded(tmp_path):
+    # The shim must fail open when `carta` is not on PATH (must not block a push).
+    _hooks(tmp_path)
+    install_hook(tmp_path, "pre-push")
+    text = (tmp_path / ".git" / "hooks" / "pre-push").read_text()
+    assert "command -v carta" in text
+
+
 def test_install_is_idempotent(tmp_path):
     _hooks(tmp_path)
     install_hook(tmp_path, "pre-push")
