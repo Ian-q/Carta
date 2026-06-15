@@ -32,10 +32,13 @@ pip install -e .
 
 ## Project Structure
 
-- Python 3.10+ semantic memory sidecar for Claude Code
-- CLI commands: `init`, `scan`, `embed`, `search`
-- Uses Qdrant for vector storage, Ollama for embeddings
+- Python 3.10+ semantic memory sidecar for Claude Code (Qdrant vectors, Ollama embeddings)
+- **CLI** (`carta <cmd>`, or `python -m carta <cmd>`): `init`, `scan`, `embed` (`--visual` / `--repair`), `search`, `audit`, `doctor`, `eval`, `remember`, `status`, `statusline`, `export`, `import`, `update`
+- **MCP** (`carta-mcp`, stdio): `carta_search`, `carta_embed`, `carta_scan`, `carta_remember`
+- **Hook** (`carta-hook` + `carta/hooks/*.sh`): pre-prompt proactive recall, three-zone gate (high→inject, low→silent, gray→Ollama judge), fail-open
+- **Modules** (`carta/`): `embed/` `search/` `scanner/` `audit/` `eval/` `vision/` `mcp/` `hook/` `memory/` `install/` `update/` `ui/`
 - Tests in `carta/tests/` and `carta/*/tests/`
+- **Which command?** `carta scan` / `/doc-audit` = doc structure; `carta audit` / `carta doctor` = embed-data integrity & environment; `carta eval` = retrieval quality (see the "Which audit command?" table in README)
 
 ## Code Style Guidelines
 
@@ -112,7 +115,7 @@ with pytest.raises(ConfigError, match="field_name"):
 - CLI (`carta/cli.py`) dispatches to command handlers
 - Config loaded via `find_config()` → `load_config()`
 - Pipeline modules coordinate multi-step workflows
-- Sidecar files: `*.embed-meta.yaml` track embedding status
+- Sidecar files: `.carta/sidecars/<source-path-relative-to-repo>.embed-meta.yaml` track embedding status (mirror the source tree — not colocated)
 - Lock file: `.carta/embed.lock` for concurrency control
 - Collections named: `{project_name}_{type}` (e.g., `myproject_doc`)
 

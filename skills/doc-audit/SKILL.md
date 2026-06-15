@@ -7,6 +7,8 @@ description: Audit repository documentation for structural and semantic issues, 
 
 Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update `AUDIT_REPORT.md` and `docs/BACKLOG/TRIAGE.md`.
 
+> **Which command?** This skill (`/doc-audit`) audits *documentation* structure + semantics. For **embedded-data integrity** use `carta audit` / `carta doctor`; for **retrieval quality** use `carta eval`. See the "Which audit command?" table in README.
+
 ---
 
 ## Step 1: Run or refresh the structural scanner
