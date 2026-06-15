@@ -13,7 +13,7 @@ import os
 import time
 from pathlib import Path
 
-SCHEMA = 1
+SCHEMA = 1  # on-disk registry shape; bump when the structure changes
 
 
 def _carta_home() -> Path:
@@ -22,6 +22,7 @@ def _carta_home() -> Path:
 
 
 def registry_path() -> Path:
+    """Return the path to the registry JSON file."""
     return _carta_home() / "registry.json"
 
 
@@ -40,15 +41,19 @@ def _config_exists(path: str) -> bool:
     return (Path(path) / ".carta" / "config.yaml").exists()
 
 
-def register_project(repo_root, name: str, qdrant_url, *, now: float = None) -> None:
-    """Upsert a project (keyed by absolute root path), pruning dead entries.
+def register_project(
+    repo_root: str | Path, name: str, qdrant_url: str, *, now: float | None = None
+) -> None:
+    """Upsert a project entry, keyed by absolute root path.
 
-    Best-effort: any error is swallowed.
+    Best-effort: any error is swallowed. Dead entries are pruned at read
+    time by load_registry (not here), so a project on a temporarily
+    unavailable path is never evicted by an unrelated write.
     """
     try:
         key = str(Path(repo_root).resolve())
         data = _read_raw()
-        projects = {p: e for p, e in data["projects"].items() if _config_exists(p)}
+        projects = data["projects"]
         projects[key] = {
             "name": name,
             "qdrant_url": qdrant_url,
@@ -59,8 +64,12 @@ def register_project(repo_root, name: str, qdrant_url, *, now: float = None) -> 
         path = registry_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(json.dumps(data, indent=2))
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
     except Exception:
         pass
 
