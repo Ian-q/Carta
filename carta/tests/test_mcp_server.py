@@ -62,101 +62,57 @@ def test_scope_parameter_validation():
 
 
 class TestDiscoverStaleFilesIntegration:
-    """Test discover_stale_files with the pipeline."""
+    """discover_stale_files (MCP carta_embed scope='stale') returns files whose
+    content changed since embed — current hash != sidecar file_hash (#39)."""
 
-    def test_discover_stale_files_returns_stale_paths(self):
-        """Two sidecars, one stale, one embedded -> returns one Path."""
-        import tempfile
-        from carta.embed.pipeline import discover_stale_files
+    def _sidecar(self, repo_root, rel, file_hash):
         from carta.embed.induct import sidecar_path as get_sidecar_path
+        sc = get_sidecar_path(repo_root / rel, repo_root)
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text(yaml.dump({
+            "slug": Path(rel).stem, "current_path": rel,
+            "status": "embedded", "file_hash": file_hash,
+        }))
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            repo_root = Path(tmpdir)
-
-            # Create docs directory
-            docs_dir = repo_root / "docs"
-            docs_dir.mkdir()
-
-            # Create first file with stale sidecar in .carta/sidecars/
-            stale_file = docs_dir / "stale.md"
-            stale_file.write_text("# Stale Document")
-            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
-            sc_dir.mkdir(parents=True)
-            with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
-                yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
-
-            # Create second file with embedded sidecar
-            embedded_file = docs_dir / "embedded.md"
-            embedded_file.write_text("# Embedded Document")
-            with open(sc_dir / "embedded.embed-meta.yaml", "w") as f:
-                yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
-
-            # Call discover_stale_files
-            results = discover_stale_files(repo_root)
-
-            # Should return only the stale file
-            assert len(results) == 1
-            assert results[0] == stale_file
-
-    def test_discover_stale_files_returns_empty_when_none_stale(self):
-        """No stale sidecars -> returns empty list."""
+    def test_returns_files_whose_hash_changed(self):
         import tempfile
         from carta.embed.pipeline import discover_stale_files
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
+            (repo_root / "docs").mkdir()
+            changed = repo_root / "docs" / "changed.md"
+            changed.write_text("# new content")
+            self._sidecar(repo_root, "docs/changed.md", "stalehash000")  # != real
 
-            # Create docs directory
-            docs_dir = repo_root / "docs"
-            docs_dir.mkdir()
+            assert discover_stale_files(repo_root) == [changed]
 
-            # Create file with embedded sidecar in .carta/sidecars/docs/
-            embedded_file = docs_dir / "embedded.md"
-            embedded_file.write_text("# Embedded Document")
-            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
-            sc_dir.mkdir(parents=True, exist_ok=True)
-            embedded_sidecar = sc_dir / "embedded.embed-meta.yaml"
-            with open(embedded_sidecar, "w") as f:
-                yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
+    def test_returns_empty_when_hash_matches(self):
+        import tempfile
+        from carta.embed.pipeline import discover_stale_files
+        from carta.embed.lifecycle import compute_file_hash
 
-            # Call discover_stale_files
-            results = discover_stale_files(repo_root)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            (repo_root / "docs").mkdir()
+            same = repo_root / "docs" / "same.md"
+            same.write_text("# unchanged")
+            self._sidecar(repo_root, "docs/same.md", compute_file_hash(same))
 
-            # Should return empty list
-            assert results == []
+            assert discover_stale_files(repo_root) == []
 
-    def test_discover_stale_files_skips_missing_status(self):
-        """Sidecar missing status key -> not included in results."""
+    def test_skips_sidecar_without_recorded_hash(self):
         import tempfile
         from carta.embed.pipeline import discover_stale_files
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
+            (repo_root / "docs").mkdir()
+            f = repo_root / "docs" / "nohash.md"
+            f.write_text("# content")
+            self._sidecar(repo_root, "docs/nohash.md", None)
 
-            # Create docs directory
-            docs_dir = repo_root / "docs"
-            docs_dir.mkdir()
-
-            # Create file with sidecar missing status in .carta/sidecars/
-            file_no_status = docs_dir / "no_status.md"
-            file_no_status.write_text("# Document")
-            sc_dir = repo_root / ".carta" / "sidecars" / "docs"
-            sc_dir.mkdir(parents=True)
-            with open(sc_dir / "no_status.embed-meta.yaml", "w") as f:
-                yaml.dump({"slug": "no_status", "current_path": "docs/no_status.md"}, f)
-
-            # Create file with stale sidecar
-            stale_file = docs_dir / "stale.md"
-            stale_file.write_text("# Stale Document")
-            with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
-                yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
-
-            # Call discover_stale_files
-            results = discover_stale_files(repo_root)
-
-            # Should return only the stale file
-            assert len(results) == 1
-            assert results[0] == stale_file
+            assert discover_stale_files(repo_root) == []
 
 
 def test_remember_returns_ok_shape(tmp_path):

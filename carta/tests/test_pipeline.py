@@ -11,6 +11,7 @@ import yaml
 
 from carta.embed.pipeline import run_embed_file, run_embed, discover_stale_files, migrate_sidecars, detect_orphaned_sidecars
 from carta.embed.induct import sidecar_path as get_sidecar_path
+from carta.embed.lifecycle import compute_file_hash
 from carta.config import find_config
 
 
@@ -409,65 +410,50 @@ class TestRunEmbedStaleAlert:
 
 
 class TestDiscoverStaleFiles:
-    """Test discover_stale_files helper function."""
+    """discover_stale_files returns files whose content changed since embed —
+    current content hash differs from the sidecar's recorded file_hash (#39)."""
 
-    def test_discover_stale_files_returns_stale_paths(self, temp_repo):
+    def _sidecar(self, repo_root, rel, file_hash):
+        sc = get_sidecar_path(repo_root / rel, repo_root)
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text(yaml.dump({
+            "slug": Path(rel).stem, "current_path": rel,
+            "status": "embedded", "file_hash": file_hash,
+        }))
+        return sc
+
+    def test_returns_files_whose_hash_changed(self, temp_repo):
         repo_root, cfg = temp_repo
-        docs_dir = repo_root / "docs"
-        docs_dir.mkdir()
+        (repo_root / "docs").mkdir()
+        changed = repo_root / "docs" / "changed.md"
+        changed.write_text("# new content")
+        self._sidecar(repo_root, "docs/changed.md", "stalehash000")  # != real hash
 
-        stale_file = docs_dir / "stale.md"
-        stale_file.write_text("# Stale Document")
-        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
-        sc_dir.mkdir(parents=True)
-        with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
-            yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
+        assert discover_stale_files(repo_root) == [changed]
 
-        embedded_file = docs_dir / "embedded.md"
-        embedded_file.write_text("# Embedded Document")
-        with open(sc_dir / "embedded.embed-meta.yaml", "w") as f:
-            yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
-
-        results = discover_stale_files(repo_root)
-
-        assert len(results) == 1
-        assert results[0] == stale_file
-
-    def test_discover_stale_files_returns_empty_when_none_stale(self, temp_repo):
+    def test_skips_files_whose_hash_matches(self, temp_repo):
         repo_root, cfg = temp_repo
-        docs_dir = repo_root / "docs"
-        docs_dir.mkdir()
+        (repo_root / "docs").mkdir()
+        same = repo_root / "docs" / "same.md"
+        same.write_text("# unchanged")
+        self._sidecar(repo_root, "docs/same.md", compute_file_hash(same))
 
-        embedded_file = docs_dir / "embedded.md"
-        embedded_file.write_text("# Embedded Document")
-        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
-        sc_dir.mkdir(parents=True)
-        with open(sc_dir / "embedded.embed-meta.yaml", "w") as f:
-            yaml.dump({"status": "embedded", "slug": "embedded", "current_path": "docs/embedded.md"}, f)
+        assert discover_stale_files(repo_root) == []
 
-        results = discover_stale_files(repo_root)
-        assert results == []
-
-    def test_discover_stale_files_skips_missing_status(self, temp_repo):
+    def test_skips_sidecar_without_recorded_hash(self, temp_repo):
         repo_root, cfg = temp_repo
-        docs_dir = repo_root / "docs"
-        docs_dir.mkdir()
+        (repo_root / "docs").mkdir()
+        f = repo_root / "docs" / "nohash.md"
+        f.write_text("# content")
+        self._sidecar(repo_root, "docs/nohash.md", None)
 
-        file_no_status = docs_dir / "no_status.md"
-        file_no_status.write_text("# Document")
-        sc_dir = repo_root / ".carta" / "sidecars" / "docs"
-        sc_dir.mkdir(parents=True)
-        with open(sc_dir / "no_status.embed-meta.yaml", "w") as f:
-            yaml.dump({"slug": "no_status", "current_path": "docs/no_status.md"}, f)
+        assert discover_stale_files(repo_root) == []
 
-        stale_file = docs_dir / "stale.md"
-        stale_file.write_text("# Stale Document")
-        with open(sc_dir / "stale.embed-meta.yaml", "w") as f:
-            yaml.dump({"status": "stale", "slug": "stale", "current_path": "docs/stale.md"}, f)
+    def test_skips_when_source_missing(self, temp_repo):
+        repo_root, cfg = temp_repo
+        self._sidecar(repo_root, "docs/gone.md", "abc123")  # no source file written
 
-        results = discover_stale_files(repo_root)
-        assert len(results) == 1
-        assert results[0] == stale_file
+        assert discover_stale_files(repo_root) == []
 
 
 class TestVisionIntegration:
@@ -957,6 +943,17 @@ class TestDetectOrphanedSidecars:
         repo_root, cfg = temp_repo
         orphans = detect_orphaned_sidecars(repo_root)
         assert orphans == []
+
+    def test_skips_nested_junk_sidecar(self, temp_repo):
+        """A misplaced/nested sidecar copy is not a real sidecar, so it must not
+        be reported as an orphan even when its current_path source is missing."""
+        repo_root, cfg = temp_repo
+        junk = (repo_root / ".carta" / "sidecars" / ".worktrees" / "x"
+                / ".carta" / "sidecars" / "docs" / "gone.embed-meta.yaml")
+        junk.parent.mkdir(parents=True, exist_ok=True)
+        junk.write_text("slug: gone\nstatus: embedded\ncurrent_path: docs/gone.pdf\n")
+
+        assert detect_orphaned_sidecars(repo_root) == []
 
 
 class TestRunEmbedStatusWriter:

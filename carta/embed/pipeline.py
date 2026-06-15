@@ -30,7 +30,7 @@ from carta.embed.embed import (
     SPARSE_VECTOR_NAME,
 )
 from carta.embed.sparse import embed_sparse_query
-from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path
+from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_points
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
@@ -179,24 +179,28 @@ def discover_pending_files(repo_root: Path) -> list[dict]:
 
 
 def discover_stale_files(repo_root: Path) -> list[Path]:
-    """Find all files with sidecars under .carta/sidecars/ marked status: stale.
+    """Find source files whose content has changed since they were last embedded.
+
+    A file is stale when it still exists, its sidecar recorded a ``file_hash``,
+    and the file's current content hash differs from that recorded hash. (The
+    old sidecar ``status: stale`` flag is no longer written — staleness now lives
+    in the Qdrant payload — so staleness is recomputed on demand here. See #39.)
 
     Returns list of source file paths.
     """
     results = []
-    sidecars_root = repo_root / ".carta" / "sidecars"
-    if not sidecars_root.exists():
-        return results
-    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
-        data = read_sidecar(sc_path)
-        if data is None or data.get("status") != "stale":
+    for sc_path, data in iter_canonical_sidecars(repo_root):
+        recorded_hash = data.get("file_hash")
+        if not recorded_hash:
             continue
-        current_path = data.get("current_path")
-        if not current_path:
+        source_file = repo_root / data["current_path"]
+        if not source_file.exists():
             continue
-        source_file = repo_root / current_path
-        if source_file.exists():
-            results.append(source_file)
+        try:
+            if compute_file_hash(source_file) != recorded_hash:
+                results.append(source_file)
+        except OSError:
+            continue
     return results
 
 
@@ -1102,19 +1106,15 @@ def migrate_sidecars(repo_root: Path, verbose: bool = False) -> int:
 
 
 def detect_orphaned_sidecars(repo_root: Path) -> list[Path]:
-    """Return sidecar paths under .carta/sidecars/ whose current_path source no longer exists."""
+    """Return sidecar paths under .carta/sidecars/ whose current_path source no longer exists.
+
+    Uses iter_canonical_sidecars, so corrupt sidecars, those without a
+    current_path, and misplaced/nested junk copies are skipped (a junk copy is
+    not a real sidecar of this repo even if its current_path source is missing).
+    """
     orphans = []
-    sidecars_root = repo_root / ".carta" / "sidecars"
-    if not sidecars_root.exists():
-        return orphans
-    for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
-        data = read_sidecar(sc_path)
-        if data is None:
-            continue
-        current_path = data.get("current_path")
-        if not current_path:
-            continue  # skip pre-lifecycle sidecars without current_path
-        if not (repo_root / current_path).exists():
+    for sc_path, data in iter_canonical_sidecars(repo_root):
+        if not (repo_root / data["current_path"]).exists():
             orphans.append(sc_path)
     return orphans
 
