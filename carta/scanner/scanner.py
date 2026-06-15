@@ -40,14 +40,23 @@ def parse_frontmatter(doc_path: Path) -> Optional[dict]:
 # Exclusion helpers
 # ---------------------------------------------------------------------------
 
+# Machine/tooling dirs that are never valid scan targets — excluded regardless
+# of user config, like .git (skipped in _iter_md_files). Existing repos carry a
+# config.yaml whose excluded_paths replaces DEFAULTS wholesale (_deep_merge does
+# not merge lists), so DEFAULTS alone would never reach them. `.claude/worktrees/`
+# holds full-repo worktree copies; `build/` holds packaging mirrors; `temp/` is scratch.
+_ALWAYS_EXCLUDED_DIRS = (".claude/worktrees/", "build/", "temp/")
+
+
 def is_excluded(file_path: Path, cfg: dict, repo_root: Path) -> bool:
-    """Return True if file_path matches any excluded_paths pattern in cfg."""
+    """Return True if file_path matches any excluded_paths pattern in cfg, or
+    falls under an always-excluded machine/tooling dir."""
     try:
         rel = str(file_path.relative_to(repo_root))
     except ValueError:
         rel = str(file_path)
 
-    for pattern in cfg.get("excluded_paths", []):
+    for pattern in (*_ALWAYS_EXCLUDED_DIRS, *cfg.get("excluded_paths", [])):
         if pattern.endswith("/"):
             if rel.startswith(pattern) or ("/" + pattern.rstrip("/") + "/" in "/" + rel):
                 return True
@@ -81,9 +90,15 @@ DEFAULT_HOMELESS_ROOT_WHITELIST = frozenset({
     "CLAUDE.md",
     "AGENTS.md",
     "GEMINI.md",
+    "BUGS.md",
     ".cursorrules",
     "CODEOWNERS",
 })
+
+# Directory prefixes whose markdown is an intentional home, not homeless_doc.
+# Skills live as `skills/<name>/SKILL.md` (and the bundled `carta/skills/` mirror)
+# by convention — outside docs/ on purpose.
+DEFAULT_HOMELESS_DIR_WHITELIST = ("skills/", "carta/skills/")
 
 
 def _anchor_basenames(cfg: dict) -> set[str]:
@@ -111,12 +126,14 @@ def check_homeless_docs(repo_root: Path, cfg: dict) -> list:
             continue
         if is_excluded(p, cfg, repo_root):
             continue
+        rel = str(p.relative_to(repo_root))
+        if any(rel.startswith(prefix) for prefix in DEFAULT_HOMELESS_DIR_WHITELIST):
+            continue  # intentional skill home — not homeless
         try:
             p.relative_to(docs_root)
             continue  # inside docs/ — fine
         except ValueError:
             pass
-        rel = str(p.relative_to(repo_root))
         issues.append({
             "type": "homeless_doc",
             "severity": "warning",

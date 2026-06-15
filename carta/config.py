@@ -15,7 +15,8 @@ DEFAULTS = {
     "anchor_doc": "CLAUDE.md",
     "excluded_paths": [
         "node_modules/", ".venv/", "*.tmp",
-        ".planning/", ".worktrees/", ".carta/", ".pio/",
+        ".planning/", ".worktrees/", ".claude/worktrees/", ".carta/", ".pio/",
+        "build/", "temp/",
     ],
     "contradiction_types": [
         "version numbers",
