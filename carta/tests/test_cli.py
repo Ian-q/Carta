@@ -653,3 +653,33 @@ class TestCmdStatus:
         assert result.returncode == 0
         assert "--check" in result.stdout
         assert "--json" in result.stdout
+
+    def test_status_outside_project_with_registered_others(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        from carta.cli import cmd_status
+        from carta.registry import register_project
+        monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+        other = self._project(tmp_path, "gamma")
+        register_project(other, "gamma", "http://localhost:6333", now=9.0)
+        empty = tmp_path / "nowhere"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        cmd_status(argparse.Namespace(check=False, json=False))
+        out = capsys.readouterr().out
+        assert "Other projects (1):" in out
+        assert "gamma" in out
+        assert "carta ·" not in out  # no current-project header outside a project
+
+    def test_status_json_outside_project(self, tmp_path, monkeypatch, capsys):
+        import argparse
+        import json
+        from carta.cli import cmd_status
+        monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+        empty = tmp_path / "nowhere"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        cmd_status(argparse.Namespace(check=False, json=True))
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["current"] is None
+        assert doc["others"] == []
+        assert doc["checked"] is False
