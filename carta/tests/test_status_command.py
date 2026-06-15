@@ -93,3 +93,63 @@ def test_embed_state_running_via_lock_no_status(tmp_path, monkeypatch):
     monkeypatch.setattr(status, "_pid_alive", lambda pid: True)
     snap = status.gather_project_status(root, name="proj", qdrant_url="u")
     assert snap["embed"]["state"] == "running"
+
+
+def test_check_populates_qdrant_and_ollama(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+
+    class _Coll:
+        def __init__(self, name):
+            self.name = name
+
+    class _Colls:
+        collections = [_Coll("proj_doc"), _Coll("other_doc")]
+
+    class _Info:
+        points_count = 42
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_collections(self):
+            return _Colls()
+
+        def get_collection(self, name):
+            return _Info()
+
+    import qdrant_client
+    monkeypatch.setattr(qdrant_client, "QdrantClient", _FakeClient)
+
+    class _Resp:
+        status_code = 200
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp())
+
+    snap = status.gather_project_status(
+        root, name="proj", qdrant_url="http://q", check=True, ollama_url="http://o"
+    )
+    assert snap["check"]["qdrant"]["reachable"] is True
+    assert snap["check"]["qdrant"]["collections"] == {"proj_doc": 42}
+    assert snap["check"]["ollama"]["reachable"] is True
+
+
+def test_check_handles_unreachable_services(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+
+    def _boom(*a, **k):
+        raise ConnectionError("down")
+
+    import qdrant_client
+    monkeypatch.setattr(qdrant_client, "QdrantClient", _boom)
+    import requests
+    monkeypatch.setattr(requests, "get", _boom)
+
+    snap = status.gather_project_status(
+        root, name="proj", qdrant_url="http://q", check=True, ollama_url="http://o"
+    )
+    assert snap["check"]["qdrant"]["reachable"] is False
+    assert snap["check"]["ollama"]["reachable"] is False
+    # Local data still present despite service failures.
+    assert snap["corpus"]["total"] == 0

@@ -98,11 +98,34 @@ def _gather_corpus(repo_root: Path) -> dict:
     return counts
 
 
+def _gather_check(name: str, qdrant_url, ollama_url) -> dict:
+    out = {"qdrant": {"reachable": False}, "ollama": {"reachable": False}}
+    try:
+        from qdrant_client import QdrantClient
+        client = QdrantClient(url=qdrant_url, timeout=2)
+        prefix = f"{name}_"
+        collections = {}
+        for c in client.get_collections().collections:
+            if c.name.startswith(prefix):
+                collections[c.name] = client.get_collection(c.name).points_count
+        out["qdrant"] = {"reachable": True, "collections": collections}
+    except Exception:
+        out["qdrant"] = {"reachable": False}
+    try:
+        import requests
+        url = (ollama_url or "").rstrip("/") + "/api/tags"
+        resp = requests.get(url, timeout=2)
+        out["ollama"] = {"reachable": resp.status_code == 200}
+    except Exception:
+        out["ollama"] = {"reachable": False}
+    return out
+
+
 def gather_project_status(repo_root, *, name: str, qdrant_url, check: bool = False,
                           ollama_url=None, now: float = None) -> dict:
     """Return a read-only status snapshot for one project. Never raises."""
     now = time.time() if now is None else now
-    return {
+    snap = {
         "name": name,
         "path": str(repo_root),
         "qdrant_url": qdrant_url,
@@ -110,3 +133,6 @@ def gather_project_status(repo_root, *, name: str, qdrant_url, check: bool = Fal
         "corpus": _gather_corpus(repo_root),
         "check": None,
     }
+    if check:
+        snap["check"] = _gather_check(name, qdrant_url, ollama_url)
+    return snap
