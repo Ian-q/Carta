@@ -1,7 +1,7 @@
 ---
 id: 2026-06-15-stale-reference-git-hook-design
 title: Stale-reference git hook (pre-push / pre-commit)
-status: draft
+status: shipped
 related: [2026-06-14-contextual-chunk-headers-design]
 date: 2026-06-15
 related_issue: Ian-q/Carta#10

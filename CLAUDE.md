@@ -153,6 +153,7 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 | `remember` | Capture a curated note (quirk / bug-note / helpful-note) |
 | `status` | System-wide status across registered projects (`~/.carta/registry.json`) |
 | `statusline` | Status-line widget output (embed progress) |
+| `hook` | Install/run the stale-reference git hook (`hook install`, `hook check`; pre-push default) |
 | `export` / `import` | Share / restore embeddings + sidecars |
 | `update` | Self-update the installed package |
 
@@ -165,6 +166,12 @@ Claude-initiated tools: `carta_search`, `carta_embed`, `carta_scan`, `carta_reme
 Pre-prompt-submit proactive recall with a three-zone relevance gate: score >
 `high_threshold` → inject; score < `low_threshold` → silent; gray zone → small
 Ollama judge. All paths exit 0 (fail-open). Logic in `carta/hook/hook.py`.
+
+A second, opt-in hook — `carta hook` — installs a managed git `pre-push` (or
+`pre-commit`) shim that scans changed docs and warns when a section has been
+superseded by an authoritative doc in the graph. Warn-only by default; fail-open.
+Core in `carta/hook/stale_scan.py`; shim install/removal in `carta/hook/git_hook.py`;
+shared yes/no judge in `carta/hook/judge.py`.
 
 ### Sidecars
 
