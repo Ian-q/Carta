@@ -351,7 +351,7 @@ class AutoInstaller:
         return {
             "nomic-embed-text": "ollama pull nomic-embed-text",
             "qwen3-vl:8b": "ollama pull qwen3-vl:8b",
-            "qwen2.5:0.5b": "ollama pull qwen2.5:0.5b",
+            "qwen3.5:0.8b": "ollama pull qwen3.5:0.8b",
         }
 
     def print_setup_guide(self, result: PreflightResult) -> None:
