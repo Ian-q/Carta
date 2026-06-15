@@ -27,6 +27,7 @@ Relevant project knowledge surfaces automatically when Claude is working — wit
 ### Active
 
 - ✓ MCP server exposing `carta_search`, `carta_embed`, `carta_scan` tools via stdio transport — Validated in Phase 02
+- ✓ MCP `carta_remember` tool — note capture (quirk / bug-note / helpful-note) — added v0.10.0
 - ✓ Hook wiring complete: shell stub delegates to `carta-hook` entry point, `carta-hook` registered in `pyproject.toml`, HOOK-05 fail-open timeout fixed — Validated in Phase 05
 - [ ] Smart hook end-to-end: similarity threshold fast path (>0.85 inject, <0.6 discard) + Ollama judge for gray zone (0.6–0.85) — wiring verified; requires live Qdrant+Ollama integration test
 - [ ] Markdown file embedding support (`.md` files scanned but not currently embeddable)
