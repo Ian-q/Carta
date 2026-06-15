@@ -117,3 +117,27 @@ def test_max_judge_calls_cap_reports_overflow():
     assert result.judge_calls == 1
     assert result.skipped_overflow == 1
     assert len(result.findings) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 6: _stale_judge — default judge prompt over ollama_yesno
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+from carta.hook.stale_scan import _stale_judge
+
+_JCFG = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {"ollama_model": "m", "judge_timeout_s": 5}}}
+
+
+def test_stale_judge_calls_ollama_with_both_excerpts():
+    cand = {"source": "docs/cobs.md", "excerpt": "COBS+JSON replaced micro-ROS"}
+    with patch("carta.hook.stale_scan.ollama_yesno", return_value=True) as oj:
+        out = _stale_judge("micro-ROS UART section", cand, _JCFG)
+    assert out is True
+    args, kwargs = oj.call_args
+    # positional: (ollama_url, model, system, user)
+    assert args[0] == "http://x"
+    assert args[1] == "m"
+    assert "micro-ROS UART section" in args[3]
+    assert "COBS+JSON replaced micro-ROS" in args[3]
+    assert kwargs["timeout_s"] == 5

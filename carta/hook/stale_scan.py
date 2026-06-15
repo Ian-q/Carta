@@ -9,6 +9,7 @@ from pathlib import Path
 
 from carta.scanner.scanner import is_excluded
 from carta.embed.parse import chunk_text, sections_from_markdown
+from carta.hook.judge import ollama_yesno
 
 
 @dataclass
@@ -54,6 +55,29 @@ def _in_doc_scope(rel_path: str, cfg: dict, repo_root: Path) -> bool:
     if not (rel_path == docs_root or rel_path.startswith(docs_root + "/")):
         return False
     return not is_excluded(repo_root / rel_path, cfg, repo_root)
+
+
+def _stale_judge(section_text: str, candidate: dict, cfg: dict):
+    """Ask the small model whether `candidate` indicates `section_text` is superseded.
+    Returns True/False/None (None on error → caller fails open)."""
+    sc = cfg.get("hooks", {}).get("stale_scan", {})
+    ollama_url = cfg["embed"]["ollama_url"]
+    model = sc.get("ollama_model", "qwen3.5:0.8b")
+    timeout_s = sc.get("judge_timeout_s", 5)
+    system = (
+        "You decide whether a documentation section has been SUPERSEDED. "
+        "Answer only 'yes' or 'no'. Answer 'yes' only if the knowledge-base "
+        "excerpt clearly indicates the approach, component, or protocol in the "
+        "committed section has been replaced or deprecated. If they are merely "
+        "related or complementary, answer 'no'."
+    )
+    user = (
+        f"Committed section:\n{section_text[:600]}\n\n"
+        f"Knowledge-base excerpt ({candidate.get('source', '')}):\n"
+        f"{candidate.get('excerpt', '')[:600]}\n\n"
+        f"Has the committed section been replaced or deprecated?"
+    )
+    return ollama_yesno(ollama_url, model, system, user, timeout_s=timeout_s)
 
 
 def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=None) -> StaleScanResult:
