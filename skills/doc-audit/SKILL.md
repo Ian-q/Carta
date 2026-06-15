@@ -17,8 +17,10 @@ Check if `.carta/scan-results.json` exists and was written less than 1 hour ago 
 - If stale or missing: run the scanner first:
 
 ```bash
-python .carta/carta/cli.py scan
+carta scan
 ```
+
+> Uses the installed `carta` CLI. If it isn't on your PATH, run `python -m carta scan` instead (from the repo root).
 
 Read `scan-results.json` and extract:
 - `issues` list (structural findings)
@@ -56,7 +58,7 @@ For each doc in `changed_since_last_audit`:
 
 ### Qdrant Agent (optional)
 
-If Qdrant is reachable (run `python .carta/carta/cli.py search "test" 2>&1 | head -1` — no error means reachable):
+If Qdrant is reachable (run `carta search "test" 2>&1 | head -1` — no error means reachable):
 1. For each changed doc, run a semantic similarity search to find potentially conflicting or duplicate content in the knowledge graph.
 2. Surface any high-similarity (>0.92) matches that are not the same document as additional findings.
 

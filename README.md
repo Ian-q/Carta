@@ -156,7 +156,8 @@ docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdr
 # 2. Ollama — install from ollama.ai, then pull required models
 ollama pull nomic-embed-text   # text embeddings
 ollama pull qwen3.5:0.8b       # hook judge (swap for larger model if preferred)
-ollama pull qwen2.5vl:7b       # vision describer for PDFs with figures/diagrams
+ollama pull qwen3-vl:8b        # vision describer for PDFs with figures/diagrams (needs Ollama >= 0.12.7)
+ollama pull glm-ocr            # OCR for text/tables on image-heavy PDF pages
 ```
 
 Both services are optional if you only want structural audit without embedding or search. See **[docs/install.md](docs/install.md)** for the full setup walkthrough and `carta doctor` to verify your environment.
@@ -228,7 +229,7 @@ search:
     model: BAAI/bge-reranker-base   # backend=cross-encoder (fastembed, local ONNX)
     llm_model: qwen3.5:0.8b         # backend=llm: one listwise Ollama call per search
     llm_timeout_s: 20
-    candidate_pool: 40      # docs fetched before reranking (use ~40 for the llm backend)
+    candidate_pool: 40      # docs fetched before reranking (default 30; ~40 suits the llm backend)
 ```
 
 - **`cross-encoder`** — fastembed `bge-reranker-base`, no Ollama, fast.
@@ -311,8 +312,8 @@ Then set in `.carta/config.yaml`:
 
 ```yaml
 embed:
-  colpali_enabled: true              # opt-in flag (default: false)
-  colpali_model: "vidore/colqwen2-v1.0"  # or colpali-v1.3 for lower VRAM
+  colpali_enabled: true              # force on; default is null (auto: search _visual when it exists)
+  colpali_model: "vidore/colqwen2-v1.0-hf"  # HF-native variant; or vidore/colpali-v1.3-hf for lower VRAM
   colpali_device: "cpu"              # "cpu", "cuda", or "mps"
   colpali_batch_size: 1              # pages per batch (1 for CPU)
   colpali_sidecar_path: ".carta/visual_cache/"
@@ -322,8 +323,8 @@ embed:
 
 | Model | VRAM | Speed | Quality | Best For |
 |-------|------|-------|---------|----------|
-| `vidore/colqwen2-v1.0` | ~8GB | Slow | Highest | GPU servers |
-| `vidore/colpali-v1.3` | ~6GB | Medium | High | Balanced GPU |
+| `vidore/colqwen2-v1.0-hf` | ~8GB | Slow | Highest | GPU servers |
+| `vidore/colpali-v1.3-hf` | ~6GB | Medium | High | Balanced GPU |
 | `vidore/colSmol-500M` | ~3GB | Medium | Good | CPU workstations |
 | `vidore/colSmol-256M` | ~2GB | Fast | Fair | CPU-only/laptops |
 
