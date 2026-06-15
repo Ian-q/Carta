@@ -26,8 +26,10 @@ Extract the query string. If the user invoked the skill with no query text, ask:
 Run:
 
 ```bash
-python .carta/carta/cli.py search "<query>"
+carta search "<query>"
 ```
+
+> Uses the installed `carta` CLI. If it isn't on your PATH, run `python -m carta search "<query>"` instead (from the repo root).
 
 Replace `<query>` with the user's query string, properly quoted.
 

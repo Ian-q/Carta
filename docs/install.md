@@ -40,8 +40,11 @@ ollama pull nomic-embed-text
 ollama pull qwen3.5:0.8b
 
 # Vision describer — used by carta embed for PDF pages with figures, tables, or images.
-# Default is qwen2.5vl:7b (~5GB). Override via embed.ollama_vision_model in .carta/config.yaml.
-ollama pull qwen2.5vl:7b
+# Default is qwen3-vl:8b (requires Ollama >= 0.12.7). Override via embed.ollama_vision_model in .carta/config.yaml.
+ollama pull qwen3-vl:8b
+
+# OCR — text/table extraction from image-heavy PDF pages (default ocr_model: glm-ocr:latest).
+ollama pull glm-ocr
 ```
 
 ### Verify

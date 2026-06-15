@@ -350,7 +350,7 @@ class AutoInstaller:
         """Get suggested commands to pull required Ollama models."""
         return {
             "nomic-embed-text": "ollama pull nomic-embed-text",
-            "qwen2.5vl:7b": "ollama pull qwen2.5vl:7b",
+            "qwen3-vl:8b": "ollama pull qwen3-vl:8b",
             "qwen2.5:0.5b": "ollama pull qwen2.5:0.5b",
         }
 

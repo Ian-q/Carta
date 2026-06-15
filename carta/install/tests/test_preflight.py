@@ -124,6 +124,30 @@ class TestJudgeModelCheck:
         check_names = [c.name for c in checker.checks]
         assert "ollama_model_qwen3.5:0.8b" in check_names
 
+    def test_vision_model_checked_uses_current_default(self):
+        """Preflight checks the current vision default (qwen3-vl:8b), not the
+        retired qwen2.5vl:7b (#45)."""
+        checker = PreflightChecker(interactive=False)
+        checker.checks = [
+            PreflightCheck(
+                name="ollama_running",
+                status="pass",
+                message="Ollama server running",
+                category="infrastructure",
+            )
+        ]
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {
+                "returncode": 0,
+                "stdout": "nomic-embed-text:latest\n",
+                "stderr": "",
+            })()
+            checker._phase3_models()
+
+        check_names = [c.name for c in checker.checks]
+        assert "ollama_model_qwen3-vl:8b" in check_names
+        assert "ollama_model_qwen2.5vl:7b" not in check_names
+
     def test_judge_model_warn_when_not_pulled(self):
         checker = PreflightChecker(interactive=False)
         checker.checks = [
