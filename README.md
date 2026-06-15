@@ -29,7 +29,7 @@ Three things, tightly integrated:
 A two-pass system that runs on a schedule or on demand:
 
 - **Structural scanner** (zero LLM calls) — detects stale docs, broken `related:` links, homeless markdown files, and orphaned content. Runs fast, runs often.
-- **Semantic audit** (Claude) — reads the scanner output and checks changed doc pairs for contradictions: version numbers, API endpoints, config values, whatever matters in your domain. Writes a rolling `AUDIT_REPORT.md` with stable `AUDIT-NNN` issue IDs that persist across runs.
+- **Semantic audit** (Claude) — reads the scanner output and checks changed doc pairs for contradictions: version numbers, API endpoints, config values, whatever matters in your domain. Writes a rolling `docs/AUDIT_REPORT.md` with stable `AUDIT-NNN` issue IDs that persist across runs.
 
 ### 2. Embed
 
@@ -187,7 +187,7 @@ last_reviewed: 2026-03-20
 | Skill | What it does |
 |-------|-------------|
 | `/carta-init` | Bootstrap Carta in a new project (generates `.carta/config.yaml`) |
-| `/doc-audit` | Structural + semantic audit, generates `AUDIT_REPORT.md` |
+| `/doc-audit` | Structural + semantic audit, generates `docs/AUDIT_REPORT.md` |
 | `/doc-embed` | Ingest PDFs, manuals, and audio transcripts into Qdrant |
 | `/doc-search` | Natural language search over the embedded knowledge base |
 | `carta remember` / `carta_remember` | Save a curated project note (quirk / bug-note / helpful-note) as a repo markdown file and embed it |
@@ -200,7 +200,7 @@ last_reviewed: 2026-03-20
 
 | You want to… | Use | Output |
 |---|---|---|
-| Find structural doc issues (stale/broken `related:`, homeless/orphaned docs) | `carta scan` (no LLM) or the `/doc-audit` skill (structural **+** semantic) | `.carta/scan-results.json` / `AUDIT_REPORT.md` |
+| Find structural doc issues (stale/broken `related:`, homeless/orphaned docs) | `carta scan` (no LLM) or the `/doc-audit` skill (structural **+** semantic) | `.carta/scan-results.json` / `docs/AUDIT_REPORT.md` |
 | Check embedded-data integrity (orphaned sidecars, damaged/duplicate points) | `carta audit` | JSON report |
 | Diagnose the environment (Qdrant/Ollama/models) | `carta doctor` (+ `--fix`) | stdout |
 | Measure retrieval quality | `carta eval` | scores |

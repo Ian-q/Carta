@@ -1,11 +1,11 @@
 ---
 name: doc-audit
-description: Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update AUDIT_REPORT.md and TRIAGE.md.
+description: Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update docs/AUDIT_REPORT.md and docs/BACKLOG/TRIAGE.md.
 ---
 
 # /doc-audit Skill
 
-Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update `AUDIT_REPORT.md` and `docs/BACKLOG/TRIAGE.md`.
+Audit repository documentation for structural and semantic issues, assign stable AUDIT-NNN IDs, and update `docs/AUDIT_REPORT.md` and `docs/BACKLOG/TRIAGE.md`.
 
 > **Which command?** This skill (`/doc-audit`) audits *documentation* structure + semantics. For **embedded-data integrity** use `carta audit` / `carta doctor`; for **retrieval quality** use `carta eval`. See the "Which audit command?" table in README.
 
@@ -33,7 +33,7 @@ Read `scan-results.json` and extract:
 
 ## Step 2: Load previous audit state
 
-Check if `AUDIT_REPORT.md` exists.
+Check if `docs/AUDIT_REPORT.md` exists.
 
 - If it exists: read it and extract:
   - The `<!-- audit_counter: N -->` value (increment by 1 for this run).
@@ -77,9 +77,9 @@ If Qdrant is unreachable, skip this agent and note "Qdrant agent skipped — col
 
 ---
 
-## Step 5: Write AUDIT_REPORT.md
+## Step 5: Write docs/AUDIT_REPORT.md
 
-Write `AUDIT_REPORT.md` at the repo root with this structure:
+Write `docs/AUDIT_REPORT.md` (create `docs/` if missing) with this structure:
 
 ```
 # Doc Audit Report
@@ -110,7 +110,7 @@ Each issue block format:
 **Doc:** `path/to/doc.md` (or **Docs:** for conflicts)
 **Detail:** <detail text>
 **Action:** <what to do>
-**Backlog:** [DOC-NNN](docs/BACKLOG/TRIAGE.md#DOC-NNN)  ← only if linked
+**Backlog:** [DOC-NNN](BACKLOG/TRIAGE.md#DOC-NNN)  ← only if linked
 ```
 
 Emoji key: 🆕 new | ⚠️ persisting | 🔵 needs-input | ✅ resolved
@@ -132,7 +132,7 @@ For each issue that is `new` or newly `needs-input` AND does not already have a 
 **Action:** <specific action for a developer to take>
 ```
 
-3. Add `**Backlog:** [DOC-NNN](docs/BACKLOG/TRIAGE.md#DOC-NNN)` to the matching issue block in `AUDIT_REPORT.md`.
+3. Add `**Backlog:** [DOC-NNN](BACKLOG/TRIAGE.md#DOC-NNN)` to the matching issue block in `docs/AUDIT_REPORT.md`.
 
 Issues flagged `needs-input` get a `[needs-input]` note appended after the title.
 
@@ -142,4 +142,4 @@ Issues flagged `needs-input` get a `[needs-input]` note appended after the title
 
 Report a summary:
 
-> "Audit #N complete. X new issues, Y persisting, Z resolved. AUDIT_REPORT.md updated. N items appended to TRIAGE.md."
+> "Audit #N complete. X new issues, Y persisting, Z resolved. docs/AUDIT_REPORT.md updated. N items appended to docs/BACKLOG/TRIAGE.md."
