@@ -24,7 +24,7 @@ def _make_cfg(high=0.85, low=0.60, max_results=5, judge_timeout_s=3):
             "low_threshold": low,
             "max_results": max_results,
             "judge_timeout_s": judge_timeout_s,
-            "ollama_model": "qwen2.5:0.5b",
+            "ollama_model": "qwen3.5:0.8b",
         },
         "embed": {
             "ollama_url": "http://localhost:11434",

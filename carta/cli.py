@@ -33,7 +33,7 @@ def _detect_ram_gb():
 
 
 def _recommend_vision_workers(ram_gb: float) -> int:
-    """Heuristic: parallel qwen2.5vl:7b slots that fit without thrashing.
+    """Heuristic: parallel qwen3-vl:8b slots that fit without thrashing.
 
     Reserves ~17 GB (≈8 GB OS + ≈9 GB OCR model resident) and assumes each
     additional vision-model parallel slot needs ~8 GB. Capped at 4 to keep

@@ -30,6 +30,18 @@ def _pixmap(content: bytes = b"fakepng") -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
+# Config defaults
+# ---------------------------------------------------------------------------
+
+class TestVisionModelDefault:
+    def test_defaults_to_current_vision_model(self):
+        """When config omits ollama_vision_model, SmartRouter falls back to the
+        current default (qwen3-vl:8b) — not the retired qwen3-vl:8b (#56)."""
+        router = SmartRouter(_cfg())
+        assert router.vision_model == "qwen3-vl:8b"
+
+
+# ---------------------------------------------------------------------------
 # _route dispatch
 # ---------------------------------------------------------------------------
 
@@ -557,9 +569,9 @@ class TestCheckpointHelpers:
         from carta.vision.router import save_vision_checkpoint, load_vision_checkpoint
         p = tmp_path / "cp.json"
         chunks = [{"text": "page 1 text", "model_used": "glm-ocr"}]
-        save_vision_checkpoint(p, Path("/x.pdf"), "qwen2.5vl:7b", "glm-ocr:latest",
+        save_vision_checkpoint(p, Path("/x.pdf"), "qwen3-vl:8b", "glm-ocr:latest",
                                [{"page_num": 1, "chunks": chunks}])
-        out = load_vision_checkpoint(p, "qwen2.5vl:7b", "glm-ocr:latest")
+        out = load_vision_checkpoint(p, "qwen3-vl:8b", "glm-ocr:latest")
         assert out == {1: chunks}
 
     def test_save_is_atomic_no_temp_files_left(self, tmp_path):
@@ -575,7 +587,7 @@ class TestExtractPdfResume:
     def test_resume_skips_pages_in_checkpoint(self, tmp_path):
         from carta.vision.router import SmartRouter, save_vision_checkpoint
 
-        router = SmartRouter(_cfg(ollama_vision_model="qwen2.5vl:7b",
+        router = SmartRouter(_cfg(ollama_vision_model="qwen3-vl:8b",
                                   ocr_model="glm-ocr:latest"))
         cp = tmp_path / "cp.json"
         prior = [
@@ -583,7 +595,7 @@ class TestExtractPdfResume:
              "text": "cached p1", "model_used": "glm-ocr",
              "page_class": "structured_text", "content_type": "structured_text"},
         ]
-        save_vision_checkpoint(cp, Path("/x.pdf"), "qwen2.5vl:7b", "glm-ocr:latest",
+        save_vision_checkpoint(cp, Path("/x.pdf"), "qwen3-vl:8b", "glm-ocr:latest",
                                [{"page_num": 1, "chunks": prior}])
 
         new_chunk = {"doc_type": "image_description", "page_num": 2, "image_index": 0,
@@ -619,7 +631,7 @@ class TestExtractPdfResume:
     def test_checkpoint_is_updated_after_each_page(self, tmp_path):
         from carta.vision.router import SmartRouter, load_vision_checkpoint
 
-        router = SmartRouter(_cfg(ollama_vision_model="qwen2.5vl:7b",
+        router = SmartRouter(_cfg(ollama_vision_model="qwen3-vl:8b",
                                   ocr_model="glm-ocr:latest",
                                   vision_workers=1))
         cp = tmp_path / "cp.json"
@@ -645,7 +657,7 @@ class TestExtractPdfResume:
                 router.extract_pdf(Path("/x.pdf"), checkpoint_path=cp)
 
         # After successful extraction, both pages are recorded in checkpoint.
-        out = load_vision_checkpoint(cp, "qwen2.5vl:7b", "glm-ocr:latest")
+        out = load_vision_checkpoint(cp, "qwen3-vl:8b", "glm-ocr:latest")
         assert sorted(out.keys()) == [1, 2]
 
 

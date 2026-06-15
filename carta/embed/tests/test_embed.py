@@ -1201,7 +1201,7 @@ def test_build_perf_context_picks_up_models_and_workers():
     cfg = {
         "embed": {
             "ollama_model": "nomic-embed-text:latest",
-            "ollama_vision_model": "qwen2.5vl:7b",
+            "ollama_vision_model": "qwen3-vl:8b",
             "ocr_model": "glm-ocr:latest",
             "vision_workers": 4,
             "embedding_workers": 8,
@@ -1210,7 +1210,7 @@ def test_build_perf_context_picks_up_models_and_workers():
     ctx = _build_perf_context(cfg)
     assert ctx["models"] == {
         "embedding": "nomic-embed-text:latest",
-        "vision":    "qwen2.5vl:7b",
+        "vision":    "qwen3-vl:8b",
         "ocr":       "glm-ocr:latest",
     }
     assert ctx["workers"] == {"vision": 4, "embedding": 8}
