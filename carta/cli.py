@@ -522,7 +522,10 @@ def cmd_doctor(args):
                 print(_json.dumps(doc, indent=2))
             else:
                 print("\n📦 Corpus integrity")
-                if not report["affected_files"] and not report["stuck_stale"]:
+                visual_mm = report.get("visual_count_mismatches", {})
+                orphan_vis = report.get("orphaned_visual_files", [])
+                if (not report["affected_files"] and not report["stuck_stale"]
+                        and not visual_mm and not orphan_vis):
                     print("  ✅ no issues found")
                 else:
                     for slug, files in report["slug_collisions"].items():
@@ -535,8 +538,11 @@ def cmd_doctor(args):
                         print(f"  ⚠️  count mismatch: {fp} (sidecar {c['sidecar']} vs qdrant {c['qdrant']})")
                     if report["stuck_stale"]:
                         print(f"  ⚠️  {len(report['stuck_stale'])} sidecar(s) stuck 'stale' with unchanged files")
-                    print(f"  → run `carta embed --repair` to fix "
-                          f"({len(report['affected_files'])} file(s) affected)")
+                    for fp, c in visual_mm.items():
+                        print(f"  ⚠️  visual count mismatch: {fp} (sidecar {c['sidecar']} vs qdrant {c['qdrant']})")
+                    for fp in orphan_vis:
+                        print(f"  ⚠️  orphaned visual points: {fp}")
+                    print("  → run `carta embed --repair` to fix")
         except Exception as e:
             if args.json:
                 # Still emit one valid JSON document; note the skipped check

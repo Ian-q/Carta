@@ -3,6 +3,7 @@ import yaml
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from carta.config import collection_name
 from carta.embed.integrity import scan_corpus_integrity
 from carta.embed.lifecycle import compute_file_hash
 from carta.embed.repair import run_repair
@@ -15,11 +16,26 @@ def _point(file_path, slug, chunk_index, text):
     return p
 
 
-def _client_with_points(points):
+def _vpoint(file_path, page_num):
+    """A _visual collection point (payload carries file_path + page_num)."""
+    p = MagicMock()
+    p.payload = {"file_path": file_path, "page_num": page_num,
+                 "doc_type": "visual_page"}
+    return p
+
+
+def _client_with_collections(by_coll: dict):
+    """MagicMock Qdrant client whose collection_exists/scroll dispatch on the
+    collection name. by_coll maps collection name -> list of points."""
     client = MagicMock()
-    client.collection_exists.return_value = True
-    client.scroll.return_value = (points, None)  # single page
+    client.collection_exists.side_effect = lambda c: c in by_coll
+    client.scroll.side_effect = lambda coll, **kw: (by_coll.get(coll, []), None)
     return client
+
+
+def _client_with_points(points):
+    """Single-collection (_doc) client — back-compat for existing tests."""
+    return _client_with_collections({collection_name(CFG, "doc"): points})
 
 
 CFG = {"project_name": "test", "qdrant_url": "http://localhost:6333",
@@ -51,6 +67,18 @@ def _write_sidecar_at_production_path(tmp_path, rel_path, chunk_count, status, f
     with open(sc, "w") as f:
         yaml.dump({"current_path": rel_path, "chunk_count": chunk_count,
                    "status": status, "file_hash": file_hash}, f)
+    return sc
+
+
+def _write_visual_sidecar(tmp_path, rel_path, visual_done, visual_pending=None):
+    """Write a canonical sidecar tracking visual_done/visual_pending pages."""
+    from carta.embed.induct import sidecar_path
+    sc = sidecar_path(tmp_path / rel_path, tmp_path)
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_text(yaml.dump({
+        "current_path": rel_path, "status": "embedded",
+        "visual_done": list(visual_done), "visual_pending": list(visual_pending or []),
+    }))
     return sc
 
 
@@ -218,7 +246,9 @@ class TestScanCorpusIntegrity:
         page2 = [_point("docs/b.md", "b", 0, "world")]
 
         client = MagicMock()
-        client.collection_exists.return_value = True
+        # Only the _doc collection exists here, so the _visual scan is skipped
+        # and scroll is called exactly twice (the two _doc pages).
+        client.collection_exists.side_effect = lambda c: c == collection_name(CFG, "doc")
         # First call returns page1 with a non-None offset; second returns page2 with None
         client.scroll.side_effect = [
             (page1, "cursor-abc"),
@@ -287,6 +317,54 @@ class TestScannerRobustness:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
         assert report["count_mismatches"] == {"docs/lost.md": {"sidecar": 5, "qdrant": 0}}
         assert "docs/lost.md" in report["affected_files"]
+
+
+class TestVisualIntegrityScan:
+    """scan_corpus_integrity also audits the _visual collection (#38 part 2)."""
+
+    def test_visual_count_mismatch_detected(self, tmp_path):
+        """Sidecar visual_done count != _visual point count → mismatch."""
+        src = tmp_path / "docs" / "scan.pdf"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("pdf bytes")
+        _write_visual_sidecar(tmp_path, "docs/scan.pdf", visual_done=[1, 2, 3])
+        client = _client_with_collections({
+            collection_name(CFG, "doc"): [],
+            collection_name(CFG, "visual"): [_vpoint("docs/scan.pdf", 1)],
+        })
+        report = scan_corpus_integrity(CFG, tmp_path, client=client)
+        assert report["visual_count_mismatches"] == {
+            "docs/scan.pdf": {"sidecar": 3, "qdrant": 1}}
+
+    def test_visual_counts_match_is_clean(self, tmp_path):
+        src = tmp_path / "docs" / "ok.pdf"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("pdf bytes")
+        _write_visual_sidecar(tmp_path, "docs/ok.pdf", visual_done=[1, 2])
+        client = _client_with_collections({
+            collection_name(CFG, "doc"): [],
+            collection_name(CFG, "visual"): [
+                _vpoint("docs/ok.pdf", 1), _vpoint("docs/ok.pdf", 2)],
+        })
+        report = scan_corpus_integrity(CFG, tmp_path, client=client)
+        assert report["visual_count_mismatches"] == {}
+
+    def test_orphaned_visual_points_when_source_gone(self, tmp_path):
+        """_visual points for a file whose source no longer exists → orphan."""
+        client = _client_with_collections({
+            collection_name(CFG, "doc"): [],
+            collection_name(CFG, "visual"): [
+                _vpoint("docs/gone.pdf", 1), _vpoint("docs/gone.pdf", 2)],
+        })
+        report = scan_corpus_integrity(CFG, tmp_path, client=client)
+        assert report["orphaned_visual_files"] == ["docs/gone.pdf"]
+        # source-gone files are orphans, not count mismatches
+        assert report["visual_count_mismatches"] == {}
+
+    def test_no_visual_collection_is_safe(self, tmp_path):
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["visual_count_mismatches"] == {}
+        assert report["orphaned_visual_files"] == []
 
 
 class TestRunRepair:
@@ -486,3 +564,54 @@ class TestRunRepair:
         assert summary["stale_fixed"] == 0
         out = capsys.readouterr().out
         assert "nothing to repair" in out.lower()
+
+
+class TestVisualRepair:
+    """run_repair handles _visual integrity issues (#38 part 2)."""
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_orphaned_visual_points_are_purged(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        """A file gone from disk with _visual points → purge those points."""
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": [], "partial_empty_files": {},
+            "count_mismatches": {}, "stuck_stale": [], "affected_files": [],
+            "visual_count_mismatches": {}, "orphaned_visual_files": ["docs/gone.pdf"],
+        }
+        summary = run_repair(tmp_path, CFG)
+
+        assert mock_qc.return_value.delete.call_count == 1   # purged from _visual
+        mock_reembed.assert_not_called()
+        assert summary["visual_purged"] == 1
+        assert summary["visual_requeued"] == 0
+
+    @patch("carta.embed.repair.run_embed_file")
+    @patch("carta.embed.repair.scan_corpus_integrity")
+    @patch("carta.embed.repair.QdrantClient")
+    def test_visual_mismatch_requeues_without_deleting(
+            self, mock_qc, mock_scan, mock_reembed, tmp_path):
+        """A count mismatch (source present) re-queues for re-drain and never
+        deletes _visual points (ColPali embeddings can't be re-created)."""
+        src = tmp_path / "docs" / "scan.pdf"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"%PDF-1.4 fake")
+        _write_visual_sidecar(tmp_path, "docs/scan.pdf",
+                              visual_done=[1, 2, 3], visual_pending=[])
+        mock_scan.return_value = {
+            "slug_collisions": {}, "empty_files": [], "partial_empty_files": {},
+            "count_mismatches": {}, "stuck_stale": [], "affected_files": [],
+            "visual_count_mismatches": {"docs/scan.pdf": {"sidecar": 3, "qdrant": 1}},
+            "orphaned_visual_files": [],
+        }
+        summary = run_repair(tmp_path, CFG)
+
+        mock_qc.return_value.delete.assert_not_called()  # never destroy visual points
+        mock_reembed.assert_not_called()
+        assert summary["visual_requeued"] == 1
+        # Sidecar reset: every page pending again, none done — ready to re-drain.
+        from carta.embed.induct import sidecar_path, read_sidecar
+        sc = read_sidecar(sidecar_path(tmp_path / "docs/scan.pdf", tmp_path))
+        assert sc["visual_pending"] == [1, 2, 3]
+        assert sc["visual_done"] == []

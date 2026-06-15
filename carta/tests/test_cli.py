@@ -343,6 +343,17 @@ class TestDoctorCorpusIntegrity:
         "affected_files": [],
     }
 
+    _VISUAL_ISSUES_REPORT = {
+        "slug_collisions": {},
+        "empty_files": [],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": [],
+        "visual_count_mismatches": {"docs/scan.pdf": {"sidecar": 3, "qdrant": 1}},
+        "orphaned_visual_files": ["docs/gone.pdf"],
+    }
+
     def _make_args(self, json_flag=False):
         from unittest.mock import MagicMock
         args = MagicMock()
@@ -417,6 +428,34 @@ class TestDoctorCorpusIntegrity:
         assert "Corpus integrity" in out
         assert "no issues found" in out
         assert "carta embed --repair" not in out
+
+    def test_doctor_reports_visual_issues(self, tmp_path, capsys):
+        """Visual-only issues (no _doc problems) must still surface + nudge repair."""
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._VISUAL_ISSUES_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "no issues found" not in out
+        assert "docs/scan.pdf" in out   # visual count mismatch surfaced
+        assert "docs/gone.pdf" in out   # orphaned visual surfaced
+        assert "carta embed --repair" in out
 
     def test_doctor_outside_project(self, capsys):
         """find_config raises FileNotFoundError — doctor finishes, no integrity section."""
