@@ -17,8 +17,10 @@ Check if `.carta/scan-results.json` exists and was written less than 1 hour ago 
 - If stale or missing: run the scanner first:
 
 ```bash
-python .carta/carta/cli.py scan
+carta scan
 ```
+
+> Uses the installed `carta` CLI. If it isn't on your PATH, run `python -m carta scan` instead (from the repo root).
 
 Identify any files flagged `embed_induction_needed` in the scan results — these require a sidecar `.embed-meta.yaml` before embedding.
 
@@ -28,7 +30,7 @@ Identify any files flagged `embed_induction_needed` in the scan results — thes
 
 For each file flagged `embed_induction_needed`:
 
-1. Check if a `.embed-meta.yaml` sidecar already exists alongside the file.
+1. Check if a `.embed-meta.yaml` sidecar already exists for the file. Sidecars live under `.carta/sidecars/`, mirroring the source file's repo-relative path (e.g. `docs/reference/foo.pdf` → `.carta/sidecars/docs/reference/foo.embed-meta.yaml`) — they are **not** colocated beside the file.
    - If yes: read it and confirm it has at minimum `slug`, `doc_type`, and `status` fields.
    - If no: create a minimal sidecar with:
      ```yaml
@@ -50,7 +52,7 @@ For each file flagged `embed_induction_needed`:
 Run the embed command:
 
 ```bash
-python .carta/carta/cli.py embed
+carta embed
 ```
 
 Wait for the command to complete. Capture stdout/stderr. The command will report which files were newly embedded and which were skipped (already up to date).

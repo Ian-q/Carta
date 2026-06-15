@@ -1,6 +1,10 @@
-# Carta Configuration Template
-# This template is used by `carta init` to generate .carta/config.yaml.
-# All fields are documented below; defaults are shown as YAML values.
+# Carta Configuration Reference
+#
+# REFERENCE ONLY — `carta init` does NOT read this file. Bootstrap generates
+# .carta/config.yaml from the built-in DEFAULTS in carta/config.py and deep-merges
+# any keys you set over those defaults. Use this file to discover available settings
+# and their default values, then copy only the keys you want to override into
+# .carta/config.yaml. Values below match the code DEFAULTS.
 
 # REQUIRED: Unique project identifier used for Qdrant collection namespacing
 # Example: my_project, product_docs, engineering_kb
@@ -12,88 +16,91 @@ qdrant_url: http://localhost:6333
 
 # Module toggles: enable/disable specific Carta features
 modules:
-  doc_audit: true          # Enable documentation consistency auditing
-  doc_embed: true          # Enable document embedding and vectorization
-  doc_search: true         # Enable semantic search over documents
-  session_memory: true     # Enable session-level memory persistence
-  proactive_recall: true   # Enable similarity-based doc suggestions during sessions
+  doc_audit: true          # Documentation consistency auditing
+  doc_embed: true          # Document embedding and vectorization
+  doc_search: true         # Semantic search over documents
+  session_memory: true     # Session-level memory persistence
+  proactive_recall: true   # Similarity-based doc suggestions during sessions
 
-# Root directory to scan for markdown documents (relative or absolute path)
-# Carta will recursively index all .md files under this directory
+# Root directory to scan for markdown documents
 docs_root: docs/
 
-# Glob patterns for directories/files to exclude from scanning
-# Useful for skipping build artifacts, vendor code, temporary files, etc.
+# Directories / globs to skip during scanning
 excluded_paths:
   - node_modules/
   - .venv/
   - "*.tmp"
+  - .planning/
+  - .worktrees/
+  - .carta/
+  - .pio/
 
-# Days before a document is marked as stale (no recent modifications)
-# Used by doc_audit to flag outdated or untouched documentation
+# Days before a document with a last_reviewed date is flagged stale
 stale_threshold_days: 30
 
-# Number of stale docs that triggers interactive human review
-# When audit finds this many stale docs, Carta prompts for input before continuing
+# Number of needs-input audits before interactive human review is requested
 needs_input_at_audit_count: 3
 
 # Document consistency checks: types of contradictions to detect
-# Examples are shown below; customize to your domain (e.g., pricing, endpoints, versions)
 contradiction_types:
-  - version numbers          # Check for inconsistent software/API versions
-  - API endpoints            # Check for mismatched URLs or service endpoints
-  - configuration values     # Check for conflicting settings or parameters
-  - environment variable names  # Check for variable name inconsistencies
+  - version numbers
+  - API endpoints
+  - configuration values
+  - environment variable names
 
-# Root document for consistency baseline
-# All other docs are checked against this anchor for contradictions
-# Usually CLAUDE.md or a root README containing canonical values
+# Root document used as the consistency baseline
 anchor_doc: CLAUDE.md
 
 # Search settings
 search:
-  top_n: 5  # Number of results returned by semantic search queries
+  top_n: 5                    # results returned by semantic search
+  hybrid:
+    enabled: true             # BM25 + dense fusion (RRF)
+    bm25_model: Qdrant/bm25
+    prefetch_limit: 40
+  rerank:
+    enabled: false            # off by default; opt in per project
+    backend: cross-encoder    # cross-encoder | llm
+    model: BAAI/bge-reranker-base
+    llm_model: qwen3.5:0.8b   # used when backend=llm
+    llm_timeout_s: 20
+    candidate_pool: 30        # docs fetched before reranking (~40 suits the llm backend)
 
 # Document embedding and vectorization settings
 embed:
-  # Path to reference documents used for embedding context
-  # Helps Carta understand domain-specific terminology and structure
   reference_docs_path: docs/reference/
-
-  # Path to audio transcripts or multimedia docs (for future multimodal support)
   audio_path: docs/audio/
-
-  # URL of Ollama instance for local LLM embedding and inference
-  # Required for doc_embed and proactive_recall features
   ollama_url: http://localhost:11434
-
-  # Ollama model for embedding vectors (typically a small, fast model)
-  # Examples: nomic-embed-text:latest, mxbai-embed-large:latest
-  ollama_model: nomic-embed-text:latest
-
-  # Text chunking configuration for embedding long documents
+  ollama_model: nomic-embed-text:latest    # text embeddings (768-dim)
+  ollama_vision_model: qwen3-vl:8b         # PDF page describer (requires Ollama >= 0.12.7)
+  ocr_model: glm-ocr:latest                # OCR for text/tables on image-heavy pages
+  vision_routing: auto                     # auto | ocr | vision | both
   chunking:
-    max_tokens: 800        # Maximum tokens per chunk before splitting
-    overlap_fraction: 0.15 # Fraction of overlap between consecutive chunks (0.0-1.0)
+    max_tokens: 800
+    overlap_fraction: 0.15
+    preserve_tables: true
 
-# Proactive recall settings: suggest related docs during active sessions
+# Proactive recall (carta-hook): three-zone relevance gate
+#   score > high_threshold  -> inject immediately (no judge call)
+#   score < low_threshold   -> silent (no injection)
+#   in between (gray zone)  -> small Ollama judge decides
 proactive_recall:
-  similarity_threshold: 0.78  # Minimum cosine similarity (0.0-1.0) for suggestions
-  max_results: 3              # Maximum number of related docs to suggest per query
-  ollama_judge: false         # Use LLM to re-rank results (requires Ollama; slower)
-  ollama_model: phi3.5-mini   # LLM model for ranking (if ollama_judge=true)
+  high_threshold: 0.85
+  low_threshold: 0.60
+  max_results: 5
+  judge_timeout_s: 3
+  ollama_model: qwen3.5:0.8b
 
-# Cross-project recall: suggest docs from other projects (Plan 1 stub)
+# Cross-project recall: suggest docs from other projects
 cross_project_recall:
-  enabled: false  # Enable cross-project semantic search
+  enabled: false
   scope:
-    - quirk       # Project types to include in cross-project search (see Carta docs)
-  require_ollama_judge: true  # Require LLM re-ranking for cross-project results
-  # Filter which projects to include in cross-project recall
+    - quirk
+  require_ollama_judge: true
   project_filter:
-    mode: all                # Mode: "all" (include all), "whitelist" (projects list)
-    projects: []             # Project names to include (if mode=whitelist)
+    mode: all                # all | whitelist
+    projects: []
 
-# Deep scan settings: intensive multi-pass analysis (V3 feature — not implemented in Plan 1)
-deep_scan:
-  enabled: false  # Stub for future implementation
+# Many more advanced settings exist (visual/ColPali embedding, vision-routing
+# thresholds, graph/fusion search tuning). See carta/config.py (DEFAULTS) for the
+# complete, authoritative list.
