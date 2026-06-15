@@ -110,19 +110,18 @@ def _strip_frontmatter(text: str) -> tuple[str, dict]:
     return text, {}
 
 
-def extract_markdown_text(md_path: Path) -> tuple[list[dict], dict]:
-    """Extract text from a Markdown file, splitting on heading boundaries.
+def sections_from_markdown(text: str) -> tuple[list[dict], dict]:
+    """Split markdown *text* into heading-anchored sections.
 
-    Returns a tuple of (sections, frontmatter_meta) where sections is a list of
-    dicts with the same shape as extract_pdf_text: {"page": int, "text": str, "headings": list[str]}.
+    Returns (sections, frontmatter_meta) where sections is a list of dicts with
+    the same shape as extract_pdf_text: {"page": int, "text": str, "headings": list[str]}.
 
     Args:
-        md_path: Path to the .md file.
+        text: Raw markdown text content (may include YAML frontmatter).
 
     Returns:
         Tuple of (sections, frontmatter_meta dict).
     """
-    text = md_path.read_text(encoding="utf-8")
     text, frontmatter_meta = _strip_frontmatter(text)
 
     # Split on ## or ### heading boundaries; keep the delimiter with each section
@@ -164,6 +163,18 @@ def extract_markdown_text(md_path: Path) -> tuple[list[dict], dict]:
         })
 
     return sections, frontmatter_meta
+
+
+def extract_markdown_text(md_path: Path) -> tuple[list[dict], dict]:
+    """Extract heading-anchored sections from a Markdown file (reads then delegates).
+
+    Args:
+        md_path: Path to the .md file.
+
+    Returns:
+        Tuple of (sections, frontmatter_meta dict).
+    """
+    return sections_from_markdown(md_path.read_text(encoding="utf-8"))
 
 
 def _estimate_tokens(text: str) -> int:
