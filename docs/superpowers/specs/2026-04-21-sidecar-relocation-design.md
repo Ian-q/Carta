@@ -1,3 +1,12 @@
+---
+id: 2026-04-21-sidecar-relocation-design
+title: "Sidecar Relocation: Co-located → `.carta/sidecars/`"
+status: shipped
+related:
+  - 2026-04-21-sidecar-relocation
+date: 2026-04-21
+---
+
 # Sidecar Relocation: Co-located → `.carta/sidecars/`
 
 **Date:** 2026-04-21

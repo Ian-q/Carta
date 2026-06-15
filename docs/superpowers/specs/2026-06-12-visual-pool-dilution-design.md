@@ -1,3 +1,12 @@
+---
+id: 2026-06-12-visual-pool-dilution-design
+title: "Design — Visual-cap fusion (bound the `_visual` lane's share of the fused pool)"
+status: shipped
+related:
+  - 2026-06-12-visual-pool-dilution
+date: 2026-06-12
+---
+
 # Design — Visual-cap fusion (bound the `_visual` lane's share of the fused pool)
 
 **Date:** 2026-06-12 · **Status:** approved (brainstorm) · **Target:** carta-cc (next minor, 0.12.0) · **Phase:** 1 of 2 — the v0.12.0 retrieval-quality cycle (follows v0.11.0 data integrity [2026-06-12-data-integrity-design.md](2026-06-12-data-integrity-design.md); precedes #37 reranker demotion). Closes [#36](https://github.com/Ian-q/Carta/issues/36).

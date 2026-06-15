@@ -1,3 +1,12 @@
+---
+id: 2026-06-07-two-pass-visual-embedding-design
+title: "Two-Pass Visual Embedding — Design"
+status: shipped
+related:
+  - 2026-06-07-two-pass-visual-embedding
+date: 2026-06-07
+---
+
 # Two-Pass Visual Embedding — Design
 
 **Date:** 2026-06-07

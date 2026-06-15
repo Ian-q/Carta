@@ -1,8 +1,10 @@
 ---
-title: Stale-reference detection (v1) — design spec
+id: 2026-05-05-stale-reference-detection-design
+title: "Stale-reference detection (v1) — design spec"
 status: draft
+related: []
 date: 2026-05-05
-related_issue: Ian-q/Carta#10
+related_issue: "Ian-q/Carta#10"
 ---
 
 # Stale-reference detection (v1) — design spec

@@ -1,3 +1,12 @@
+---
+id: 2026-06-10-note-capture-design
+title: "Note Capture — Quirks & Notes (v0.10.0) — Design"
+status: shipped
+related:
+  - 2026-06-11-note-capture
+date: 2026-06-10
+---
+
 # Note Capture — Quirks & Notes (v0.10.0) — Design
 
 **Date:** 2026-06-10

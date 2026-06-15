@@ -1,3 +1,12 @@
+---
+id: 2026-04-05-smart-vision-routing-design
+title: "Smart Vision Routing for PDF Embedding"
+status: shipped
+related:
+  - 2026-04-05-smart-vision-routing
+date: 2026-04-05
+---
+
 # Smart Vision Routing for PDF Embedding
 
 **Date:** 2026-04-05
