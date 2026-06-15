@@ -1,87 +1,85 @@
 import json
+import os
 import socket
 
-import yaml
-
-from carta import status
+from carta.embed.status import StatusWriter, STATUS_FILENAME
 
 
-def _project(tmp_path):
-    root = tmp_path / "proj"
-    (root / ".carta" / "sidecars").mkdir(parents=True)
-    return root
+def _read(repo_root):
+    p = repo_root / ".carta" / STATUS_FILENAME
+    return json.loads(p.read_text())
 
 
-def _sidecar(sidecars_dir, stem, st):
-    (sidecars_dir / f"{stem}.embed-meta.yaml").write_text(
-        yaml.dump({"slug": stem, "status": st})
-    )
+def test_start_writes_running_with_identity(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    sw = StatusWriter(tmp_path, enabled=True)
+    sw.start(total=3)
+    data = _read(tmp_path)
+    assert data["schema"] == 1
+    assert data["phase"] == "running"
+    assert data["total"] == 3
+    assert data["pid"] == os.getpid()
+    assert data["host"] == socket.gethostname()
+    assert data["embedded"] == 0 and data["chunks"] == 0
+    assert data["finished_at"] is None
 
 
-def test_corpus_counts_by_status(tmp_path):
-    root = _project(tmp_path)
-    sc = root / ".carta" / "sidecars"
-    _sidecar(sc, "a", "done")
-    _sidecar(sc, "b", "done")
-    _sidecar(sc, "c", "pending")
-    _sidecar(sc, "d", "stale")
-    _sidecar(sc, "e", "extraction_failed")
-    _sidecar(sc, "f", "weird")
-    snap = status.gather_project_status(root, name="proj", qdrant_url="u")
-    assert snap["corpus"] == {
-        "total": 6, "done": 2, "pending": 1, "stale": 1,
-        "extraction_failed": 1, "other": 1,
-    }
+def test_file_start_sets_current(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    sw = StatusWriter(tmp_path, enabled=True)
+    sw.start(total=2)
+    sw.file_start(1, "big.pdf")
+    data = _read(tmp_path)
+    assert data["current_idx"] == 1
+    assert data["current_file"] == "big.pdf"
+    assert isinstance(data["current_file_started_at"], float)
 
 
-def test_corpus_empty_when_no_sidecars(tmp_path):
-    root = _project(tmp_path)
-    snap = status.gather_project_status(root, name="proj", qdrant_url="u")
-    assert snap["corpus"]["total"] == 0
-    assert snap["check"] is None
-    assert snap["name"] == "proj"
+def test_file_done_accumulates_counters(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    sw = StatusWriter(tmp_path, enabled=True)
+    sw.start(total=2)
+    sw.file_start(1, "a.md")
+    sw.file_done(embedded=1, chunks=10)
+    sw.file_start(2, "b.md")
+    sw.file_done(skipped=1)
+    data = _read(tmp_path)
+    assert data["embedded"] == 1
+    assert data["skipped"] == 1
+    assert data["chunks"] == 10
 
 
-def test_embed_state_never(tmp_path):
-    root = _project(tmp_path)
-    snap = status.gather_project_status(root, name="proj", qdrant_url="u")
-    assert snap["embed"]["state"] == "never"
+def test_finish_sets_phase_and_finished_at(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    sw = StatusWriter(tmp_path, enabled=True)
+    sw.start(total=1)
+    sw.finish("done")
+    data = _read(tmp_path)
+    assert data["phase"] == "done"
+    assert isinstance(data["finished_at"], float)
+    assert data["current_file"] is None
 
 
-def test_embed_state_done_with_age(tmp_path):
-    root = _project(tmp_path)
-    (root / ".carta" / "embed-status.json").write_text(json.dumps({
-        "phase": "done", "finished_at": 900.0,
-        "embedded": 10, "skipped": 2, "errors": 0, "chunks": 50,
-    }))
-    snap = status.gather_project_status(root, name="proj", qdrant_url="u", now=1000.0)
-    e = snap["embed"]
-    assert e["state"] == "done"
-    assert e["age_s"] == 100.0
-    assert e["embedded"] == 10
+def test_disabled_writes_nothing(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    sw = StatusWriter(tmp_path, enabled=False)
+    sw.start(total=1)
+    sw.file_start(1, "x.md")
+    sw.finish("done")
+    assert not (tmp_path / ".carta" / STATUS_FILENAME).exists()
 
 
-def test_embed_state_interrupted_when_pid_dead(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    (root / ".carta" / "embed-status.json").write_text(json.dumps({
-        "phase": "running", "host": "thishost", "pid": 424242,
-        "current_idx": 3, "total": 9, "current_file": "x.pdf", "updated_at": 0.0,
-    }))
-    monkeypatch.setattr(status, "_pid_alive", lambda pid: False)
-    monkeypatch.setattr(socket, "gethostname", lambda: "thishost")
-    snap = status.gather_project_status(root, name="proj", qdrant_url="u", now=10_000.0)
-    assert snap["embed"]["state"] == "interrupted"
+def test_write_failure_is_swallowed(tmp_path):
+    # .carta missing -> parent dir doesn't exist; must not raise
+    sw = StatusWriter(tmp_path, enabled=True)
+    sw.start(total=1)  # should not raise even though .carta/ is absent
+    sw.finish("done")
 
 
-def test_embed_state_running_via_live_lock(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    (root / ".carta" / "embed-status.json").write_text(json.dumps({
-        "phase": "running", "host": "other", "pid": 1,
-        "current_idx": 3, "total": 9, "current_file": "x.pdf",
-        "current_file_started_at": 0.0, "updated_at": 0.0,
-    }))
-    (root / ".carta" / "embed.lock").write_text("4242")
-    monkeypatch.setattr(status, "_pid_alive", lambda pid: True)
-    snap = status.gather_project_status(root, name="proj", qdrant_url="u", now=100.0)
-    assert snap["embed"]["state"] == "running"
-    assert snap["embed"]["file_elapsed_s"] == 100.0
+def test_no_tmp_file_left_behind(tmp_path):
+    (tmp_path / ".carta").mkdir()
+    sw = StatusWriter(tmp_path, enabled=True)
+    sw.start(total=1)
+    sw.finish("done")
+    leftovers = list((tmp_path / ".carta").glob("*.tmp"))
+    assert leftovers == []
