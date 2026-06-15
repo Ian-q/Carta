@@ -434,12 +434,42 @@ def test_partial_empty_chunks_cleanup_gate_uses_nonempty_count(mock_upsert, mock
     mock_del.assert_called_once()
 
 
+@patch("carta.embed.pipeline._mark_or_collect_visual_pages", return_value={})
 @patch("carta.embed.pipeline.upsert_chunks", return_value=0)
 @patch("carta.embed.pipeline.extract_pdf_text_and_classify")
 @patch("carta.embed.pipeline.PageAnalyzer")
-def test_pdf_zero_usable_no_queue_marks_extraction_failed(
-        mock_analyzer, mock_extract, mock_upsert, tmp_path, capsys):
-    """A PDF with no extractable text and no pages queued for pass-2 is flagged."""
+def test_pdf_zero_usable_queues_all_pages_for_ocr(
+        mock_analyzer, mock_extract, mock_upsert, mock_mark, tmp_path):
+    """A textless PDF with nothing auto-queued is routed to OCR — every page is
+    queued for the --visual drain — instead of dead-ending at extraction_failed
+    (#38 part 1)."""
+    from carta.embed.pipeline import _embed_one_file
+    from carta.embed.visual_queue import VISUAL_PENDING_KEY
+    repo = tmp_path
+    doc = repo / "docs" / "scan.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+    mock_extract.return_value = (
+        [{"page": 1, "text": ""}, {"page": 2, "text": ""}], [])
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+    }
+    count, updates = _embed_one_file(doc, {"slug": "scan", "doc_type": "unknown"},
+                                     cfg, MagicMock(), repo, 800, 0.15)
+    assert count == 0
+    assert updates["status"] != "extraction_failed"
+    assert updates[VISUAL_PENDING_KEY] == [1, 2]
+
+
+@patch("carta.embed.pipeline._mark_or_collect_visual_pages", return_value={})
+@patch("carta.embed.pipeline.upsert_chunks", return_value=0)
+@patch("carta.embed.pipeline.extract_pdf_text_and_classify")
+@patch("carta.embed.pipeline.PageAnalyzer")
+def test_pdf_zero_usable_flags_when_vision_disabled(
+        mock_analyzer, mock_extract, mock_upsert, mock_mark, tmp_path, capsys):
+    """With OCR/vision disabled there is no recovery path, so a textless PDF is
+    still flagged extraction_failed."""
     from carta.embed.pipeline import _embed_one_file
     repo = tmp_path
     doc = repo / "docs" / "scan.pdf"
@@ -448,7 +478,8 @@ def test_pdf_zero_usable_no_queue_marks_extraction_failed(
     mock_extract.return_value = ([{"page": 1, "text": ""}], [])
     cfg = {
         "project_name": "test", "qdrant_url": "http://localhost:6333",
-        "embed": {"ollama_url": "http://x", "ollama_model": "m"},
+        "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                  "vision_routing": "off"},
     }
     count, updates = _embed_one_file(doc, {"slug": "scan", "doc_type": "unknown"},
                                      cfg, MagicMock(), repo, 800, 0.15)

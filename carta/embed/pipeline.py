@@ -595,16 +595,36 @@ def _embed_one_file(
     sidecar_updates["_vision_events"] = _page_events
 
     # Nothing extractable anywhere: no text was attempted, no image chunks were
-    # attempted, and no pages are queued for pass-2 visual embedding. Flag the
-    # file instead of recording a silent no-op as "embedded".
+    # attempted, and no pages are queued for pass-2 visual embedding.
     if (expected_text == 0 and expected_images == 0
             and not (_visual_queue_updates.get(VISUAL_PENDING_KEY) or [])):
-        sidecar_updates["status"] = "extraction_failed"
-        print(
-            f"Warning: {file_path.name}: 0 extractable characters — skipped "
-            f"(scanned PDF? OCR may be required)",
-            flush=True,
+        # Give OCR a chance before declaring failure (#38 part 1): a PDF with no
+        # extractable text is almost certainly scanned/flattened, so queue every
+        # page for the `--visual` drain (glm-ocr text + ColPali) rather than
+        # dead-ending. extraction_failed is reserved for inputs OCR can't help:
+        # non-PDFs, zero-page PDFs, or runs with visual/OCR disabled.
+        embed_cfg = cfg.get("embed", {})
+        ocr_recoverable = (
+            file_path.suffix == ".pdf"
+            and len(pages) > 0
+            and embed_cfg.get("two_pass_visual", True)
+            and embed_cfg.get("vision_routing", "auto") != "off"
         )
+        if ocr_recoverable:
+            add_pending_pages(sidecar_updates, list(range(1, len(pages) + 1)))
+            if verbose:
+                print(
+                    f"    {file_path.name}: 0 extractable text — queued "
+                    f"{len(pages)} page(s) for OCR (run `carta embed --visual`)",
+                    flush=True,
+                )
+        else:
+            sidecar_updates["status"] = "extraction_failed"
+            print(
+                f"Warning: {file_path.name}: 0 extractable characters — skipped "
+                f"(scanned PDF? OCR may be required)",
+                flush=True,
+            )
 
     # File fully embedded — clear any per-page resume checkpoint.
     if file_path.suffix == ".pdf":
