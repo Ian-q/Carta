@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from carta.embed.induct import read_sidecar
-from carta.statusline import _pid_alive, STALE_WINDOW_S
+from carta.statusline import _pid_alive, _fmt_elapsed, _fmt_chunks, STALE_WINDOW_S
 
 _CORPUS_STATUSES = ("done", "pending", "stale", "extraction_failed")
 
@@ -138,3 +138,124 @@ def gather_project_status(repo_root, *, name: str, qdrant_url, check: bool = Fal
     if check:
         snap["check"] = _gather_check(name, qdrant_url, ollama_url)
     return snap
+
+
+# ---------------------------------------------------------------------------
+# Rendering layer — pure string formatters, no I/O
+# ---------------------------------------------------------------------------
+
+_RESET = "\033[0m"
+_DIM = "\033[2m"
+_BOLD = "\033[1m"
+_CYAN = "\033[36m"
+_GREEN = "\033[32m"
+_RED = "\033[31m"
+_YELLOW = "\033[33m"
+
+
+def _col(color: bool, code: str, text: str) -> str:
+    return f"{code}{text}{_RESET}" if (color and code) else text
+
+
+def _home_path(path: str) -> str:
+    try:
+        home = str(Path.home())
+        if path.startswith(home):
+            return "~" + path[len(home):]
+    except Exception:
+        pass
+    return path
+
+
+def _embed_line(e: dict, color: bool) -> str:
+    st = e.get("state")
+    if st == "running":
+        parts = [f"{e.get('current_idx', 0)}/{e.get('total', 0)}"]
+        if e.get("current_file"):
+            parts.append(e["current_file"])
+        if "file_elapsed_s" in e:
+            parts.append(_fmt_elapsed(e["file_elapsed_s"]))
+        return "embed   " + _col(color, _CYAN, "running") + " — " + " · ".join(parts)
+    if st in ("done", "failed"):
+        age = _fmt_elapsed(e.get("age_s", 0))
+        summary = (f"{e.get('embedded', 0)} embedded, {e.get('skipped', 0)} skipped, "
+                   f"{e.get('errors', 0)} errors ({_fmt_chunks(e.get('chunks', 0))} chunks)")
+        if st == "done":
+            return "embed   " + _col(color, _GREEN, "idle") + f" — last run {age} ago: {summary}"
+        return "embed   " + _col(color, _RED, "failed") + f" — last run {age} ago: {summary}"
+    if st == "interrupted":
+        return "embed   " + _col(color, _YELLOW, "interrupted") + " — previous run did not finish"
+    if st == "never":
+        return "embed   " + _col(color, _DIM, "never run")
+    return "embed   idle"
+
+
+def _corpus_line(co: dict, color: bool) -> str:
+    if co["total"] == 0:
+        return "docs    none embedded yet"
+    parts = [f"{co['total']} total", f"{co['done']} done"]
+    if co["pending"]:
+        parts.append(f"{co['pending']} pending")
+    if co["stale"]:
+        parts.append(f"{co['stale']} stale")
+    if co["extraction_failed"]:
+        parts.append(f"{co['extraction_failed']} extraction-failed")
+    if co["other"]:
+        parts.append(f"{co['other']} other")
+    return "docs    " + " · ".join(parts)
+
+
+def _qdrant_lines(snap: dict, color: bool) -> list:
+    chk = snap.get("check")
+    if not chk:
+        return [f"qdrant  {snap['qdrant_url']}   (--check for live counts)"]
+    lines = []
+    q = chk.get("qdrant", {})
+    if q.get("reachable"):
+        cols = q.get("collections", {})
+        if cols:
+            body = " · ".join(f"{n} {p:,} pts" for n, p in cols.items())
+            lines.append("qdrant  " + _col(color, _GREEN, "up") + " · " + body)
+        else:
+            lines.append("qdrant  " + _col(color, _GREEN, "up") + " · no collections for this project")
+    else:
+        lines.append("qdrant  " + _col(color, _RED, "down") + f" · {snap['qdrant_url']}")
+    o = chk.get("ollama", {})
+    lines.append("ollama  " + (_col(color, _GREEN, "up") if o.get("reachable")
+                               else _col(color, _RED, "down")))
+    return lines
+
+
+def format_current(snap: dict, *, color: bool = True) -> str:
+    """Render the detailed multi-line block for the current project."""
+    header = _col(color, _BOLD, "carta · " + snap["name"]) + "   " + \
+        _col(color, _DIM, _home_path(snap["path"]))
+    lines = [header, "  " + _embed_line(snap["embed"], color),
+             "  " + _corpus_line(snap["corpus"], color)]
+    lines += ["  " + ln for ln in _qdrant_lines(snap, color)]
+    return "\n".join(lines)
+
+
+def format_other(snap: dict, *, color: bool = True) -> str:
+    """Render the compact one-liner for a non-current project."""
+    e = snap["embed"]
+    co = snap["corpus"]
+    st = e.get("state")
+    word_plain = {"running": "running", "done": "idle", "failed": "failed",
+                  "interrupted": "interrupted", "never": "never",
+                  "idle": "idle"}.get(st, "idle")
+    code = {"running": _CYAN, "failed": _RED, "interrupted": _YELLOW,
+            "never": _DIM}.get(st, "")
+    word = _col(color, code, f"{word_plain:<11}")
+    if st == "running":
+        summary = f"{e.get('current_idx', 0)}/{e.get('total', 0)} · {e.get('current_file') or 'embedding'}"
+    else:
+        parts = [f"{co['total']} docs"] if co["total"] else ["empty"]
+        if co["pending"]:
+            parts.append(f"{co['pending']} pending")
+        if co["stale"]:
+            parts.append(f"{co['stale']} stale")
+        if co["total"] and not co["pending"] and not co["stale"]:
+            parts.append("all done")
+        summary = " · ".join(parts)
+    return f"  {snap['name']:<14} {word} {summary}   {_home_path(snap['path'])}"
