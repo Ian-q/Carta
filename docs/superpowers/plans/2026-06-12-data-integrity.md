@@ -1,3 +1,12 @@
+---
+id: 2026-06-12-data-integrity
+title: "Carta v0.11.0 Data Integrity Implementation Plan"
+status: shipped
+related:
+  - 2026-06-12-data-integrity-design
+date: 2026-06-12
+---
+
 # Carta v0.11.0 Data Integrity Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

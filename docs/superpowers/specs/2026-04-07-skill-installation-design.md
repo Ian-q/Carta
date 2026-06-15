@@ -1,7 +1,10 @@
 ---
-title: Skill Installation for Carta Init
+id: 2026-04-07-skill-installation-design
+title: "Skill Installation for Carta Init"
+status: shipped
+related:
+  - 2026-04-07-skill-installation
 date: 2026-04-07
-status: implemented
 ---
 
 # Skill Installation Design

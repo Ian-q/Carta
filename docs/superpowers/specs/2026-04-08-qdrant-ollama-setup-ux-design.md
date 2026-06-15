@@ -1,3 +1,12 @@
+---
+id: 2026-04-08-qdrant-ollama-setup-ux-design
+title: "Qdrant & Ollama Setup UX — Design Spec"
+status: shipped
+related:
+  - 2026-04-08-qdrant-ollama-setup-ux
+date: 2026-04-08
+---
+
 # Qdrant & Ollama Setup UX — Design Spec
 
 **Date:** 2026-04-08

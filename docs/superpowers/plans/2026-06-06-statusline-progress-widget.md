@@ -1,3 +1,12 @@
+---
+id: 2026-06-06-statusline-progress-widget
+title: "Carta status-line progress widget — Implementation Plan"
+status: shipped
+related:
+  - 2026-06-06-statusline-progress-widget-design
+date: 2026-06-06
+---
+
 # Carta status-line progress widget — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

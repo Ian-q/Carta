@@ -1,3 +1,12 @@
+---
+id: 2026-06-09-llm-reranker-design
+title: "Design — LLM reranker backend for `search.rerank`"
+status: shipped
+related:
+  - 2026-06-09-llm-reranker
+date: 2026-06-09
+---
+
 # Design — LLM reranker backend for `search.rerank`
 
 **Date:** 2026-06-09 · **Status:** approved (brainstorm) · **Target:** carta-cc (next minor, 0.8.0)

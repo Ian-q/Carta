@@ -1,3 +1,12 @@
+---
+id: 2026-06-14-carta-status-command-design
+title: "`carta status` — system-wide status command — design"
+status: shipped
+related:
+  - 2026-06-14-carta-status-command
+date: 2026-06-14
+---
+
 # `carta status` — system-wide status command — design
 
 **Date:** 2026-06-14

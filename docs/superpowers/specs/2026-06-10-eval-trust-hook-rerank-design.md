@@ -1,3 +1,12 @@
+---
+id: 2026-06-10-eval-trust-hook-rerank-design
+title: "Eval Trust + Hook Rerank Decoupling (v0.9.1) — Design"
+status: shipped
+related:
+  - 2026-06-10-eval-trust-hook-rerank
+date: 2026-06-10
+---
+
 # Eval Trust + Hook Rerank Decoupling (v0.9.1) — Design
 
 **Date:** 2026-06-10

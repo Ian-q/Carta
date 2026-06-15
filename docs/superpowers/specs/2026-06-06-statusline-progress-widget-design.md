@@ -1,3 +1,12 @@
+---
+id: 2026-06-06-statusline-progress-widget-design
+title: "Carta status-line progress widget — design"
+status: shipped
+related:
+  - 2026-06-06-statusline-progress-widget
+date: 2026-06-06
+---
+
 # Carta status-line progress widget — design
 
 **Date:** 2026-06-06

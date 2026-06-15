@@ -1,3 +1,12 @@
+---
+id: 2026-04-06-embed-vision-progress-design
+title: "Design: Embed Vision Progress — Per-Page Feedback & Post-File Summary"
+status: shipped
+related:
+  - 2026-04-06-embed-vision-progress
+date: 2026-04-06
+---
+
 # Design: Embed Vision Progress — Per-Page Feedback & Post-File Summary
 
 **Date:** 2026-04-06  

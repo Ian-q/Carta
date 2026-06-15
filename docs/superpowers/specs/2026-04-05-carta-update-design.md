@@ -1,3 +1,12 @@
+---
+id: 2026-04-05-carta-update-design
+title: "Carta Update — Design Spec"
+status: shipped
+related:
+  - 2026-04-05-carta-update
+date: 2026-04-05
+---
+
 # Carta Update — Design Spec
 
 **Date:** 2026-04-05  

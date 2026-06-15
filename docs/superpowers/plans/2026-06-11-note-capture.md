@@ -1,3 +1,12 @@
+---
+id: 2026-06-11-note-capture
+title: "Note Capture (Quirks & Notes, v0.10.0) Implementation Plan"
+status: shipped
+related:
+  - 2026-06-10-note-capture-design
+date: 2026-06-11
+---
+
 # Note Capture (Quirks & Notes, v0.10.0) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

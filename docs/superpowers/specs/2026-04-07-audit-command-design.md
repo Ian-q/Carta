@@ -1,7 +1,10 @@
 ---
-title: Audit Command & Skill Design
+id: 2026-04-07-audit-command-design
+title: "Audit Command & Skill Design"
+status: shipped
+related:
+  - 2026-04-07-audit-command-implementation
 date: 2026-04-07
-status: approved
 ---
 
 # Audit Command & Skill Design

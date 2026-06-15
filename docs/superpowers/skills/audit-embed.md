@@ -1,6 +1,11 @@
 ---
-name: audit-embed
-description: Run and interpret Carta audit reports for embed pipeline consistency
+id: audit-embed
+title: "Carta audit and embed"
+status: shipped
+related: []
+date: 2026-04-07
+name: "audit-embed"
+description: "Run and interpret Carta audit reports for embed pipeline consistency"
 ---
 
 # Carta audit and embed

@@ -1,6 +1,11 @@
 ---
-name: carta-workflow
-description: General Carta workflow — scan, embed, search, and session memory
+id: carta-workflow
+title: "Carta workflow"
+status: shipped
+related: []
+date: 2026-04-07
+name: "carta-workflow"
+description: "General Carta workflow — scan, embed, search, and session memory"
 ---
 
 # Carta workflow

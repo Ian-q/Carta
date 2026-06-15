@@ -1,3 +1,12 @@
+---
+id: 2026-06-10-graph-aware-retrieval-design
+title: "Design — Graph-aware retrieval (`related:` 1-hop expansion)"
+status: shipped
+related:
+  - 2026-06-10-graph-aware-retrieval
+date: 2026-06-10
+---
+
 # Design — Graph-aware retrieval (`related:` 1-hop expansion)
 
 **Date:** 2026-06-10 · **Status:** approved (brainstorm) · **Target:** carta-cc (next minor, 0.9.0) · **Phase:** 2 of 3 (follows the LLM reranker, [2026-06-09-llm-reranker-design.md](2026-06-09-llm-reranker-design.md))

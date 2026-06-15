@@ -1,3 +1,11 @@
+---
+id: 2026-06-08-carta-share-export-import-design
+title: "Carta `share` — Export / Import of Embeddings"
+status: shipped
+related: []
+date: 2026-06-08
+---
+
 # Carta `share` — Export / Import of Embeddings
 
 **Date:** 2026-06-08
