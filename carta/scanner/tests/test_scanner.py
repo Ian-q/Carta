@@ -65,6 +65,21 @@ def test_parse_frontmatter_no_frontmatter(tmp_path):
     assert parse_frontmatter(doc) is None
 
 
+def test_parse_frontmatter_tolerates_non_utf8(tmp_path):
+    """A non-UTF8 byte must not crash parse_frontmatter — it is called unguarded in
+    a tight loop over every doc during scan + graph build (audit Group C: CA-22)."""
+    md = tmp_path / "bad.md"
+    md.write_bytes(b"---\ntitle: x\n---\n\nbody \xff\xfe end\n")  # invalid utf-8 in body
+    assert parse_frontmatter(md) == {"title": "x"}  # must not raise
+
+
+def test_parse_frontmatter_strips_utf8_bom(tmp_path):
+    """A UTF-8 BOM must not defeat the leading '---' frontmatter check."""
+    md = tmp_path / "bom.md"
+    md.write_bytes("﻿---\ntitle: y\n---\n\nbody\n".encode("utf-8"))
+    assert parse_frontmatter(md) == {"title": "y"}
+
+
 def test_parse_frontmatter_empty_related(tmp_path):
     doc = write_doc(tmp_path, "test.md", """\
         ---

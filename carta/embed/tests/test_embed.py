@@ -628,6 +628,31 @@ def test_run_embed_qdrant_unreachable(mock_qdrant_cls, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# parse.py — encoding robustness (audit Group C: CA-13, BOM)
+# ---------------------------------------------------------------------------
+
+def test_extract_markdown_text_handles_utf8_bom(tmp_path):
+    """A UTF-8 BOM must not defeat frontmatter detection or leak YAML into the body."""
+    from carta.embed.parse import extract_markdown_text
+    md = tmp_path / "doc.md"
+    md.write_bytes("﻿---\ntitle: Hello\n---\n\n# Body\n\nsome text".encode("utf-8"))
+    sections, fm = extract_markdown_text(md)
+    assert fm.get("title") == "Hello"
+    body = " ".join(s["text"] for s in sections)
+    assert "title: Hello" not in body  # frontmatter stripped, not embedded as body
+
+
+def test_extract_markdown_text_tolerates_non_utf8_bytes(tmp_path):
+    """A stray non-UTF8 byte must not crash extraction (else the file is silently
+    dropped from the index with no bookkeeping)."""
+    from carta.embed.parse import extract_markdown_text
+    md = tmp_path / "doc.md"
+    md.write_bytes(b"# Title\n\ncaf\xe9 not utf8 here\n")  # 0xe9 = latin-1 'e-acute'
+    sections, _fm = extract_markdown_text(md)  # must not raise
+    assert sections, "should still produce content rather than dropping the file"
+
+
+# ---------------------------------------------------------------------------
 # pipeline.py — honest embed success accounting (audit Group A: CA-1/4/6/7)
 # ---------------------------------------------------------------------------
 

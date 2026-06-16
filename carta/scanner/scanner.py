@@ -16,7 +16,13 @@ import yaml
 
 def parse_frontmatter(doc_path: Path) -> Optional[dict]:
     """Return parsed YAML frontmatter dict, or None if none present."""
-    text = doc_path.read_text(encoding="utf-8")
+    try:
+        # utf-8-sig strips a BOM (which would defeat the leading '---' check);
+        # errors="replace" stops a stray non-UTF8 byte from crashing the whole
+        # scan + graph build, which call this unguarded over every doc.
+        text = doc_path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)
