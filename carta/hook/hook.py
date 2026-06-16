@@ -157,45 +157,23 @@ def _extract_query(prompt: str, cfg: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
-    """Call Ollama to judge whether the documentation candidates are relevant.
+    """Judge whether the documentation candidates are relevant. Returns True only
+    on a 'yes'; any error or non-yes answer returns False (fail-open)."""
+    from carta.hook.judge import ollama_yesno
 
-    Returns True if the model answers with 'yes' (case-insensitive prefix match).
-    Returns False on any error or non-yes response.
-    """
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["proactive_recall"]["ollama_model"]
-
     excerpts = "\n---\n".join(h["excerpt"][:200] for h in hits)
     user_msg = (
         f"Prompt: {prompt[:300]}\n\n"
         f"Documentation candidates:\n{excerpts}\n\n"
         f"Are any of these relevant?"
     )
-
-    try:
-        resp = requests.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You decide if documentation is relevant to a coding prompt. "
-                            "Answer only 'yes' or 'no'."
-                        ),
-                    },
-                    {"role": "user", "content": user_msg},
-                ],
-                "stream": False,
-            },
-            timeout=4,
-        )
-        answer = resp.json()["message"]["content"].strip().lower()
-        return answer.startswith("yes")
-    except Exception as e:
-        print(f"carta-hook: judge error (fail-open): {e}", file=sys.stderr)
-        return False
+    system = (
+        "You decide if documentation is relevant to a coding prompt. "
+        "Answer only 'yes' or 'no'."
+    )
+    return bool(ollama_yesno(ollama_url, model, system, user_msg, timeout_s=4))
 
 
 def _judge_with_timeout(
