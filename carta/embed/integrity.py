@@ -11,7 +11,7 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 
-from carta.config import collection_name
+from carta.config import collection_name, collection_for_doc_type
 from carta.embed.lifecycle import compute_file_hash
 from carta.embed.induct import iter_canonical_sidecars
 
@@ -101,6 +101,15 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         if fp and not (repo_root / fp).exists()
     )
 
+    # _notes collection tallies (CA-15): note doc_types (quirk/bug-note/helpful-note)
+    # route to {project}_notes via collection_for_doc_type, NOT _doc. Counting their
+    # sidecar chunk_count against _doc made every embedded note a false count-mismatch.
+    notes_coll = collection_name(cfg, "notes")
+    notes_per_file_counts: dict[str, int] = defaultdict(int)
+    if notes_coll != coll and client.collection_exists(notes_coll):
+        for payload in _scroll_all(client, notes_coll):
+            notes_per_file_counts[payload.get("file_path", "")] += 1
+
     # Sidecar-side checks. iter_canonical_sidecars skips corrupt/non-dict
     # sidecars, those without a current_path, and misplaced/nested junk copies
     # (e.g. an accidental .carta/sidecars/.worktrees/.../.carta/sidecars/... tree)
@@ -113,10 +122,18 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         rel = sc["current_path"]
 
         status = sc.get("status")
+        # Route the count comparison to the collection this sidecar's doc_type
+        # actually lands in (notes -> _notes, everything else -> _doc), so notes
+        # are not falsely flagged as "sidecar N vs qdrant 0" (CA-15).
+        routed_counts = (
+            notes_per_file_counts
+            if collection_for_doc_type(cfg, sc.get("doc_type", "unknown")) == notes_coll
+            else per_file_counts
+        )
         # Missing entry means ZERO surviving points — a fully-lost file
         # (e.g. every chunk shadowed by a legacy ID collision) is the
         # strongest mismatch of all, not an exemption.
-        qdrant_count = per_file_counts.get(rel, 0)
+        qdrant_count = routed_counts.get(rel, 0)
         sidecar_count = sc.get("chunk_count")
 
         # Stuck-stale: status is "stale" but file hash matches disk — a bug

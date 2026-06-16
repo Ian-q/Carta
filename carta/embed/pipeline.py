@@ -28,6 +28,7 @@ from carta.embed.embed import (
     _point_id_versioned,
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
+    UPSERT_CLIENT_TIMEOUT_S,
 )
 from carta.embed.sparse import embed_sparse_query
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars
@@ -157,7 +158,11 @@ def _update_sidecar(sidecar_path: Path, updates: dict) -> None:
 
 
 def discover_pending_files(repo_root: Path) -> list[dict]:
-    """Find all sidecars under .carta/sidecars/ with status: pending.
+    """Find all sidecars under .carta/sidecars/ awaiting (re-)embedding.
+
+    Picks the re-pickable statuses: ``pending`` (never embedded) plus
+    ``embed_failed`` and ``partial`` — a transient embed failure or a partial
+    upsert must be retried on the next run, not silently stranded as if done.
 
     Returns list of dicts: sidecar data + 'sidecar_path' + 'file_path'.
     """
@@ -167,7 +172,7 @@ def discover_pending_files(repo_root: Path) -> list[dict]:
         return results
     for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
         data = read_sidecar(sc_path)
-        if data is None or data.get("status") != "pending":
+        if data is None or data.get("status") not in ("pending", "embed_failed", "partial"):
             continue
         current_path = data.get("current_path")
         if not current_path:
@@ -657,6 +662,20 @@ def _embed_one_file(
             flush=True,
         )
 
+    # Honest success accounting: if text/image chunks were attempted but not all
+    # persisted, do NOT report a clean "embedded". Downgrade to a re-pickable
+    # status so discovery retries the file and the summary/operator see the gap.
+    # Files whose pages are queued for the visual/OCR drain are not failures —
+    # their text legitimately lands in pass 2 — so they are excluded here.
+    visual_pending = bool(_visual_queue_updates.get(VISUAL_PENDING_KEY))
+    attempted = expected_text + expected_images
+    persisted = count + image_chunk_count
+    if sidecar_updates.get("status") == "embedded" and attempted > 0 and not visual_pending:
+        if persisted == 0:
+            sidecar_updates["status"] = "embed_failed"
+        elif persisted < attempted:
+            sidecar_updates["status"] = "partial"
+
     return count + image_chunk_count, sidecar_updates
 
 
@@ -1008,7 +1027,7 @@ def run_visual_embed(
         summary["status"] = "visual_unavailable"
         return summary
 
-    client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
     queued = _discover_visual_pending(repo_root)
     summary["files"] = len(queued)
     total_pages = sum(len(sc.get(VISUAL_PENDING_KEY, []) or []) for _, sc in queued)
@@ -1233,7 +1252,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
 
     # Mark chunks as stale in Qdrant (with migration boundary guard)
     if sidecar_data.get("sidecar_id"):
-        client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+        client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
         mark_sidecar_stale(client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now)
 
     # Proceed with re-embedding
@@ -1245,7 +1264,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         "generation": new_generation,
     }
 
-    client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
     ensure_collection(client, collection_name(cfg, "doc"))
 
     chunking = cfg.get("embed", {}).get("chunking", {})
@@ -1276,10 +1295,16 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
     Returns:
         {"embedded": int, "skipped": int, "extraction_failed": int,
+         "failed": list[str], "partial": list[str],
          "errors": list[str], "timed_out": list[str]}
+
+    "failed"/"partial" hold the names of files whose chunks did not fully persist
+    (transient Ollama/Qdrant errors). Their sidecars keep a re-pickable status so
+    discover_pending_files retries them on the next run — they are never counted
+    as "embedded".
     """
     summary: dict = {"embedded": 0, "skipped": 0, "extraction_failed": 0,
-                     "errors": [], "timed_out": []}
+                     "failed": [], "partial": [], "errors": [], "timed_out": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
     migrate_sidecars(repo_root, verbose=verbose)
@@ -1288,8 +1313,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     if verbose:
         print("carta embed: checking Qdrant connectivity...", flush=True)
     try:
-        client = QdrantClient(url=cfg["qdrant_url"], timeout=5)
-        client.get_collections()
+        QdrantClient(url=cfg["qdrant_url"], timeout=5).get_collections()
     except Exception as e:
         err = (
             f"carta embed: ERROR — Qdrant is not reachable at {cfg['qdrant_url']}.\n"
@@ -1299,6 +1323,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
         print(err, file=sys.stderr, flush=True)
         summary["errors"].append(err)
         return summary
+
+    # Working client for the embed loop: a longer timeout than the fail-fast
+    # preflight above so bulk dense+sparse upserts don't spuriously time out
+    # (and silently drop a batch) when Qdrant is briefly busy under a large re-embed.
+    client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
 
     coll_name = collection_name(cfg, "doc")
     ensure_collection(client, coll_name)
@@ -1398,7 +1427,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 target=_worker, daemon=True, name=f"carta-embed-{file_path.name}"
             )
             worker.start()
-            worker.join(timeout=file_timeout_s)
+            # file_timeout_s <= 0 means UNBOUNDED (matches visual_timeout_s "0 =
+            # unbounded"). A literal join(0) returns instantly and flags every file
+            # as TIMEOUT — embedding nothing while still exiting 0 (audit CA-3).
+            join_timeout = file_timeout_s if (file_timeout_s and file_timeout_s > 0) else None
+            worker.join(timeout=join_timeout)
             elapsed = time.monotonic() - t0
 
             if worker.is_alive():
@@ -1449,16 +1482,28 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                         progress.vision_done(vision_events)
                 elif verbose:
                     print(f"  [{idx}/{total}] OK: {file_path.name} — {count} chunk(s) in {elapsed:.1f}s", flush=True)
-                if sidecar_updates.get("status") == "extraction_failed":
+                st = sidecar_updates.get("status")
+                if st == "embed_failed":
+                    summary["failed"].append(file_path.name)
+                    perf_status = "failed"
+                    status.file_done(errors=1)
+                elif st == "partial":
+                    summary["partial"].append(file_path.name)
+                    perf_status = "partial"
+                    status.file_done(errors=1)
+                elif st == "extraction_failed":
                     summary["extraction_failed"] += 1
+                    perf_status = "ok"
+                    status.file_done(embedded=1, chunks=count)
                 else:
                     summary["embedded"] += 1
+                    perf_status = "ok"
+                    status.file_done(embedded=1, chunks=count)
                 _write_perf_log_entry(perf_log_path, {
-                    **perf_context, "file": rel_file, "status": "ok",
+                    **perf_context, "file": rel_file, "status": perf_status,
                     "chunks": count, "elapsed_s": round(elapsed, 2),
                     "vision_strategies": _summarize_vision_strategies(vision_events),
                 })
-                status.file_done(embedded=1, chunks=count)
     except BaseException:
         status.finish("failed")
         raise
@@ -1644,7 +1689,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     from pathlib import Path
 
     top_n = cfg.get("search", {}).get("top_n", 5)
-    repo_root = Path(find_config()).parent
+    # find_config() returns <repo>/.carta/config.yaml; the repo root is its
+    # GRANDPARENT. (.parent alone is the .carta dir, which holds no project docs —
+    # that made graph expansion a silent no-op, audit CA-23.)
+    repo_root = Path(find_config()).parent.parent
 
     # Compute effective retrieval depth.
     # When reranking is enabled, fetch candidate_pool docs per collection so

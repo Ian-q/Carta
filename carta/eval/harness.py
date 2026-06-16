@@ -28,8 +28,18 @@ class EvalQuery:
 def load_eval_set(path: Path) -> list[EvalQuery]:
     data = yaml.safe_load(Path(path).read_text()) or {}
     out: list[EvalQuery] = []
-    for row in data.get("queries", []):
-        out.append(EvalQuery(q=str(row["q"]), expect=[str(e) for e in row.get("expect", [])]))
+    for i, row in enumerate(data.get("queries", [])):
+        # Drop blank expectations: an empty string is a substring of every file_path
+        # (guaranteed HIT) and an empty list is a guaranteed MISS — both silently
+        # corrupt recall/MRR (audit CA-26). A query with no usable expectation can
+        # never be scored meaningfully, so fail loudly rather than fake a number.
+        expect = [s for e in row.get("expect", []) if (s := str(e).strip())]
+        if not expect:
+            raise ValueError(
+                f"eval query #{i + 1} ({row.get('q', '?')!r}) has no usable 'expect' "
+                f"entries after dropping blanks — it can never be scored meaningfully."
+            )
+        out.append(EvalQuery(q=str(row["q"]), expect=expect))
     return out
 
 

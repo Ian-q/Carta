@@ -95,58 +95,9 @@ def _notify_if_update(cfg_path=None, cfg=None):
         pass
 
 
-def _embed_lock_read_pid(lock_path: Path):
-    try:
-        return int(lock_path.read_text().strip())
-    except (ValueError, OSError):
-        return None
-
-
-def _embed_lock_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    else:
-        return True
-
-
-def _acquire_embed_lock(lock_path: Path) -> None:
-    """Ensure only one live embed process; create lock atomically; remove stale locks."""
-    while True:
-        if not lock_path.exists():
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-                with os.fdopen(fd, "w") as f:
-                    f.write(str(os.getpid()))
-                return
-            except FileExistsError:
-                continue
-
-        existing_pid = _embed_lock_read_pid(lock_path)
-        if existing_pid is None or existing_pid <= 0:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            continue
-
-        if _embed_lock_pid_alive(existing_pid):
-            print(
-                f"carta embed is already running (PID: {existing_pid}). "
-                "Wait for it to finish or remove .carta/embed.lock if it is stale.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+# The single-writer embed lock lives in carta.embed.lock so the CLI and the MCP
+# carta_embed tool share one lock per project — exactly one writer per project so
+# concurrent runs cannot delete each other's just-written points (audit CA-2/5/12).
 
 
 def cmd_scan(args):
@@ -179,6 +130,7 @@ def cmd_scan(args):
 def cmd_embed(args):
     from carta.config import load_config
     from carta.embed.pipeline import run_embed, run_embed_file
+    from carta.embed.lock import acquire as _acquire_embed_lock, EmbedLockHeld
     from carta.ui import Progress
     import time
 
@@ -199,6 +151,37 @@ def cmd_embed(args):
     timeout_override = getattr(args, "timeout", None)
     if timeout_override is not None:
         cfg.setdefault("embed", {})["file_timeout_s"] = timeout_override
+
+    # Single-writer lock for ALL mutating embed paths — full pipeline, --repair,
+    # --visual, and targeted --files. Previously only the full-pipeline branch
+    # locked, so a --repair / --visual / --files run (or a concurrent MCP
+    # carta_embed) could race its cleanup-delete against another writer and drop
+    # freshly-written points (audit CA-2/5/12).
+    lock_path = cfg_path.parent / "embed.lock"
+    try:
+        _acquire_embed_lock(lock_path)
+    except EmbedLockHeld as e:
+        print(
+            f"carta embed is already running (PID: {e.pid}). Wait for it to finish "
+            f"or remove .carta/embed.lock if it is stale.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    def _remove_lock():
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    atexit.register(_remove_lock)
+
+    def _signal_handler(signum, frame):
+        _remove_lock()
+        sys.exit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(_sig, _signal_handler)
 
     # --repair: detect and fix corpus-integrity issues, then exit.
     # `is True` (not `if args.repair`) — rejects truthy MagicMocks in tests.
@@ -257,25 +240,7 @@ def cmd_embed(args):
         _notify_if_update(cfg_path, cfg)
         sys.exit(1 if errors else 0)
 
-    # FT-5: Concurrency lock — only one embed process at a time (atomic create + stale PID).
-    lock_path = cfg_path.parent / "embed.lock"
-    _acquire_embed_lock(lock_path)
-
-    def _remove_lock():
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    atexit.register(_remove_lock)
-
-    def _signal_handler(signum, frame):
-        _remove_lock()
-        sys.exit(128 + signum)
-
-    for _sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(_sig, _signal_handler)
-
+    # Lock already acquired at the top of cmd_embed (covers all mutating branches).
     repo_root = cfg_path.parent.parent
 
     with Progress() as progress:
@@ -302,8 +267,19 @@ def cmd_embed(args):
             f"Re-run with --timeout {suggested} to give them more time.",
             file=sys.stderr,
         )
+    failed = summary.get("failed", [])
+    partial = summary.get("partial", [])
+    if failed or partial:
+        print(
+            f"\nWarning: {len(failed)} file(s) failed to embed and {len(partial)} "
+            f"only partially embedded (transient Ollama/Qdrant errors?). They were NOT "
+            f"marked done — re-run `carta embed` to retry them.",
+            file=sys.stderr,
+        )
     _notify_if_update(cfg_path, cfg)
-    if summary["errors"]:
+    # Exit non-zero on errors OR incomplete embeds so a bulk re-embed can never
+    # report false-green when files silently failed/partially embedded.
+    if summary["errors"] or failed or partial:
         sys.exit(1)
 
 def cmd_search(args):
@@ -648,6 +624,17 @@ def cmd_eval(args):
     print(f"queries={metrics['n_queries']}  recall@{k}={metrics['recall_at_k']:.3f}  MRR={metrics['mrr']:.3f}")
     if rerank_requested:
         print(f"rerank: applied on {rerank_applied_count}/{query_count} queries")
+        # Partial fail-open: a 0.8B reranker degrading on N/Q queries still prints a
+        # mostly-reranked score that an operator may trust for a go/no-go call. Make
+        # the partial case a loud stderr warning so it can't be mistaken for clean
+        # (the total-fail-open case below hard-fails) — audit CA-20.
+        if query_count and 0 < rerank_applied_count < query_count:
+            print(
+                f"Warning: reranker failed open on {query_count - rerank_applied_count}/"
+                f"{query_count} queries — these are PARTIALLY reranked numbers, not a "
+                f"clean reranked run; treat the score with caution.",
+                file=sys.stderr,
+            )
     else:
         print("rerank: not requested")
     for row in metrics["per_query"]:
@@ -902,7 +889,7 @@ def main():
     embed_p.add_argument(
         "files",
         nargs="*",
-        help="Specific file(s) to embed immediately (skips full pipeline and lock)",
+        help="Specific file(s) to embed immediately (skips the discovery scan)",
     )
     embed_p.add_argument(
         "--timeout",

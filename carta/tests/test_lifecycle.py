@@ -325,3 +325,19 @@ class TestDeleteOtherPoints:
         client = MagicMock()
         delete_other_points(client, "proj_doc", "x.md", keep_ids=[])
         client.delete.assert_called_once()
+
+    def test_retries_transient_delete_error(self):
+        """A transient delete failure must be retried — else old-generation points
+        survive and resurface in search until `carta embed --repair` (audit CA-14)."""
+        client = MagicMock()
+        calls = {"n": 0}
+
+        def flaky(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient 503")
+            return None
+
+        client.delete.side_effect = flaky
+        delete_other_points(client, "proj_doc", "x.md", keep_ids=["id-x"])  # no raise
+        assert calls["n"] >= 2

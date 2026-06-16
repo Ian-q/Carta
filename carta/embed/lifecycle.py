@@ -168,6 +168,13 @@ def is_protected_doc_type(doc_type: str) -> bool:
     return doc_type in PROTECTED_DOC_TYPES
 
 
+# Retry stale-point cleanup this many times before giving up. Cleanup is the sole
+# mechanism that removes superseded generations (search applies no generation
+# filter), so a transient failure that goes un-retried leaves old chunks
+# permanently searchable until `carta embed --repair`.
+DELETE_MAX_ATTEMPTS = 3
+
+
 def delete_other_points(
     client, collection_name: str, rel_path: str, keep_ids: list[str]
 ) -> None:
@@ -176,17 +183,26 @@ def delete_other_points(
     Runs after a successful, complete upsert. Catches everything the
     generation arithmetic missed: legacy slug-keyed points (different IDs),
     stale generations, and tail chunks of files that shrank — regardless of
-    what doc_generation they carry.  Best-effort: errors are reported but
-    never fail the embed that just succeeded.
+    what doc_generation they carry.  Best-effort: errors are retried then
+    reported, but never fail the embed that just succeeded.
     """
     selector = Filter(
         must=[FieldCondition(key="file_path", match=MatchValue(value=rel_path))],
         must_not=[HasIdCondition(has_id=keep_ids)],
     )
-    try:
-        client.delete(collection_name=collection_name, points_selector=selector)
-    except Exception as e:
-        print(f"Warning: stale-point cleanup failed for {rel_path} — {e}", flush=True)
+    last_exc = None
+    for _attempt in range(DELETE_MAX_ATTEMPTS):
+        try:
+            client.delete(collection_name=collection_name, points_selector=selector)
+            return
+        except Exception as e:  # transient 5xx / timeout / connection reset
+            last_exc = e
+    print(
+        f"Warning: stale-point cleanup FAILED for {rel_path} after "
+        f"{DELETE_MAX_ATTEMPTS} attempts — old chunks may resurface in search "
+        f"until `carta embed --repair`: {last_exc}",
+        flush=True,
+    )
 
 
 def check_stale_alert(stale_count: int, total_count: int, threshold: float) -> str | None:

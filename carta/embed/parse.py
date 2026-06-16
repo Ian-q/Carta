@@ -174,7 +174,10 @@ def extract_markdown_text(md_path: Path) -> tuple[list[dict], dict]:
     Returns:
         Tuple of (sections, frontmatter_meta dict).
     """
-    return sections_from_markdown(md_path.read_text(encoding="utf-8"))
+    # utf-8-sig strips a leading BOM (which would otherwise defeat frontmatter
+    # detection and the H1 title scan); errors="replace" keeps a stray non-UTF8
+    # byte from raising and silently dropping the whole file from the index.
+    return sections_from_markdown(md_path.read_text(encoding="utf-8-sig", errors="replace"))
 
 
 def _estimate_tokens(text: str) -> int:
