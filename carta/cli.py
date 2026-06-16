@@ -856,8 +856,12 @@ def cmd_hook(args):
         if not scfg.get("enabled", True):
             sys.exit(0)
         stage = args.stage
+        diff = getattr(args, "diff", None)
         try:
-            if stage == "pre-commit":
+            if diff is not None:
+                range_spec = diff or f"{stale_scan._default_branch(repo_root)}...HEAD"
+                docs = stale_scan.collect_range(repo_root, cfg, range_spec)
+            elif stage == "pre-commit":
                 docs = stale_scan.collect_staged(repo_root, cfg)
             else:
                 stdin_lines = [] if sys.stdin.isatty() else sys.stdin.read().splitlines()
@@ -873,7 +877,8 @@ def cmd_hook(args):
             print(f"carta stale-scan: scan error (fail-open): {e}", file=sys.stderr)
             sys.exit(0)
         _print_stale_result(result, scfg)
-        if result.findings and scfg.get("block_on_stale", False):
+        fail = getattr(args, "fail_on_stale", False) or scfg.get("block_on_stale", False)
+        if result.findings and fail:
             sys.exit(1)
         sys.exit(0)
 
@@ -1033,6 +1038,15 @@ def main():
     hook_install.add_argument("--uninstall", action="store_true", help="Remove the managed hook")
     hook_check = hook_sub.add_parser("check", help="Run the stale-reference scan (used by the git shim)")
     hook_check.add_argument("--stage", choices=["pre-push", "pre-commit"], default="pre-push")
+    hook_check.add_argument(
+        "--diff", nargs="?", const="", default=None, metavar="RANGE",
+        help="Scan docs changed across a git range instead of staged/pushed "
+             "(bare --diff uses <default-branch>...HEAD)",
+    )
+    hook_check.add_argument(
+        "--fail-on-stale", action="store_true",
+        help="Exit 1 if any stale finding (default: warn-only, exit 0)",
+    )
 
     args = parser.parse_args()
 

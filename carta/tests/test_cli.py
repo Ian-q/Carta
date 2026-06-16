@@ -798,3 +798,100 @@ def test_cmd_hook_install_uses_git_root_not_carta_config(tmp_path):
     finally:
         os.chdir(cwd)
     assert (tmp_path / ".git" / "hooks" / "pre-push").exists()
+
+
+def test_cmd_hook_check_diff_uses_collect_range(tmp_path, monkeypatch, capsys):
+    import carta.cli as cli
+    from carta.hook.stale_scan import StaleFinding, StaleScanResult
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {"hooks": {"stale_scan": {"enabled": True, "block_on_stale": False}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+
+    captured = {}
+    def fake_collect_range(repo_root, c, range_spec):
+        captured["range_spec"] = range_spec
+        return [object()]
+    monkeypatch.setattr("carta.hook.stale_scan.collect_range", fake_collect_range)
+    monkeypatch.setattr("carta.hook.stale_scan.collect_staged", lambda r, c: (_ for _ in ()).throw(AssertionError("collect_staged should not be called")))
+    monkeypatch.setattr("carta.hook.stale_scan.collect_pushed", lambda r, c, s: (_ for _ in ()).throw(AssertionError("collect_pushed should not be called")))
+    result = StaleScanResult(findings=[StaleFinding("docs/a.md", "## A", "snip", "docs/b.md", 0.9)], scanned=1)
+    monkeypatch.setattr("carta.hook.stale_scan.run_stale_scan", lambda r, c, d: result)
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-push",
+                          "diff": "origin/main...HEAD", "fail_on_stale": False})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 0
+    assert captured["range_spec"] == "origin/main...HEAD"
+    assert "may be stale" in capsys.readouterr().err
+
+
+def test_cmd_hook_check_diff_default_range(tmp_path, monkeypatch):
+    import carta.cli as cli
+    from carta.hook.stale_scan import StaleScanResult
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {"hooks": {"stale_scan": {"enabled": True, "block_on_stale": False}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+
+    captured = {}
+    def fake_collect_range(repo_root, c, range_spec):
+        captured["range_spec"] = range_spec
+        return [object()]
+    monkeypatch.setattr("carta.hook.stale_scan.collect_range", fake_collect_range)
+    monkeypatch.setattr("carta.hook.stale_scan.run_stale_scan", lambda r, c, d: StaleScanResult(scanned=1))
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-push",
+                          "diff": "", "fail_on_stale": False})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 0
+    assert captured["range_spec"] == "main...HEAD"
+
+
+def test_cmd_hook_check_diff_fail_on_stale_exits_one(tmp_path, monkeypatch):
+    import carta.cli as cli
+    from carta.hook.stale_scan import StaleFinding, StaleScanResult
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {"hooks": {"stale_scan": {"enabled": True, "block_on_stale": False}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+    monkeypatch.setattr("carta.hook.stale_scan.collect_range", lambda r, c, rng: [object()])
+    result = StaleScanResult(findings=[StaleFinding("docs/a.md", "## A", "s", "docs/b.md", 0.9)], scanned=1)
+    monkeypatch.setattr("carta.hook.stale_scan.run_stale_scan", lambda r, c, d: result)
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-push",
+                          "diff": "origin/main...HEAD", "fail_on_stale": True})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 1
+
+
+def test_cmd_hook_check_diff_no_findings_exits_zero(tmp_path, monkeypatch):
+    import carta.cli as cli
+    from carta.hook.stale_scan import StaleScanResult
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {"hooks": {"stale_scan": {"enabled": True, "block_on_stale": False}}}
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: cfg)
+    monkeypatch.setattr("carta.hook.stale_scan.collect_range", lambda r, c, rng: [object()])
+    monkeypatch.setattr("carta.hook.stale_scan.run_stale_scan", lambda r, c, d: StaleScanResult(findings=[], scanned=1))
+
+    args = type("A", (), {"command": "hook", "hook_action": "check", "stage": "pre-push",
+                          "diff": "origin/main...HEAD", "fail_on_stale": True})()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_hook(args)
+    assert exc.value.code == 0
