@@ -49,9 +49,18 @@ def parse_frontmatter(doc_path: Path) -> Optional[dict]:
 # Machine/tooling dirs that are never valid scan targets — excluded regardless
 # of user config, like .git (skipped in _iter_md_files). Existing repos carry a
 # config.yaml whose excluded_paths replaces DEFAULTS wholesale (_deep_merge does
-# not merge lists), so DEFAULTS alone would never reach them. `.claude/worktrees/`
-# holds full-repo worktree copies; `build/` holds packaging mirrors; `temp/` is scratch.
-_ALWAYS_EXCLUDED_DIRS = (".claude/worktrees/", "build/", "temp/")
+# not merge lists), so DEFAULTS alone would never reach them — these must live
+# here to reach existing installs. `.claude/worktrees/` holds full-repo worktree
+# copies; `build/`/`dist/` hold packaging mirrors; `temp/`/`tmp/` are scratch; the
+# rest are vendored deps / virtualenvs / tooling caches whose markdown (READMEs,
+# vendored docs, site-packages) is never project knowledge. Patterns are matched
+# as a path substring (see is_excluded), so envs nested under a subproject — e.g.
+# analysis/**/.pixi/.../site-packages/ — are caught too. All are commonly
+# gitignored yet were still being walked and reported as doc-hygiene issues.
+_ALWAYS_EXCLUDED_DIRS = (
+    ".claude/worktrees/", "build/", "dist/", "temp/", "tmp/",
+    "node_modules/", ".venv/", "venv/", ".pixi/", "site-packages/", ".tox/",
+)
 
 
 def is_excluded(file_path: Path, cfg: dict, repo_root: Path) -> bool:
