@@ -144,7 +144,7 @@ def test_upsert_embeds_header_but_payload_keeps_raw_text():
 
     def fake_dense(text, **kw):
         captured["dense"] = text
-        return [0.0] * 8
+        return [0.0] * 768  # must match VECTOR_DIM (dim is now validated)
 
     def fake_sparse(text, **kw):
         captured["sparse"] = text

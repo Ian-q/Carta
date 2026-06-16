@@ -302,8 +302,19 @@ def cmd_embed(args):
             f"Re-run with --timeout {suggested} to give them more time.",
             file=sys.stderr,
         )
+    failed = summary.get("failed", [])
+    partial = summary.get("partial", [])
+    if failed or partial:
+        print(
+            f"\nWarning: {len(failed)} file(s) failed to embed and {len(partial)} "
+            f"only partially embedded (transient Ollama/Qdrant errors?). They were NOT "
+            f"marked done — re-run `carta embed` to retry them.",
+            file=sys.stderr,
+        )
     _notify_if_update(cfg_path, cfg)
-    if summary["errors"]:
+    # Exit non-zero on errors OR incomplete embeds so a bulk re-embed can never
+    # report false-green when files silently failed/partially embedded.
+    if summary["errors"] or failed or partial:
         sys.exit(1)
 
 def cmd_search(args):
