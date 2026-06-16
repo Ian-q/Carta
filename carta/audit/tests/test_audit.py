@@ -141,6 +141,19 @@ class TestBuildQdrantChunkIndex:
         assert len(index) == 1
         assert "sidecar_1" in index
 
+    def test_paginates_past_first_batch_via_cursor(self):
+        """Audit must scroll ALL points via the returned cursor, not cap at the first
+        batch (offset was len(points), wrong for UUID-keyed points) — audit CA-17."""
+        mock_client = Mock()
+        page1 = [Mock(id="s1-0", payload={"sidecar_id": "s1", "chunk_index": 0})]
+        page2 = [Mock(id="s2-0", payload={"sidecar_id": "s2", "chunk_index": 0})]
+        mock_client.scroll.side_effect = [(page1, "cursor"), (page2, None)]
+
+        index = _build_qdrant_chunk_index(mock_client, "test_doc")
+
+        assert "s1" in index
+        assert "s2" in index  # second page must be fetched via the returned cursor
+
 
 class TestDetectOrphanedChunks:
     """Test detection of orphaned chunks."""

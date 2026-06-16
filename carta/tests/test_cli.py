@@ -259,6 +259,15 @@ class TestCmdEvalRerankAssertion:
         assert code is None
         assert "rerank: applied on 1/2 queries" in captured.out
 
+    def test_partial_applied_warns_on_stderr(self, tmp_path, capsys):
+        """Partial reranker fail-open must surface a loud stderr warning so a
+        partially-reranked score can't be mistaken for a clean run (audit CA-20)."""
+        code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[True, False])
+        captured = capsys.readouterr()
+        assert code is None  # still passes (don't change go/no-go), but it warns
+        err = captured.err.lower()
+        assert "partial" in err or "failed open" in err
+
     def test_all_applied_reports_count(self, tmp_path, capsys):
         code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[True, True])
         captured = capsys.readouterr()
@@ -895,3 +904,31 @@ def test_cmd_hook_check_diff_no_findings_exits_zero(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.cmd_hook(args)
     assert exc.value.code == 0
+
+
+def test_cmd_embed_exits_nonzero_on_failed_or_partial(tmp_path):
+    """A bulk embed that reports failed/partial files must warn and exit non-zero
+    so an ET-embed run can never report false-green (audit CA-1/4/7)."""
+    from unittest.mock import patch
+    from carta import cli
+
+    cfg_file = tmp_path / ".carta" / "config.yaml"
+    cfg_file.parent.mkdir()
+    cfg_file.write_text("project_name: test\nqdrant_url: http://localhost:6333\n")
+
+    cfg = {"project_name": "test", "qdrant_url": "http://localhost:6333",
+           "modules": {"doc_embed": True}, "embed": {}}
+    summary = {"embedded": 2, "skipped": 0, "extraction_failed": 0,
+               "failed": ["bad.md"], "partial": [], "errors": [], "timed_out": []}
+    args = type("A", (), {"repair": False, "visual": False, "files": None,
+                          "timeout": None, "no_tune": True})()
+
+    with patch("carta.cli.find_config", return_value=cfg_file), \
+         patch("carta.config.load_config", return_value=cfg), \
+         patch("carta.registry.register_project"), \
+         patch("carta.cli._maybe_tune_workers", side_effect=lambda c, skip=False: c), \
+         patch("carta.embed.pipeline.run_embed", return_value=summary), \
+         patch("carta.cli._notify_if_update"):
+        with pytest.raises(SystemExit) as exc:
+            cli.cmd_embed(args)
+    assert exc.value.code == 1

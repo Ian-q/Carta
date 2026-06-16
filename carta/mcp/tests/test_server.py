@@ -692,3 +692,24 @@ def test_load_image_as_base64_returns_empty_on_missing_file():
     from carta.mcp.server import _load_image_as_base64
     result = _load_image_as_base64(Path("/nonexistent/path.png"))
     assert result == ""
+
+
+def test_carta_embed_returns_busy_when_lock_held(tmp_path):
+    """carta_embed must refuse with a busy error (not race the cleanup-delete) when
+    another live writer holds the embed lock — e.g. a CLI ET-embed (audit CA-5/12)."""
+    import os
+    from unittest.mock import patch
+    server = _get_server_module()
+
+    # Lock held by THIS (live) process.
+    lock = tmp_path / ".carta" / "embed.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(str(os.getpid()))
+
+    with patch.object(server, "_load_cfg", return_value=_TEST_CFG), \
+         patch.object(server, "_repo_root_from_cfg", return_value=tmp_path), \
+         patch.object(server, "run_embed") as mock_run_embed:
+        result = server.carta_embed("all")
+
+    assert result.get("error") == "busy"
+    mock_run_embed.assert_not_called()  # must NOT write while another holds the lock

@@ -525,9 +525,12 @@ class TestVisionIntegration:
 
         with patch("carta.embed.pipeline.QdrantClient") as mock_client_cls:
             with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Text content"}]):
-                with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1}]):
+                with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1, "chunk_index": 0}]):
                     with patch("carta.vision.router.extract_image_descriptions_intelligent") as mock_vision:
-                        with patch("carta.embed.pipeline.upsert_chunks", return_value=0):
+                        # 1 text chunk persisted (chunk_text yields 1) so text embedding
+                        # genuinely succeeds — the point of this test is vision fail-open,
+                        # not a persistence failure (which is now its own status).
+                        with patch("carta.embed.pipeline.upsert_chunks", return_value=1):
                             with patch("carta.embed.pipeline.write_sidecar"):
                                 # Vision model unavailable: returns empty (fail-open)
                                 mock_vision.return_value = []
@@ -1175,3 +1178,34 @@ class TestRunEmbedExtractionFailedSummary:
 
         assert summary["extraction_failed"] == 1
         assert summary["embedded"] == 0
+
+
+def test_run_search_passes_repo_root_not_dotcarta_to_graph_expansion(tmp_path):
+    """run_search must compute repo_root as the dir CONTAINING .carta (parent.parent
+    of the config), not the .carta dir itself — else graph expansion globs an empty
+    .carta dir and silently promotes nothing (audit CA-23)."""
+    from unittest.mock import patch, MagicMock
+    from carta.embed import pipeline
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {
+        "project_name": "t", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "u", "ollama_model": "m"},
+        "search": {"top_n": 5, "graph": {"enabled": True}},
+    }
+
+    captured = {}
+
+    def fake_graph(results, cfg_, repo_root):
+        captured["repo_root"] = repo_root
+        return results
+
+    with patch("carta.embed.pipeline.find_config", return_value=str(cfg_path)), \
+         patch("carta.embed.pipeline.QdrantClient", return_value=MagicMock()), \
+         patch("carta.search.scoped.get_search_collections", return_value=[]), \
+         patch("carta.embed.pipeline._apply_graph_expansion", side_effect=fake_graph):
+        pipeline.run_search("q", cfg)
+
+    assert captured["repo_root"] == tmp_path  # repo root, NOT tmp_path/.carta

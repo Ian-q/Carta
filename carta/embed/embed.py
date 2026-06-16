@@ -46,6 +46,22 @@ BATCH_SIZE = 32
 # Reduce batch size to stay under Qdrant's 32MB payload limit
 VISUAL_BATCH_SIZE = 4
 
+# Write-path Qdrant client timeout (s). The bulk re-embed upserts dense+sparse
+# batches; the old 5s default could time out under load and silently drop a whole
+# batch of already-embedded chunks. Reads/diagnostics already use 30s.
+UPSERT_CLIENT_TIMEOUT_S = 30
+# Retry a failed batch upsert this many times before giving up (transient 5xx/reset).
+UPSERT_MAX_ATTEMPTS = 3
+
+
+class EmbedDimError(RuntimeError):
+    """Embedding model returned a vector whose length != VECTOR_DIM.
+
+    A model misconfiguration (e.g. pointing embed.ollama_model at a non-768 model)
+    must fail loudly instead of every batch being rejected by Qdrant and swallowed
+    as a silent zero-vector 'success'.
+    """
+
 
 _CONTEXT_OVERFLOW = "the input length exceeds the context length"
 
@@ -220,7 +236,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
 
     if client is None:
         qdrant_url = cfg["qdrant_url"]
-        client = QdrantClient(url=qdrant_url, timeout=5)
+        client = QdrantClient(url=qdrant_url, timeout=UPSERT_CLIENT_TIMEOUT_S)
     ensure_collection(client, coll_name)
 
     # Determine schema ONCE before the chunk loop so every point in this batch
@@ -228,6 +244,12 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     is_hybrid = collection_is_hybrid(client, coll_name)
 
     def build_point(chunk: dict, vec: list[float]) -> PointStruct:
+        if len(vec) != VECTOR_DIM:
+            raise EmbedDimError(
+                f"Embedding model '{model}' returned dim {len(vec)}, expected "
+                f"{VECTOR_DIM}. The collection schema is fixed at {VECTOR_DIM}-d — "
+                f"reconfigure embed.ollama_model or recreate the collection."
+            )
         # The payload's doc_generation and the generation baked into the point
         # ID must agree — generation cleanup deletes by payload value.
         generation = chunk.get("doc_generation", 1)
@@ -267,12 +289,21 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     def flush(batch: list[PointStruct]) -> int:
         if not batch:
             return 0
-        try:
-            client.upsert(collection_name=coll_name, points=batch)
-            return len(batch)
-        except Exception as e:
-            print(f"Warning: batch upsert failed — {e}", flush=True)
-            return 0
+        last_exc = None
+        for _attempt in range(UPSERT_MAX_ATTEMPTS):
+            try:
+                client.upsert(collection_name=coll_name, points=batch)
+                return len(batch)
+            except Exception as e:  # transient 5xx / timeout / connection reset
+                last_exc = e
+        # All retries exhausted: the batch is lost. The caller's returned count
+        # therefore falls short of the expected chunk count, which _embed_one_file
+        # surfaces as a partial/failed (re-pickable) status — never silent success.
+        print(
+            f"Warning: batch upsert failed after {UPSERT_MAX_ATTEMPTS} attempts — {last_exc}",
+            flush=True,
+        )
+        return 0
 
     upserted = 0
     batch: list[PointStruct] = []
@@ -283,6 +314,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             try:
                 vec = get_embedding(_embed_input(chunk), ollama_url=ollama_url, model=model)
                 batch.append(build_point(chunk, vec))
+            except EmbedDimError:
+                raise  # model/collection dim mismatch — abort loudly, never swallow
             except Exception as e:
                 print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
                 continue
@@ -303,6 +336,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
                 try:
                     vec = fut.result()
                     batch.append(build_point(chunk, vec))
+                except EmbedDimError:
+                    raise  # model/collection dim mismatch — abort loudly, never swallow
                 except Exception as e:
                     print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
                     continue
@@ -373,7 +408,7 @@ def upsert_visual_pages(
 
     if client is None:
         qdrant_url = cfg["qdrant_url"]
-        client = QdrantClient(url=qdrant_url, timeout=5)
+        client = QdrantClient(url=qdrant_url, timeout=UPSERT_CLIENT_TIMEOUT_S)
     ensure_visual_collection(client, coll_name)
 
     upserted = 0

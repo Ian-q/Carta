@@ -169,23 +169,26 @@ def test_bootstrap_continues_when_qdrant_unreachable(tmp_path):
             raise AssertionError(f"bootstrap exited with code {e.code} when Qdrant was unreachable") from e
 
 
-def test_bootstrap_creates_notes_not_quirk(monkeypatch):
-    """Init must create {project}_notes (what routing/search use), not legacy _quirk."""
-    from unittest.mock import MagicMock
+def test_bootstrap_creates_notes_not_quirk():
+    """Init must create {project}_notes (what routing/search use), not legacy _quirk,
+    with the hybrid named-dense + bm25 sparse schema the embed path expects (CA-10)."""
+    from unittest.mock import MagicMock, patch
     from carta.install import bootstrap as bs
 
-    calls = []
-
-    def fake_put(url, json=None, timeout=None):
-        calls.append(url)
-        r = MagicMock()
-        r.status_code = 200
-        return r
-
-    monkeypatch.setattr(bs.requests, "put", fake_put)
-    ok = bs._create_qdrant_collections("p", "http://localhost:6333")
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    # Pin the hybrid path: ensure_collection builds the named dense+bm25 schema only
+    # when fastembed is importable (an optional extra absent from the base CI install).
+    with patch("qdrant_client.QdrantClient", return_value=client), \
+         patch("carta.embed.embed._fastembed_available", return_value=True):
+        ok = bs._create_qdrant_collections("p", "http://localhost:6333")
     assert ok
-    assert any(u.endswith("/collections/p_notes") for u in calls)
-    assert any(u.endswith("/collections/p_doc") for u in calls)
-    assert any(u.endswith("/collections/p_session") for u in calls)
-    assert not any(u.endswith("/collections/p_quirk") for u in calls)
+    created = [c.kwargs["collection_name"] for c in client.create_collection.call_args_list]
+    assert "p_notes" in created
+    assert "p_doc" in created
+    assert "p_session" in created
+    assert "p_quirk" not in created
+    # Hybrid schema: a named 'dense' vector + a 'bm25' sparse vector on each collection.
+    for c in client.create_collection.call_args_list:
+        assert "dense" in c.kwargs["vectors_config"]
+        assert "bm25" in c.kwargs["sparse_vectors_config"]

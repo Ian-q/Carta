@@ -18,6 +18,29 @@ def test_load_eval_set(tmp_path):
                               expect=["serial-bridge", "CLAUDE.md"])
 
 
+def test_load_eval_set_rejects_blank_expectations(tmp_path):
+    """An empty-string expect is a substring of every path (guaranteed HIT) and an
+    empty expect list is a guaranteed MISS — both silently corrupt recall/MRR, so
+    load_eval_set must reject them loudly (audit CA-26)."""
+    import yaml
+    p = tmp_path / "set.yaml"
+    p.write_text(yaml.dump({"queries": [{"q": "x", "expect": [""]}]}))
+    with pytest.raises(ValueError):
+        load_eval_set(p)
+    p.write_text(yaml.dump({"queries": [{"q": "y", "expect": []}]}))
+    with pytest.raises(ValueError):
+        load_eval_set(p)
+
+
+def test_load_eval_set_strips_blank_but_keeps_real_expectations(tmp_path):
+    """A blank entry mixed with a real one is dropped, not fatal."""
+    import yaml
+    p = tmp_path / "set.yaml"
+    p.write_text(yaml.dump({"queries": [{"q": "x", "expect": ["  ", "real.md"]}]}))
+    qs = load_eval_set(p)
+    assert qs[0].expect == ["real.md"]
+
+
 def test_compute_metrics_hit_and_miss():
     eval_queries = [
         EvalQuery(q="A", expect=["alpha"]),
