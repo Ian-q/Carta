@@ -1,7 +1,7 @@
 ---
 id: 2026-06-16-claude-md-doc-search-guidance-design
 title: CLAUDE.md /doc-search guidance block in bootstrap
-status: draft
+status: shipped
 related: [2026-06-15-stale-reference-git-hook-design, 2026-06-16-stale-reference-diff-scan-design]
 date: 2026-06-16
 related_issue: Ian-q/Carta#10
