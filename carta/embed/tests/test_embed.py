@@ -628,6 +628,145 @@ def test_run_embed_qdrant_unreachable(mock_qdrant_cls, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# pipeline.py — honest embed success accounting (audit Group A: CA-1/4/6/7)
+# ---------------------------------------------------------------------------
+
+def _write_md_with_pending_sidecar(tmp_path, rel="docs/spec.md", slug="spec"):
+    """Create a markdown source + a pending sidecar under .carta/sidecars/."""
+    import yaml as _yaml
+    src = tmp_path / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("hello")
+    sc = tmp_path / ".carta" / "sidecars" / Path(rel).with_suffix(".embed-meta.yaml")
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_text(_yaml.dump({
+        "slug": slug, "doc_type": "spec", "status": "pending", "current_path": rel,
+    }))
+    return src, sc
+
+
+_NO_HEADER_CFG = {
+    **MINIMAL_CFG,
+    "embed": {
+        **MINIMAL_CFG["embed"],
+        "two_pass_visual": False,
+        "chunking": {"max_tokens": 800, "overlap_fraction": 0.15, "contextual_header": False},
+    },
+}
+
+
+@patch("carta.embed.pipeline.QdrantClient")
+@patch("carta.embed.pipeline.upsert_chunks")
+@patch("carta.embed.pipeline.chunk_text")
+@patch("carta.embed.pipeline.extract_markdown_text")
+def test_run_embed_total_persist_failure_not_marked_embedded(
+    mock_extract, mock_chunk, mock_upsert, mock_qdrant_cls, tmp_path
+):
+    """A file whose chunks all fail to persist (upsert returns 0 while text was
+    expected) must NOT be counted as embedded nor stamped status='embedded'."""
+    import yaml as _yaml
+    mock_qdrant_cls.return_value = MagicMock()
+    mock_extract.return_value = ([{"page": 1, "text": "hello", "headings": []}], {})
+    mock_chunk.return_value = [
+        {"text": "chunk a", "chunk_index": 0},
+        {"text": "chunk b", "chunk_index": 1},
+    ]
+    mock_upsert.return_value = 0  # nothing persisted despite 2 expected text chunks
+
+    _src, sc = _write_md_with_pending_sidecar(tmp_path)
+    result = run_embed(tmp_path, _NO_HEADER_CFG)
+
+    assert result["embedded"] == 0, "0 persisted vectors must not count as embedded"
+    assert "spec.md" in result["failed"]
+    updated = _yaml.safe_load(sc.read_text())
+    assert updated["status"] == "embed_failed"
+
+
+@patch("carta.embed.pipeline.QdrantClient")
+@patch("carta.embed.pipeline.upsert_chunks")
+@patch("carta.embed.pipeline.chunk_text")
+@patch("carta.embed.pipeline.extract_markdown_text")
+def test_run_embed_partial_persist_not_marked_embedded(
+    mock_extract, mock_chunk, mock_upsert, mock_qdrant_cls, tmp_path
+):
+    """A partial upsert (some batches lost) must be re-pickable, not 'embedded'."""
+    import yaml as _yaml
+    mock_qdrant_cls.return_value = MagicMock()
+    mock_extract.return_value = ([{"page": 1, "text": "hello", "headings": []}], {})
+    mock_chunk.return_value = [
+        {"text": "chunk a", "chunk_index": 0},
+        {"text": "chunk b", "chunk_index": 1},
+    ]
+    mock_upsert.return_value = 1  # only 1 of 2 expected text chunks persisted
+
+    _src, sc = _write_md_with_pending_sidecar(tmp_path)
+    result = run_embed(tmp_path, _NO_HEADER_CFG)
+
+    assert result["embedded"] == 0
+    assert "spec.md" in result["partial"]
+    updated = _yaml.safe_load(sc.read_text())
+    assert updated["status"] == "partial"
+
+
+def test_discover_pending_files_repicks_failed_and_partial(tmp_path):
+    """Re-pickable statuses (embed_failed, partial) must be re-discovered so a
+    transient failure is retried on the next run."""
+    import yaml as _yaml
+    doc_dir = tmp_path / "docs"
+    doc_dir.mkdir()
+    (doc_dir / "a.md").write_text("a")
+    (doc_dir / "b.md").write_text("b")
+    sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+    sc_dir.mkdir(parents=True)
+    (sc_dir / "a.embed-meta.yaml").write_text(_yaml.dump(
+        {"slug": "a", "status": "embed_failed", "current_path": "docs/a.md"}))
+    (sc_dir / "b.embed-meta.yaml").write_text(_yaml.dump(
+        {"slug": "b", "status": "partial", "current_path": "docs/b.md"}))
+
+    pending = discover_pending_files(tmp_path)
+    assert {p["slug"] for p in pending} == {"a", "b"}
+
+
+def test_upsert_chunks_raises_on_embedding_dim_mismatch():
+    """A model whose vectors aren't VECTOR_DIM must fail loudly, not be silently
+    rejected batch-by-batch and reported as success."""
+    from carta.embed.embed import EmbedDimError
+    chunks = [{
+        "slug": "d", "text": "hello", "chunk_index": 0,
+        "file_path": "docs/d.md", "doc_type": "spec",
+    }]
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    with patch("carta.embed.embed.get_embedding", return_value=[0.0] * 100):
+        with pytest.raises(EmbedDimError):
+            upsert_chunks(chunks, MINIMAL_CFG, client=client)
+
+
+def test_upsert_chunks_retries_transient_batch_upsert_failure():
+    """A transient batch-upsert error must be retried, not dropped on first failure
+    (which would silently lose up to BATCH_SIZE already-embedded chunks)."""
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    calls = {"n": 0}
+
+    def flaky_upsert(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient 503")
+        return None
+
+    client.upsert.side_effect = flaky_upsert
+    chunks = [{
+        "slug": "d", "text": "hello", "chunk_index": 0,
+        "file_path": "docs/d.md", "doc_type": "spec",
+    }]
+    with patch("carta.embed.embed.get_embedding", return_value=[0.1] * 768):
+        n = upsert_chunks(chunks, MINIMAL_CFG, client=client)
+    assert n == 1, "retry should persist the batch after a transient failure"
+    assert calls["n"] >= 2
+
+
+# ---------------------------------------------------------------------------
 # pipeline.py — run_search (mocked Qdrant + Ollama)
 # ---------------------------------------------------------------------------
 

@@ -525,9 +525,12 @@ class TestVisionIntegration:
 
         with patch("carta.embed.pipeline.QdrantClient") as mock_client_cls:
             with patch("carta.embed.pipeline.extract_pdf_text", return_value=[{"page": 1, "text": "Text content"}]):
-                with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1}]):
+                with patch("carta.embed.pipeline.chunk_text", return_value=[{"text": "Chunk", "page": 1, "chunk_index": 0}]):
                     with patch("carta.vision.router.extract_image_descriptions_intelligent") as mock_vision:
-                        with patch("carta.embed.pipeline.upsert_chunks", return_value=0):
+                        # 1 text chunk persisted (chunk_text yields 1) so text embedding
+                        # genuinely succeeds — the point of this test is vision fail-open,
+                        # not a persistence failure (which is now its own status).
+                        with patch("carta.embed.pipeline.upsert_chunks", return_value=1):
                             with patch("carta.embed.pipeline.write_sidecar"):
                                 # Vision model unavailable: returns empty (fail-open)
                                 mock_vision.return_value = []
