@@ -128,7 +128,10 @@ def test_create_qdrant_collections_creates_hybrid_schema():
     from carta.install.bootstrap import _create_qdrant_collections
     client = MagicMock()
     client.collection_exists.return_value = False
-    with patch("qdrant_client.QdrantClient", return_value=client):
+    # Pin the hybrid path: ensure_collection builds the named dense+bm25 schema only
+    # when fastembed is importable (an optional extra absent from the base CI install).
+    with patch("qdrant_client.QdrantClient", return_value=client), \
+         patch("carta.embed.embed._fastembed_available", return_value=True):
         ok = _create_qdrant_collections("p", "http://localhost:6333")
     assert ok
     assert client.create_collection.call_args_list, "should create collections"

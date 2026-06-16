@@ -177,7 +177,10 @@ def test_bootstrap_creates_notes_not_quirk():
 
     client = MagicMock()
     client.collection_exists.return_value = False
-    with patch("qdrant_client.QdrantClient", return_value=client):
+    # Pin the hybrid path: ensure_collection builds the named dense+bm25 schema only
+    # when fastembed is importable (an optional extra absent from the base CI install).
+    with patch("qdrant_client.QdrantClient", return_value=client), \
+         patch("carta.embed.embed._fastembed_available", return_value=True):
         ok = bs._create_qdrant_collections("p", "http://localhost:6333")
     assert ok
     created = [c.kwargs["collection_name"] for c in client.create_collection.call_args_list]
