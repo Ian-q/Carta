@@ -109,14 +109,48 @@ def test_bootstrap_creates_namespaced_collections(tmp_path):
     assert isinstance(project_name, str) and len(project_name) > 0
 
 def test_create_qdrant_collections_uses_namespaced_names():
+    from unittest.mock import MagicMock
     from carta.install.bootstrap import _create_qdrant_collections
-    with patch("carta.install.bootstrap.requests") as mock_req:
-        mock_req.put.return_value.status_code = 200
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    with patch("qdrant_client.QdrantClient", return_value=client):
         _create_qdrant_collections("my-project", "http://localhost:6333")
-    called_urls = [call.args[0] for call in mock_req.put.call_args_list]
-    assert any("my-project_doc" in url for url in called_urls)
-    assert any("my-project_session" in url for url in called_urls)
-    assert any("my-project_notes" in url for url in called_urls)
+    created = [c.kwargs["collection_name"] for c in client.create_collection.call_args_list]
+    assert "my-project_doc" in created
+    assert "my-project_session" in created
+    assert "my-project_notes" in created
+
+
+def test_create_qdrant_collections_creates_hybrid_schema():
+    """Init creates the named dense + bm25 sparse hybrid schema (CA-10) so an
+    init-before-embed project is not silently stuck on dense-only retrieval."""
+    from unittest.mock import MagicMock
+    from carta.install.bootstrap import _create_qdrant_collections
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    with patch("qdrant_client.QdrantClient", return_value=client):
+        ok = _create_qdrant_collections("p", "http://localhost:6333")
+    assert ok
+    assert client.create_collection.call_args_list, "should create collections"
+    for c in client.create_collection.call_args_list:
+        assert "dense" in c.kwargs["vectors_config"]
+        assert "bm25" in c.kwargs["sparse_vectors_config"]
+
+
+def test_create_qdrant_collections_warns_on_legacy_existing_schema(capsys):
+    """Re-init over an existing NON-hybrid collection must warn, not silently
+    rubber-stamp it (audit CA-27)."""
+    from unittest.mock import MagicMock
+    from carta.install.bootstrap import _create_qdrant_collections
+    client = MagicMock()
+    client.collection_exists.return_value = True  # already exists
+    with patch("qdrant_client.QdrantClient", return_value=client), \
+         patch("carta.embed.embed.collection_is_hybrid", return_value=False):
+        ok = _create_qdrant_collections("p", "http://localhost:6333")
+    assert ok  # not a hard failure
+    out = capsys.readouterr().out.lower()
+    assert "legacy" in out or "hybrid" in out
+    client.create_collection.assert_not_called()  # existing collection left untouched
 
 def test_bootstrap_continues_if_qdrant_unavailable(tmp_path):
     """bootstrap should warn and continue (not exit) when Qdrant is unreachable but not critically failing."""

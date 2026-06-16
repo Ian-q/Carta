@@ -354,19 +354,41 @@ def _remove_plugin_cache() -> bool:
 
 
 def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: int = 768) -> bool:
-    """Create Qdrant collections. Returns True if all succeeded."""
+    """Create Qdrant collections with the schema the embed pipeline expects.
+
+    Routes through carta.embed.embed.ensure_collection — the SAME code path
+    `carta embed` uses — so init and embed can never create divergent schemas.
+    (Init previously PUT a raw unnamed-dense collection via HTTP; embed creates a
+    named hybrid dense+bm25 collection. Because ensure_collection skips existing
+    collections, an init-before-embed project was permanently stuck on dense-only
+    retrieval with BM25+RRF hybrid silently off — audit CA-10.)
+
+    An existing collection with a legacy (non-hybrid) schema is left untouched but
+    flagged loudly rather than silently rubber-stamped (audit CA-27).
+
+    Returns True if all collections are present with no hard failure.
+    """
+    from qdrant_client import QdrantClient
+    from carta.embed.embed import ensure_collection, collection_is_hybrid
+
+    try:
+        client = QdrantClient(url=qdrant_url, timeout=10)
+    except Exception as e:
+        print(f"  Error: could not connect to Qdrant at {qdrant_url}: {e}")
+        return False
+
     failures = 0
     for type_ in ["doc", "session", "notes"]:
         collection = f"{project_name}_{type_}"
         try:
-            r = requests.put(
-                f"{qdrant_url}/collections/{collection}",
-                json={"vectors": {"size": VECTOR_DIMENSIONS.get(type_, vector_size), "distance": "Cosine"}},
-                timeout=5,
-            )
-            if r.status_code not in (200, 409):
-                print(f"  Error: Qdrant returned {r.status_code} for collection {collection}: {r.text}")
-                failures += 1
+            existed = client.collection_exists(collection)
+            ensure_collection(client, collection)
+            if existed and not collection_is_hybrid(client, collection):
+                print(
+                    f"  Warning: existing collection {collection} uses a legacy "
+                    f"non-hybrid schema — BM25+RRF hybrid retrieval is OFF for it. "
+                    f"Drop it and re-embed to enable hybrid."
+                )
         except Exception as e:
             print(f"  Error: could not create collection {collection}: {e}")
             failures += 1
