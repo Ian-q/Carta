@@ -4,6 +4,18 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-06-16
+
+### Fixed — pre-ET-embed reliability & correctness audit (CA-1..CA-27)
+A 40-agent audit before a full corpus re-embed surfaced 27 high/critical issues; the blocker set is fixed here. Full report + disposition: `docs/audits/2026-06-16-pre-reembed-code-audit.md`.
+- **Honest embed success accounting (CA-1/4/6/7).** The pipeline marked a file `embedded` from reaching the end of the run, not from confirming its vectors persisted — so a transient Ollama/Qdrant blip silently zeroed out whole files (or dropped 32-chunk batches) with a green summary and never retried. Files that don't fully persist now get a re-pickable `embed_failed`/`partial` status (re-discovered and retried on the next run, counted separately, non-zero CLI exit); transient batch upserts retry instead of dropping on first error; the write-path Qdrant client timeout is raised 5s→30s; and a non-768-dim embedding model fails loudly (`EmbedDimError`) instead of silently upserting nothing.
+- **Encoding robustness (CA-13/22).** A UTF-8 BOM or a single non-UTF8 byte no longer silently drops a markdown file from the index or crashes the whole `carta scan` / graph build — markdown is read with `utf-8-sig` + `errors="replace"`.
+- **`carta init` builds the hybrid schema (CA-10/27).** Init created unnamed-dense collections over raw HTTP while the embed path expects named dense+bm25; because existing collections are skipped, an init-before-embed project was permanently stuck on dense-only retrieval (BM25+RRF hybrid silently off). Init now routes through `ensure_collection` (single source of truth) and warns on a pre-existing legacy collection instead of rubber-stamping it.
+- **Integrity scan & cleanup (CA-14/15).** `carta doctor` no longer reports every embedded `_notes` document as a false `sidecar N vs qdrant 0` count-mismatch (it now scrolls `_notes` and routes each sidecar's count to the collection its doc_type lands in); stale-generation cleanup (`delete_other_points`) retries transient errors and warns loudly on final failure.
+- **Trustworthy verification tooling (CA-17/20/23/26).** `carta audit` scrolls **all** points via the Qdrant cursor (was silently capped at the first 1000 on real corpora); `carta eval` warns on a partial reranker fail-open and rejects blank/empty expectations that silently skewed recall; graph-aware search now uses the real repo root (it was globbing the empty `.carta` dir — a silent no-op).
+- **`--timeout 0` / `file_timeout_s: 0` means unbounded (CA-3)**, matching `visual_timeout_s` — not a literal `join(0)` that instantly timed out every file and still exited 0.
+- **Single-writer embed lock (CA-2/5/12).** `--repair`, `--visual`, targeted `--files`, and the MCP `carta_embed` tool now share one `.carta/embed.lock` with the full pipeline (new `carta/embed/lock.py`), so concurrent writers can't delete each other's just-written points; MCP returns a `busy` error instead of racing.
+
 ### Fixed
 - **Visual pool dilution (#36).** Cross-collection RRF fusion interleaved text and visual
   hits ~1:1 by rank, so once a `_visual` collection had content ~half of every query's
