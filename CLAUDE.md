@@ -171,7 +171,9 @@ A second, opt-in hook — `carta hook` — installs a managed git `pre-push` (or
 `pre-commit`) shim that scans changed docs and warns when a section has been
 superseded by an authoritative doc in the graph. Warn-only by default; fail-open.
 Core in `carta/hook/stale_scan.py`; shim install/removal in `carta/hook/git_hook.py`;
-shared yes/no judge in `carta/hook/judge.py`.
+shared yes/no judge in `carta/hook/judge.py`. Run on demand as a whole-branch pre-PR
+audit with `carta hook check --diff [range]` (default range `<default-branch>...HEAD`;
+`--fail-on-stale` to exit non-zero).
 
 ### Sidecars
 
