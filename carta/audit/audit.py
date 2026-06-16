@@ -78,36 +78,29 @@ def _build_qdrant_chunk_index(client: QdrantClient, collection_name: str) -> dic
     index = {}
 
     try:
-        # Scroll through all chunks
-        points, _ = client.scroll(
-            collection_name=collection_name,
-            limit=1000,  # Qdrant scroll batch size
-        )
-
-        while points:
+        # Scroll through ALL chunks using Qdrant's returned cursor. The previous
+        # code passed offset=len(points) (i.e. the integer 1000), which is invalid
+        # against UUID-keyed point IDs — so any collection with >1000 points was
+        # silently truncated to the first batch, corrupting every downstream
+        # detector on real corpora (audit CA-17). Mirror integrity._scroll_all.
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=collection_name,
+                limit=1000,  # Qdrant scroll batch size
+                offset=offset,
+            )
             for point in points:
                 sidecar_id = point.payload.get("sidecar_id")
                 if not sidecar_id:
                     continue  # Skip pre-999.1 chunks
-
-                if sidecar_id not in index:
-                    index[sidecar_id] = []
-
-                index[sidecar_id].append({
+                index.setdefault(sidecar_id, []).append({
                     "id": point.id,
                     "payload": point.payload,
-                    "chunk_index": point.payload.get("chunk_index")
+                    "chunk_index": point.payload.get("chunk_index"),
                 })
-
-            # Continue scrolling if more points
-            if len(points) < 1000:
+            if offset is None:
                 break
-
-            points, _ = client.scroll(
-                collection_name=collection_name,
-                limit=1000,
-                offset=len(points),
-            )
     except Exception:
         # Collection doesn't exist or is unreachable; return empty index
         pass

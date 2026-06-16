@@ -1178,3 +1178,34 @@ class TestRunEmbedExtractionFailedSummary:
 
         assert summary["extraction_failed"] == 1
         assert summary["embedded"] == 0
+
+
+def test_run_search_passes_repo_root_not_dotcarta_to_graph_expansion(tmp_path):
+    """run_search must compute repo_root as the dir CONTAINING .carta (parent.parent
+    of the config), not the .carta dir itself — else graph expansion globs an empty
+    .carta dir and silently promotes nothing (audit CA-23)."""
+    from unittest.mock import patch, MagicMock
+    from carta.embed import pipeline
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("")
+    cfg = {
+        "project_name": "t", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "u", "ollama_model": "m"},
+        "search": {"top_n": 5, "graph": {"enabled": True}},
+    }
+
+    captured = {}
+
+    def fake_graph(results, cfg_, repo_root):
+        captured["repo_root"] = repo_root
+        return results
+
+    with patch("carta.embed.pipeline.find_config", return_value=str(cfg_path)), \
+         patch("carta.embed.pipeline.QdrantClient", return_value=MagicMock()), \
+         patch("carta.search.scoped.get_search_collections", return_value=[]), \
+         patch("carta.embed.pipeline._apply_graph_expansion", side_effect=fake_graph):
+        pipeline.run_search("q", cfg)
+
+    assert captured["repo_root"] == tmp_path  # repo root, NOT tmp_path/.carta

@@ -659,6 +659,17 @@ def cmd_eval(args):
     print(f"queries={metrics['n_queries']}  recall@{k}={metrics['recall_at_k']:.3f}  MRR={metrics['mrr']:.3f}")
     if rerank_requested:
         print(f"rerank: applied on {rerank_applied_count}/{query_count} queries")
+        # Partial fail-open: a 0.8B reranker degrading on N/Q queries still prints a
+        # mostly-reranked score that an operator may trust for a go/no-go call. Make
+        # the partial case a loud stderr warning so it can't be mistaken for clean
+        # (the total-fail-open case below hard-fails) — audit CA-20.
+        if query_count and 0 < rerank_applied_count < query_count:
+            print(
+                f"Warning: reranker failed open on {query_count - rerank_applied_count}/"
+                f"{query_count} queries — these are PARTIALLY reranked numbers, not a "
+                f"clean reranked run; treat the score with caution.",
+                file=sys.stderr,
+            )
     else:
         print("rerank: not requested")
     for row in metrics["per_query"]:
