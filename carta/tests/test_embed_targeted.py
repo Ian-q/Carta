@@ -15,9 +15,10 @@ def _make_args(files):
 
 @patch("carta.embed.pipeline.run_embed_file")
 @patch("carta.config.load_config")
-@patch("carta.config.find_config")
+@patch("carta.cli.find_config")
 def test_targeted_calls_run_embed_file(mock_find_config, mock_load_config, mock_run_embed_file, tmp_path):
-    """When files are passed, run_embed_file is called for each, lock is skipped."""
+    """When files are passed, run_embed_file is called for each; targeted embed now
+    also holds the single-writer lock (audit CA-2)."""
     from carta.cli import cmd_embed
 
     cfg_path = tmp_path / ".carta" / "config.yaml"
@@ -34,7 +35,7 @@ def test_targeted_calls_run_embed_file(mock_find_config, mock_load_config, mock_
     pdf = tmp_path / "test.pdf"
     pdf.touch()
 
-    with patch("carta.cli._acquire_embed_lock") as mock_lock, \
+    with patch("carta.embed.lock.acquire") as mock_lock, \
          patch("carta.ui.Progress") as MockProgress:
         mock_progress = MagicMock()
         mock_progress.__enter__ = MagicMock(return_value=mock_progress)
@@ -45,8 +46,8 @@ def test_targeted_calls_run_embed_file(mock_find_config, mock_load_config, mock_
             cmd_embed(_make_args([str(pdf)]))
 
         assert exc_info.value.code == 0
-        # Lock must NOT be acquired for targeted embed
-        mock_lock.assert_not_called()
+        # Targeted embed now holds the single-writer lock too (audit CA-2).
+        mock_lock.assert_called_once()
         # run_embed_file called with force=True
         mock_run_embed_file.assert_called_once_with(
             Path(str(pdf)), mock_load_config.return_value, force=True, progress=mock_progress
@@ -55,7 +56,7 @@ def test_targeted_calls_run_embed_file(mock_find_config, mock_load_config, mock_
 
 @patch("carta.embed.pipeline.run_embed_file")
 @patch("carta.config.load_config")
-@patch("carta.config.find_config")
+@patch("carta.cli.find_config")
 def test_targeted_missing_file_exits_1(mock_find_config, mock_load_config, mock_run_embed_file, tmp_path):
     """FileNotFoundError from run_embed_file causes exit(1)."""
     from carta.cli import cmd_embed
@@ -85,7 +86,7 @@ def test_targeted_missing_file_exits_1(mock_find_config, mock_load_config, mock_
 
 @patch("carta.embed.pipeline.run_embed_file")
 @patch("carta.config.load_config")
-@patch("carta.config.find_config")
+@patch("carta.cli.find_config")
 def test_targeted_multiple_files_all_processed(mock_find_config, mock_load_config, mock_run_embed_file, tmp_path):
     """All files are processed even if one errors; exit 1 if any errors."""
     from carta.cli import cmd_embed

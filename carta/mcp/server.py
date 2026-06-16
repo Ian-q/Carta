@@ -17,6 +17,7 @@ from typing import Literal, Optional, Union
 
 from carta.config import find_config, load_config, ConfigError
 from carta.embed.pipeline import run_search, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
+from carta.embed.lock import embed_lock, EmbedLockHeld
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
 from carta.search.scoped import get_search_collections
 
@@ -319,6 +320,25 @@ def carta_embed(
         path = scope
         scope = "file"
 
+    # Single-writer lock (audit CA-5/12): carta_embed mutates the same Qdrant
+    # collections as the CLI. Without the lock, an agent embedding here while the
+    # maintainer runs `carta embed` (the ET-embed scenario) — or two MCP calls —
+    # would race their cleanup-deletes and drop freshly-written points. Hold the
+    # shared .carta/embed.lock and refuse with a busy error rather than corrupt data.
+    try:
+        repo_root = _repo_root_from_cfg()
+    except (FileNotFoundError, ConfigError) as e:
+        return {"error": "service_unavailable", "detail": str(e)}
+    lock_path = repo_root / ".carta" / "embed.lock"
+    try:
+        with embed_lock(lock_path):
+            return _carta_embed_run(scope, path, force, cfg)
+    except EmbedLockHeld as e:
+        return {"error": "busy", "detail": f"another embed is already running (PID {e.pid}); retry shortly"}
+
+
+def _carta_embed_run(scope, path, force, cfg) -> dict:
+    """Run the scope-specific embed. The caller holds the single-writer embed lock."""
     # scope='file' path
     if scope == "file":
         if path is None:
