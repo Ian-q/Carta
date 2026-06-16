@@ -164,6 +164,26 @@ class TestScanCorpusIntegrity:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points(pts))
         assert report["count_mismatches"] == {"docs/a.md": {"sidecar": 5, "qdrant": 2}}
 
+    def test_note_sidecar_counted_against_notes_not_doc(self, tmp_path):
+        """Notes route to {project}_notes; their chunk_count must be compared against
+        _notes, not _doc — else every embedded note is a false count-mismatch that
+        --repair needlessly re-embeds (audit CA-15)."""
+        from carta.embed.induct import sidecar_path
+        cfg = {"project_name": "p", "qdrant_url": "x"}
+        by_coll = {
+            "p_doc": [],
+            "p_notes": [_point("docs/quirks/q.md", "q", 0, "note body")],
+        }
+        sc = sidecar_path(tmp_path / "docs/quirks/q.md", tmp_path)
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text(yaml.dump({
+            "current_path": "docs/quirks/q.md", "doc_type": "quirk",
+            "chunk_count": 1, "status": "embedded", "file_hash": "h",
+        }))
+        report = scan_corpus_integrity(cfg, tmp_path, client=_client_with_collections(by_coll))
+        assert "docs/quirks/q.md" not in report["count_mismatches"]
+        assert "docs/quirks/q.md" not in report["affected_files"]
+
     def test_detects_stuck_stale(self, tmp_path):
         # File on disk whose hash MATCHES the sidecar → stuck stale
         src_match = tmp_path / "docs" / "match.md"
