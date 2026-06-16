@@ -149,6 +149,17 @@ def collect_pushed(repo_root: Path, cfg: dict, stdin_lines: list[str]) -> list[C
     if not stdin_lines:  # manual invocation — scan default-branch..HEAD
         ranges = [(f"{_default_branch(repo_root)}..HEAD", "HEAD")]
 
+    return _collect_from_ranges(repo_root, cfg, ranges)
+
+
+def _collect_from_ranges(
+    repo_root: Path, cfg: dict, ranges: list[tuple[str, str]]
+) -> list[ChangedDoc]:
+    """Collect in-scope changed docs across one or more (range_spec, tip_sha) pairs.
+
+    For each range, list ACM-changed paths, keep only in-scope docs, and read each
+    doc's content at that range's tip via `git show <tip>:<path>`. Deduped by path
+    (first range wins). Fails open per range and per file."""
     seen: dict[str, ChangedDoc] = {}
     for rng, tip in ranges:
         try:
@@ -165,6 +176,22 @@ def collect_pushed(repo_root: Path, cfg: dict, stdin_lines: list[str]) -> list[C
                 continue
             seen[rel] = ChangedDoc(path=rel, text=text)
     return list(seen.values())
+
+
+def _range_tip(range_spec: str) -> str:
+    """Right operand of a git range (`A..B` / `A...B` -> `B`); empty right side or a
+    bare ref -> `HEAD`. Used to read changed-file content at the tip of the range."""
+    for sep in ("...", ".."):
+        if sep in range_spec:
+            right = range_spec.split(sep, 1)[1].strip()
+            return right or "HEAD"
+    return range_spec.strip() or "HEAD"
+
+
+def collect_range(repo_root: Path, cfg: dict, range_spec: str) -> list[ChangedDoc]:
+    """Collect in-scope docs changed across an explicit git range, read at the range
+    tip. Used by the local on-demand pre-PR diff scan (`carta hook check --diff`)."""
+    return _collect_from_ranges(repo_root, cfg, [(range_spec, _range_tip(range_spec))])
 
 
 def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=None) -> StaleScanResult:

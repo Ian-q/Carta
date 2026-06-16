@@ -203,3 +203,51 @@ def test_collect_pushed_new_branch_zero_oid(repo):
     stdin_lines = [f"refs/heads/feature {tip} refs/heads/feature {zero}"]
     docs = collect_pushed(repo, cfg, stdin_lines)
     assert [d.path for d in docs] == ["docs/a.md"]
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (slice 2): _range_tip + collect_range + _collect_from_ranges refactor
+# ---------------------------------------------------------------------------
+
+from carta.hook.stale_scan import _range_tip, collect_range
+
+
+def test_range_tip_parses_two_and_three_dot():
+    assert _range_tip("a..b") == "b"
+    assert _range_tip("a...b") == "b"
+    assert _range_tip("main...HEAD") == "HEAD"
+    assert _range_tip("main...") == "HEAD"      # trailing-empty right side
+    assert _range_tip("origin/main..feature") == "feature"
+
+
+def test_collect_range_returns_scoped_docs_at_tip(repo):
+    (repo / "docs" / "a.md").write_text("v1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c1")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / "docs" / "a.md").write_text("## A\nv2 changed\n")
+    (repo / "docs" / "b.md").write_text("## B\nbrand new\n")
+    (repo / "src.py").write_text("print()\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c2")
+    cfg = {"docs_root": "docs/", "excluded_paths": []}
+    docs = collect_range(repo, cfg, f"{base}...HEAD")
+    paths = sorted(d.path for d in docs)
+    assert paths == ["docs/a.md", "docs/b.md"]     # src.py excluded by scope
+    by_path = {d.path: d.text for d in docs}
+    assert "v2 changed" in by_path["docs/a.md"]     # tip content, not v1
+    assert "brand new" in by_path["docs/b.md"]
+
+
+def test_collect_range_two_dot_range(repo):
+    (repo / "docs" / "a.md").write_text("v1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c1")
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    (repo / "docs" / "a.md").write_text("## A\nv2\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "c2")
+    cfg = {"docs_root": "docs/", "excluded_paths": []}
+    docs = collect_range(repo, cfg, f"{base}..HEAD")
+    assert [d.path for d in docs] == ["docs/a.md"]
+    assert "v2" in docs[0].text
