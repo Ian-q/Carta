@@ -1,7 +1,7 @@
 ---
 id: 2026-06-16-stale-reference-diff-scan-design
 title: Stale-reference diff-range scan (local pre-PR audit)
-status: draft
+status: shipped
 related: [2026-06-15-stale-reference-git-hook-design]
 date: 2026-06-16
 related_issue: Ian-q/Carta#10
