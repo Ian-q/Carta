@@ -861,6 +861,28 @@ def test_run_search_query_failure_raises(mock_qdrant_cls, mock_embed, mock_find_
     assert mock_client.query_points.call_count == 3
 
 
+def test_run_embed_zero_timeout_means_unbounded_not_instant_timeout(tmp_path, monkeypatch):
+    """file_timeout_s=0 must mean UNBOUNDED (matching visual_timeout_s '0 = unbounded'),
+    not a literal join(0) that instantly flags every file TIMEOUT and embeds nothing
+    while still exiting 0 (audit CA-3)."""
+    import time as _time
+    from carta.embed import pipeline as pipeline_mod
+
+    _src, _sc = _write_md_with_pending_sidecar(tmp_path)
+
+    def _slow_embed(*a, **kw):
+        _time.sleep(0.2)  # outlives a join(0) so the bug would flag it timed-out
+        return 1, {"status": "embedded", "chunk_count": 1}
+
+    monkeypatch.setattr(pipeline_mod, "_embed_one_file", _slow_embed)
+    cfg = {**_NO_HEADER_CFG, "embed": {**_NO_HEADER_CFG["embed"], "file_timeout_s": 0}}
+    with patch("carta.embed.pipeline.QdrantClient", return_value=MagicMock()):
+        result = run_embed(tmp_path, cfg)
+
+    assert result["timed_out"] == [], "0 must not instantly time out every file"
+    assert result["embedded"] == 1
+
+
 # ---------------------------------------------------------------------------
 # embed.py — upsert_chunks batching (PIPE-01)
 # ---------------------------------------------------------------------------

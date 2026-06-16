@@ -1427,7 +1427,11 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                 target=_worker, daemon=True, name=f"carta-embed-{file_path.name}"
             )
             worker.start()
-            worker.join(timeout=file_timeout_s)
+            # file_timeout_s <= 0 means UNBOUNDED (matches visual_timeout_s "0 =
+            # unbounded"). A literal join(0) returns instantly and flags every file
+            # as TIMEOUT — embedding nothing while still exiting 0 (audit CA-3).
+            join_timeout = file_timeout_s if (file_timeout_s and file_timeout_s > 0) else None
+            worker.join(timeout=join_timeout)
             elapsed = time.monotonic() - t0
 
             if worker.is_alive():
