@@ -261,3 +261,57 @@ def test_remove_plugin_cache_assertion_on_residue(tmp_path, capsys):
     assert result is False
     captured = capsys.readouterr()
     assert "plugin cache residue" in captured.err
+
+
+def test_carta_claude_block_content():
+    from carta.install.bootstrap import _carta_claude_block
+    block = _carta_claude_block("acme")
+    assert "<!-- carta:guidance:start -->" in block
+    assert "<!-- carta:guidance:end -->" in block
+    assert "## Carta Knowledge Graph" in block
+    assert "Search the docs before you assume." in block
+    assert '`/doc-search "<name> responsibilities"`' in block   # trigger table row
+    assert "/doc-audit" in block and "/doc-embed" in block       # maintenance line
+    # collections comment interpolates the project name and stays inside the block
+    assert "Carta is active. Collections: acme_doc, acme_session, acme_notes" in block
+
+
+def test_append_claude_md_appends_to_existing(tmp_path):
+    from carta.install.bootstrap import _append_claude_md
+    (tmp_path / "CLAUDE.md").write_text("# My Project\n\nExisting guidance.\n")
+    _append_claude_md(tmp_path, "acme")
+    content = (tmp_path / "CLAUDE.md").read_text()
+    assert "Existing guidance." in content                       # prior content preserved
+    assert "## Carta Knowledge Graph" in content
+    assert content.count("<!-- carta:guidance:start -->") == 1
+
+
+def test_append_claude_md_creates_when_absent(tmp_path):
+    from carta.install.bootstrap import _append_claude_md
+    assert not (tmp_path / "CLAUDE.md").exists()
+    _append_claude_md(tmp_path, "acme")
+    content = (tmp_path / "CLAUDE.md").read_text()
+    assert content.startswith("# acme")
+    assert "## Carta Knowledge Graph" in content
+    assert "<!-- carta:guidance:start -->" in content
+
+
+def test_append_claude_md_idempotent_on_marker(tmp_path):
+    from carta.install.bootstrap import _append_claude_md
+    (tmp_path / "CLAUDE.md").write_text("# My Project\n")
+    _append_claude_md(tmp_path, "acme")
+    _append_claude_md(tmp_path, "acme")                          # second call is a no-op
+    content = (tmp_path / "CLAUDE.md").read_text()
+    assert content.count("<!-- carta:guidance:start -->") == 1
+
+
+def test_append_claude_md_skips_legacy_oneliner(tmp_path):
+    from carta.install.bootstrap import _append_claude_md
+    # A repo bootstrapped by an older Carta has only the legacy comment.
+    (tmp_path / "CLAUDE.md").write_text(
+        "# My Project\n\n<!-- Carta is active. Collections: acme_doc, acme_session, acme_notes -->\n"
+    )
+    _append_claude_md(tmp_path, "acme")
+    content = (tmp_path / "CLAUDE.md").read_text()
+    assert "<!-- carta:guidance:start -->" not in content        # not upgraded / not doubled
+    assert content.count("Carta is active") == 1

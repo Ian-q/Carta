@@ -421,14 +421,56 @@ def _create_mcp_configs(project_root: Path) -> None:
     print(f"  MCP configs: {opencode_path}")
 
 
+_CARTA_CLAUDE_SENTINEL = "<!-- carta:guidance:start -->"
+_CARTA_CLAUDE_LEGACY = "Carta is active"
+
+
+def _carta_claude_block(project_name: str) -> str:
+    """The Carta /doc-search guidance block injected into a project's CLAUDE.md.
+
+    Wrapped in carta:guidance markers for idempotent (re)writes; the trailing
+    'Carta is active' comment is both a diagnostic breadcrumb and the legacy
+    idempotency string."""
+    return (
+        "<!-- carta:guidance:start -->\n"
+        "## Carta Knowledge Graph\n"
+        "\n"
+        "**Search the docs before you assume.** This project's specs (components, protocols,\n"
+        "config keys, design decisions) may have changed since the code — or your training — was\n"
+        "written. Carta provides semantic search over them via `/doc-search`.\n"
+        "\n"
+        "**Run `/doc-search` whenever a prompt names one of these — query it like so:**\n"
+        "\n"
+        "| Prompt mentions… | Search |\n"
+        "|---|---|\n"
+        "| A component or module | `/doc-search \"<name> responsibilities\"` |\n"
+        "| An API, protocol, or data format | `/doc-search \"<name> spec\"` |\n"
+        "| A config key or flag | `/doc-search \"<key> configuration\"` |\n"
+        "| A file/path or a design decision | `/doc-search \"<topic> design\"` |\n"
+        "\n"
+        "Maintenance (only when asked, or after editing docs): `/doc-audit` (flag\n"
+        "stale/contradictory docs), `/doc-embed` (re-index).\n"
+        "\n"
+        f"<!-- Carta is active. Collections: {project_name}_doc, "
+        f"{project_name}_session, {project_name}_notes -->\n"
+        "<!-- carta:guidance:end -->\n"
+    )
+
+
 def _append_claude_md(project_root: Path, project_name: str) -> None:
+    """Inject the Carta guidance block into CLAUDE.md (create if absent, append if
+    present). Idempotent: skips if the block marker or the legacy 'Carta is active'
+    string is already present."""
     claude_md = project_root / "CLAUDE.md"
-    note = f"\n<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_notes -->\n"
+    block = _carta_claude_block(project_name)
     if claude_md.exists():
-        if "Carta is active" in claude_md.read_text():
+        text = claude_md.read_text(encoding="utf-8")
+        if _CARTA_CLAUDE_SENTINEL in text or _CARTA_CLAUDE_LEGACY in text:
             return
-        with open(claude_md, "a") as f:
-            f.write(note)
+        with open(claude_md, "a", encoding="utf-8") as f:
+            f.write("\n" + block)
+    else:
+        claude_md.write_text(f"# {project_name}\n\n{block}", encoding="utf-8")
 
 
 def _create_agents_md(project_root: Path, project_name: str) -> None:
