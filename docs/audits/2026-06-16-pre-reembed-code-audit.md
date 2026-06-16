@@ -149,3 +149,31 @@ These cause **silent data loss, wrong retrieval, or broken verification during/a
 6. **Group J/CA-3**, then **F (lock)**, **G (MCP search)**, **H (hook)**, **I (visual)**.
 
 Each fix follows the project's Superpowers TDD flow (failing test → fix → green), grouped into focused PRs by root cause.
+
+---
+
+## Disposition — fix session 2026-06-16
+
+Branch `audit/2026-06-16-comprehensive`, one commit per root-cause group, TDD throughout. Suite **982 → 1009 passing, 1 skipped** (+27 tests). All work landed green.
+
+| Group | Findings | Status | Commit |
+|-------|----------|--------|--------|
+| A — honest success accounting | CA-1, CA-4, CA-6, CA-7 | ✅ fixed | `050400c` |
+| C — encoding robustness | CA-13, CA-22 (+BOM) | ✅ fixed | `2a3c028` |
+| D — init hybrid schema | CA-10, CA-27 | ✅ fixed | `8730eb1` |
+| B — cleanup / notes | CA-15, CA-14 | ✅ fixed | `395af1f` |
+| B — deleted-source orphans | **CA-16** | ⏸️ **deferred** | — |
+| E — verification tooling | CA-17, CA-20, CA-23, CA-26 | ✅ fixed | `5bd05a3` |
+| J — timeout footgun | CA-3 | ✅ fixed | `2600d70` |
+| F — single-writer lock | CA-2, CA-5, CA-12 | ✅ fixed | `e5d1b0d` |
+| F — lock PID-reuse identity | **CA-25** | ⏸️ **deferred** | — |
+
+**Deferred (within the agreed blocker set), with rationale:**
+- **CA-16** (purge deleted-source points on a normal run): adding source-existence orphan detection to `integrity.py` false-positives across many existing integrity tests that assert on `_doc` points without creating real source files. Best done as a focused change that also updates those fixtures. Mitigation today: `delete_other_points` retry (CA-14) + the existing `--repair` path.
+- **CA-25** (PID-reuse makes a stale lock look alive): low-probability; the lock self-heals stale locks from dead PIDs and prints a remediation hint. A start-time identity check is the follow-up.
+
+**Out of scope this session** (the "Everything" tier, not part of the chosen blocker set — recommended next):
+- **Group G** — MCP `carta_search` bypasses `run_search` (raw-score merge lets visual swamp text): CA-11, CA-18.
+- **Group H** — hook output contract may be a runtime no-op + no latency budget: CA-8 (verify against current Claude Code docs first), CA-9.
+- **Group I** — visual drain marks pages done with no vector + dead `visual_timeout_s`: CA-19, CA-24.
+- The 48 medium/low items remain triaged in the table above.
