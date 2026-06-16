@@ -1685,7 +1685,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     from pathlib import Path
 
     top_n = cfg.get("search", {}).get("top_n", 5)
-    repo_root = Path(find_config()).parent
+    # find_config() returns <repo>/.carta/config.yaml; the repo root is its
+    # GRANDPARENT. (.parent alone is the .carta dir, which holds no project docs —
+    # that made graph expansion a silent no-op, audit CA-23.)
+    repo_root = Path(find_config()).parent.parent
 
     # Compute effective retrieval depth.
     # When reranking is enabled, fetch candidate_pool docs per collection so

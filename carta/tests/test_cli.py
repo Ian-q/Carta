@@ -259,6 +259,15 @@ class TestCmdEvalRerankAssertion:
         assert code is None
         assert "rerank: applied on 1/2 queries" in captured.out
 
+    def test_partial_applied_warns_on_stderr(self, tmp_path, capsys):
+        """Partial reranker fail-open must surface a loud stderr warning so a
+        partially-reranked score can't be mistaken for a clean run (audit CA-20)."""
+        code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[True, False])
+        captured = capsys.readouterr()
+        assert code is None  # still passes (don't change go/no-go), but it warns
+        err = captured.err.lower()
+        assert "partial" in err or "failed open" in err
+
     def test_all_applied_reports_count(self, tmp_path, capsys):
         code = self._run(tmp_path, rerank_enabled=True, applied_per_query=[True, True])
         captured = capsys.readouterr()
