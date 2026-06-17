@@ -186,3 +186,26 @@ def test_pass2_point_ids_disjoint_from_pass1():
     assert pass1_ids.isdisjoint(pass2_ids), (
         "Pass-1 and pass-2 point IDs collide — namespace isolation is broken"
     )
+
+
+def test_drainer_filters_out_of_scope_pages():
+    """The --visual drain must honor colpali_scoped_paths: out-of-scope sources
+    (e.g. patents, not in [datasheets, manuals, suppliers]) that were queued as
+    visual_pending must be skipped — otherwise the expensive ColPali pass burns on
+    docs the user excluded and pollutes the _visual collection with low-value
+    figures. The inline path enforced scope; the two-pass drain did not (the bug)."""
+    scopes = ["docs/reference/datasheets/", "docs/reference/manuals/"]
+    queued = [
+        ("a.yaml", {"current_path": "docs/reference/datasheets/murata.pdf", VISUAL_PENDING_KEY: [1]}),
+        ("b.yaml", {"current_path": "docs/reference/patents/prior-art/US123.pdf", VISUAL_PENDING_KEY: [1, 2]}),
+    ]
+    out = pipeline._filter_visual_pending_in_scope(queued, scopes)
+    paths = [sc["current_path"] for _, sc in out]
+    assert "docs/reference/datasheets/murata.pdf" in paths
+    assert "docs/reference/patents/prior-art/US123.pdf" not in paths
+
+
+def test_drainer_no_scope_keeps_all_pages():
+    """Empty colpali_scoped_paths means no restriction (backward compatible)."""
+    queued = [("b.yaml", {"current_path": "docs/reference/patents/x.pdf", VISUAL_PENDING_KEY: [1]})]
+    assert pipeline._filter_visual_pending_in_scope(queued, []) == queued

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import requests
 
+from carta.config import ollama_keep_alive
+
 
 def ollama_yesno(
     ollama_url: str,
@@ -28,6 +30,7 @@ def ollama_yesno(
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
+                "keep_alive": ollama_keep_alive(),
             },
             timeout=timeout_s,
         )

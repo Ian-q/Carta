@@ -20,7 +20,7 @@ from pathlib import Path
 
 import requests
 
-from carta.config import find_config, load_config, NOTE_DOC_TYPES
+from carta.config import find_config, load_config, NOTE_DOC_TYPES, ollama_keep_alive
 from carta.embed.pipeline import run_search
 
 
@@ -143,6 +143,7 @@ def _extract_query(prompt: str, cfg: dict) -> str:
                     {"role": "user", "content": prompt[:1000]},
                 ],
                 "stream": False,
+                "keep_alive": ollama_keep_alive(),
             },
             timeout=4,
         )
@@ -156,9 +157,14 @@ def _extract_query(prompt: str, cfg: dict) -> str:
 # Ollama judge (D-15 through D-18)
 # ---------------------------------------------------------------------------
 
-def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
+def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: float = 4) -> bool:
     """Judge whether the documentation candidates are relevant. Returns True only
-    on a 'yes'; any error or non-yes answer returns False (fail-open)."""
+    on a 'yes'; any error or non-yes answer returns False (fail-open).
+
+    ``timeout_s`` is the Ollama call budget; _judge_with_timeout passes the same
+    value it enforces on the worker thread so the inner timeout never exceeds the
+    outer one. An inner > outer let the hook block past judge_timeout_s, since
+    ThreadPoolExecutor.__exit__ waits for the abandoned thread to finish."""
     from carta.hook.judge import ollama_yesno
 
     ollama_url = cfg["embed"]["ollama_url"]
@@ -173,7 +179,7 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
         "You decide if documentation is relevant to a coding prompt. "
         "Answer only 'yes' or 'no'."
     )
-    return bool(ollama_yesno(ollama_url, model, system, user_msg, timeout_s=4))
+    return bool(ollama_yesno(ollama_url, model, system, user_msg, timeout_s=timeout_s))
 
 
 def _judge_with_timeout(
@@ -187,7 +193,7 @@ def _judge_with_timeout(
     proceeds unblocked — it just stays silent.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call_ollama_judge, prompt, hits, cfg)
+        future = executor.submit(_call_ollama_judge, prompt, hits, cfg, timeout_s)
         try:
             return future.result(timeout=timeout_s)
         except concurrent.futures.TimeoutError:

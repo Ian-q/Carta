@@ -11,6 +11,8 @@ import re
 import sys
 import requests
 
+from carta.config import ollama_keep_alive
+
 _SYSTEM = (
     "You rank document passages by relevance to a search query. "
     "Return ONLY a JSON array of passage numbers, most relevant first. "
@@ -84,6 +86,7 @@ def llm_rerank_hits(query: str, hits: list[dict], *, model: str, ollama_url: str
                 # reranker silently fails open. A listwise reranker never needs to think.
                 "think": False,
                 "options": {"temperature": 0},
+                "keep_alive": ollama_keep_alive(),
             },
             timeout=timeout_s,
         )

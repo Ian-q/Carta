@@ -455,6 +455,39 @@ def test_call_ollama_judge_sends_correct_format():
     assert "my prompt" in user_msgs[0]["content"] or "Some excerpt" in user_msgs[0]["content"]
 
 
+def test_call_ollama_judge_uses_given_timeout():
+    """The inner Ollama timeout must track the caller's budget, not a hardcoded 4s.
+    A hardcoded inner > the outer thread budget lets the hook block past the
+    configured judge_timeout_s (ThreadPoolExecutor.__exit__ waits for the thread)."""
+    from carta.hook.hook import _call_ollama_judge
+    cfg = _make_cfg()
+    hits = [_make_hit(0.75)]
+    captured = {}
+
+    def fake_yesno(url, model, system, user, *, timeout_s):
+        captured["timeout_s"] = timeout_s
+        return True
+
+    with patch("carta.hook.judge.ollama_yesno", fake_yesno):
+        _call_ollama_judge("p", hits, cfg, timeout_s=2)
+    assert captured["timeout_s"] == 2
+
+
+def test_judge_with_timeout_passes_budget_to_inner():
+    """_judge_with_timeout forwards its budget to the inner judge so inner <= outer."""
+    from carta.hook.hook import _judge_with_timeout
+    cfg = _make_cfg()
+    captured = {}
+
+    def fake_call(prompt, hits, cfg, timeout_s):
+        captured["timeout_s"] = timeout_s
+        return False
+
+    with patch("carta.hook.hook._call_ollama_judge", fake_call):
+        _judge_with_timeout("p", [], cfg, timeout_s=2)
+    assert captured["timeout_s"] == 2
+
+
 def test_call_ollama_judge_parses_yes():
     """'yes' response returns True (D-17)."""
     from carta.hook.hook import _call_ollama_judge
