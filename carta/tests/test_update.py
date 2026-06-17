@@ -111,7 +111,9 @@ def test_maybe_notify_prints_when_update_available(tmp_path, capsys):
          patch("carta.update.checker._fetch_latest", return_value="0.4.0"):
         maybe_notify(carta_dir, {"update_check": True})
     captured = capsys.readouterr()
-    assert "0.4.0" in captured.out
+    # Notice goes to stderr so it never pollutes machine-readable stdout (--json).
+    assert "0.4.0" in captured.err
+    assert captured.out == ""
 
 
 def test_maybe_notify_silent_when_disabled(tmp_path, capsys):
