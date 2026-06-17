@@ -1077,3 +1077,23 @@ def test_iter_sidecar_files_yields_pre_lifecycle_sidecars(tmp_path):
     cfg = _minimal_cfg(tmp_path, excluded_paths=["docs/"])
     yielded = list(_iter_sidecar_files(tmp_path, cfg))
     assert len(yielded) == 1
+
+
+def test_iter_sidecar_files_skips_noncanonical_nested_copies(tmp_path):
+    """A junk sidecar copy nested under a worktree tree (not at the canonical
+    location its current_path maps to) must be skipped — else it emits phantom
+    sidecar_path_drift findings for a source it does not own."""
+    # Canonical sidecar for a real file — must be yielded.
+    _write_sidecar(tmp_path, "docs/foo.embed-meta.yaml", "docs/foo.md")
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docs" / "foo.md").write_text("# foo")
+    # Junk copy: a whole sidecar tree replicated under a worktree checkout, sitting
+    # far from where its current_path (docs/bar.md) would canonically place it.
+    _write_sidecar(
+        tmp_path,
+        ".worktrees/wt/.carta/sidecars/docs/bar.embed-meta.yaml",
+        "docs/bar.md",
+    )
+    cfg = _minimal_cfg(tmp_path)
+    yielded = [p.name for p in _iter_sidecar_files(tmp_path, cfg)]
+    assert yielded == ["foo.embed-meta.yaml"]

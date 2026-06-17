@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import Optional
+from typing import Iterator, Optional
 
 import yaml
 from qdrant_client import QdrantClient
@@ -41,18 +41,27 @@ from carta.vision.classifier import PageClass, PageAnalyzer
 _IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
 
 
-def _mark_or_collect_visual_pages(page_classes: list, cfg: dict) -> dict:
+def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str = "") -> dict:
     """Return sidecar updates queuing 1-indexed image-heavy pages when two_pass_visual is on.
 
     Args:
         page_classes: List of PageClass values, one per page (0-indexed position = page-1).
-        cfg: Carta config dict. Reads embed.two_pass_visual.
+        cfg: Carta config dict. Reads embed.two_pass_visual and embed.colpali_scoped_paths.
+        rel_path: Repo-relative path of the source file, used to honor
+            colpali_scoped_paths. Out-of-scope sources are not queued — the visual
+            drain skips them anyway (``_filter_visual_pending_in_scope``), so queuing
+            them only strands phantom pages in visual_pending that re-queue every embed
+            and inflate the "N pages await visual" count. Empty/absent scopes = no
+            restriction (backward compatible).
 
     Returns:
         Dict with VISUAL_PENDING_KEY → sorted list of 1-indexed page numbers, or {} when
-        two_pass_visual is off or no image-heavy pages exist.
+        two_pass_visual is off, the source is out of scope, or no image-heavy pages exist.
     """
     if not cfg.get("embed", {}).get("two_pass_visual", True):
+        return {}
+    scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
+    if scopes and not _colpali_path_in_scope(rel_path, scopes):
         return {}
     pending = [i + 1 for i, pc in enumerate(page_classes) if pc in _IMAGE_HEAVY]
     updates: dict = {}
@@ -62,6 +71,21 @@ def _mark_or_collect_visual_pages(page_classes: list, cfg: dict) -> dict:
 
 
 _SUPPORTED_EXTENSIONS = [".pdf", ".md"]
+_SUPPORTED_EXTENSIONS_SET = frozenset(_SUPPORTED_EXTENSIONS)
+
+
+def _iter_inductable_files(docs_root: Path) -> Iterator[Path]:
+    """Yield supported source files under docs_root, matching extensions
+    case-insensitively so uppercase ``.PDF`` (and ``.MD``) are found like ``.pdf``.
+
+    The scanner's induction check already lowercases suffixes
+    (``check_embed_induction_needed``), so a case-sensitive ``rglob("*.pdf")`` here
+    left uppercase-extension files perpetually flagged "needs induction" yet never
+    auto-inducted — embeddable only via an explicit ``carta embed <file>``.
+    """
+    for p in docs_root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in _SUPPORTED_EXTENSIONS_SET:
+            yield p
 
 # Maximum seconds to allow a single file's embed processing to run
 FILE_TIMEOUT_S = 300
@@ -440,7 +464,17 @@ def _embed_one_file(
         _skip_inline_vision = False
 
         if two_pass_visual and _page_classes_from_extraction is not None:
-            _visual_queue_updates = _mark_or_collect_visual_pages(_page_classes_from_extraction, cfg)
+            # Pass the repo-relative path so queueing honors colpali_scoped_paths,
+            # exactly like the drain (_filter_visual_pending_in_scope) and the inline
+            # ColPali scope check below. _skip_inline_vision stays True regardless, so
+            # an out-of-scope file gets pass-1 text only — no queue, no inline vision.
+            _rel_for_scope = (
+                str(file_path.relative_to(repo_root))
+                if file_path.is_relative_to(repo_root) else str(file_path)
+            )
+            _visual_queue_updates = _mark_or_collect_visual_pages(
+                _page_classes_from_extraction, cfg, _rel_for_scope
+            )
             _skip_inline_vision = True  # two-pass queued; inline path not needed
         elif two_pass_visual and _page_classes_from_extraction is None:
             # Classification error was already logged during extraction; fail closed.
@@ -1380,17 +1414,17 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
             file=sys.stderr, flush=True,
         )
 
-    # Auto-induct any supported files that lack a sidecar (e.g. after sidecar deletion)
+    # Auto-induct any supported files that lack a sidecar (e.g. after sidecar deletion).
+    # Extension matching is case-insensitive so uppercase .PDF is inducted like .pdf.
     docs_root_path = repo_root / cfg.get("docs_root", "docs/")
     if docs_root_path.is_dir():
-        for ext in _SUPPORTED_EXTENSIONS:
-            for file_path in docs_root_path.rglob(f"*{ext}"):
-                sc_path = sidecar_path(file_path, repo_root)
-                if not sc_path.exists():
-                    stub = generate_sidecar_stub(file_path, repo_root, cfg)
-                    write_sidecar(file_path, stub, repo_root)
-                    if verbose:
-                        print(f"  inducted: {file_path.relative_to(repo_root)}", flush=True)
+        for file_path in _iter_inductable_files(docs_root_path):
+            sc_path = sidecar_path(file_path, repo_root)
+            if not sc_path.exists():
+                stub = generate_sidecar_stub(file_path, repo_root, cfg)
+                write_sidecar(file_path, stub, repo_root)
+                if verbose:
+                    print(f"  inducted: {file_path.relative_to(repo_root)}", flush=True)
 
     chunking = cfg.get("embed", {}).get("chunking", {})
     max_tokens = chunking.get("max_tokens", 400)
