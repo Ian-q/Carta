@@ -109,7 +109,7 @@ DEFAULTS = {
         # False = hard opt-out. Auto never loads ColPali unless there's something to search.
         "colpali_enabled": None,
         "colpali_model": "vidore/colqwen2-v1.0-hf",  # or vidore/colpali-v1.3-hf
-        "colpali_device": "cpu",  # "cpu", "cuda", "mps"
+        "colpali_device": "auto",  # "auto" (MPS>CUDA>CPU), "cpu", "cuda", "mps"; CARTA_COLPALI_DEVICE env overrides
         "colpali_batch_size": 1,  # pages per batch (1 for CPU)
         "colpali_sidecar_path": ".carta/visual_cache/",  # where to store page PNGs
         "colpali_scoped_paths": [],  # restrict ColPali to these repo-relative globs/dirs; [] = all PDFs

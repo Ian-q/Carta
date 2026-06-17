@@ -16,6 +16,7 @@ Supported checkpoints (HF-native, no PEFT adapters):
 """
 
 import io
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -63,6 +64,31 @@ VECTOR_DIM = 128
 class ColPaliError(Exception):
     """Raised when ColPali operations fail."""
     pass
+
+
+def _load_with_fallback(load_fn, device: str):
+    """Call ``load_fn(device)``; on failure with a non-CPU device, warn and retry on
+    CPU. Returns ``(model, processor, final_device)``.
+
+    This is the GPU safety guard the visual pipeline previously lacked: ColQwen2 /
+    ColPali can hit an unsupported op or a dtype mismatch on MPS, and without a
+    fallback the whole drain would fail every page. A CPU failure is genuine and is
+    re-raised. (A hard segfault can't be caught here — only exceptions.)
+    """
+    try:
+        model, processor = load_fn(device)
+        return model, processor, device
+    except Exception as exc:  # noqa: BLE001 — any GPU load failure → retry on CPU
+        if device == "cpu":
+            raise
+        print(
+            f"Warning: ColPali failed on {device} ({type(exc).__name__}: {exc}); "
+            "falling back to CPU",
+            file=sys.stderr,
+            flush=True,
+        )
+        model, processor = load_fn("cpu")
+        return model, processor, "cpu"
 
 
 class ColPaliEmbedder:
@@ -123,16 +149,31 @@ class ColPaliEmbedder:
         self._is_colqwen = "qwen" in model_name.lower()
 
     def _resolve_device(self, device: str) -> str:
-        """Resolve device string to available device.
+        """Resolve a device string to an available device.
 
-        Falls back to CPU if requested device is unavailable.
+        Resolution order:
+        1. The ``CARTA_COLPALI_DEVICE`` env var overrides the configured device
+           (a run-time switch without editing config.yaml).
+        2. ``"auto"`` (or empty) auto-detects: MPS (Apple Silicon) > CUDA > CPU.
+        3. An explicit ``"cuda"``/``"mps"`` that isn't available falls back to CPU.
 
         Args:
-            device: Requested device ("cpu", "cuda", "mps")
+            device: Requested device ("auto", "cpu", "cuda", "mps")
 
         Returns:
             Available device string.
         """
+        env_device = os.environ.get("CARTA_COLPALI_DEVICE")
+        if env_device:
+            device = env_device.strip().lower()
+
+        if device in ("auto", ""):
+            if torch is not None and torch.backends.mps.is_available():
+                return "mps"
+            if torch is not None and torch.cuda.is_available():
+                return "cuda"
+            return "cpu"
+
         if device == "cuda" and torch is not None:
             if not torch.cuda.is_available():
                 print(
@@ -163,22 +204,10 @@ class ColPaliEmbedder:
 
         print(f"Loading ColPali model: {self.model_name}...", flush=True)
 
-        dtype = torch.bfloat16 if self.device in ("cuda", "mps") else torch.float32
-
-        if self._is_colqwen:
-            model = ColQwen2ForRetrieval.from_pretrained(
-                self.model_name,
-                torch_dtype=dtype,
-                device_map=self.device,
-            ).eval()
-            processor = ColQwen2Processor.from_pretrained(self.model_name)
-        else:
-            model = ColPaliForRetrieval.from_pretrained(
-                self.model_name,
-                torch_dtype=dtype,
-                device_map=self.device,
-            ).eval()
-            processor = ColPaliProcessor.from_pretrained(self.model_name)
+        # Wrapped so a non-CPU device that can't run the model (unsupported MPS op,
+        # dtype mismatch) degrades to CPU instead of failing every page.
+        model, processor, final_device = _load_with_fallback(self._load_on_device, self.device)
+        self.device = final_device
 
         # Cache for reuse
         self._MODEL_CACHE[self.model_name] = (model, processor)
@@ -186,6 +215,25 @@ class ColPaliEmbedder:
         self._processor = processor
 
         print(f"Model loaded on {self.device}", flush=True)
+        return model, processor
+
+    def _load_on_device(self, device: str) -> Tuple:
+        """Load model + processor on a specific device (the raw load, no fallback)."""
+        dtype = torch.bfloat16 if device in ("cuda", "mps") else torch.float32
+        if self._is_colqwen:
+            model = ColQwen2ForRetrieval.from_pretrained(
+                self.model_name,
+                torch_dtype=dtype,
+                device_map=device,
+            ).eval()
+            processor = ColQwen2Processor.from_pretrained(self.model_name)
+        else:
+            model = ColPaliForRetrieval.from_pretrained(
+                self.model_name,
+                torch_dtype=dtype,
+                device_map=device,
+            ).eval()
+            processor = ColPaliProcessor.from_pretrained(self.model_name)
         return model, processor
 
     def embed_page(self, image: "Image.Image") -> "np.ndarray":
