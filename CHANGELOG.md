@@ -4,6 +4,14 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-06-17
+
+### Fixed
+Three follow-ups surfaced during the 0.12.2 ET-embed closeout.
+- **Two-pass visual *queueing* ignored `colpali_scoped_paths`.** 0.12.2 fixed the `--visual` *drain* to skip out-of-scope sources, but pass-1 queueing still marked their image-heavy pages `visual_pending` — so out-of-scope docs (e.g. patents) re-queued on every `carta embed` and inflated the "N pages await visual" count with pages the drain would never process. Queueing now honors `colpali_scoped_paths` (the same check the inline ColPali path already applied), so out-of-scope files get pass-1 text only, no phantom pending pages. The zero-extractable-text OCR-rescue path stays ungated, preserving scanned docs' only route to any indexed text.
+- **Scanner emitted phantom `sidecar_path_drift` for nested junk sidecar copies.** `_iter_sidecar_files` walked every `*.embed-meta.yaml` under `.carta/sidecars/`, including stray sidecar trees replicated into `.carta/sidecars/.worktrees/<wt>/.carta/sidecars/…` by worktree checkouts or imports; each copy's `current_path` was resolved against the real repo, producing false `sidecar_path_drift` / `sidecar_broken_related` findings for sources it didn't own. The walk now skips non-canonical copies (a sidecar's location under `sidecars/` must equal where its `current_path` maps), mirroring `induct.iter_canonical_sidecars`. Removes the dead `_SIDECAR_SKIP_DIRS` constant this supersedes.
+- **`carta embed` auto-induction missed uppercase `.PDF`.** New-file discovery globbed `*.pdf` / `*.md` case-sensitively, so an uppercase-extension file was perpetually flagged `embed_induction_needed` by the scanner (which lowercases suffixes) yet never auto-inducted — embeddable only via an explicit `carta embed <file>`. Discovery now matches supported extensions case-insensitively.
+
 ## [0.12.2] — 2026-06-17
 
 ### Fixed
