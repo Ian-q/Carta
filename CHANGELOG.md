@@ -4,6 +4,13 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-06-16
+
+### Fixed — scanner false positives
+Follow-up to the 0.12.0 audit, cutting `carta scan` noise so the real doc-hygiene signal isn't buried. On the ET-embed corpus these two fixes removed 19 false findings (`homeless_doc` 34→18, `orphaned_doc` 6→3) with no real finding lost.
+- **Exclude vendored / virtualenv / scratch dirs.** `_ALWAYS_EXCLUDED_DIRS` covered only `.claude/worktrees/`, `build/`, `temp/`, so commonly-gitignored machine dirs were still walked and reported — e.g. 15 `tmp/` scratch docs and a `.pixi/.../site-packages/` vendored file flagged as `homeless_doc`. Added `tmp/`, `dist/`, `node_modules/`, `.venv/`, `venv/`, `.pixi/`, `site-packages/`, `.tox/` (matched as a path substring, so envs nested under a subproject are caught too). These live in `_ALWAYS_EXCLUDED_DIRS` rather than `DEFAULTS["excluded_paths"]` because an existing `config.yaml` replaces `excluded_paths` wholesale, so defaults never reach installed repos.
+- **Exempt READMEs from the `orphaned_doc` check.** A directory README is a navigational index discoverable by structure, not islanded knowledge — so having no inbound `related:` links is expected, not a problem (mirrors the existing homeless-check README skip). Sole-README section indexes are no longer false-flagged as orphans.
+
 ## [0.12.0] — 2026-06-16
 
 ### Fixed — pre-ET-embed reliability & correctness audit (CA-1..CA-27)
