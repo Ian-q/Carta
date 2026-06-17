@@ -121,6 +121,8 @@ def maybe_notify(carta_dir: Optional[Path], cfg: dict) -> None:
         msg = check_for_update(carta_dir)
         if msg:
             sep = "─" * 51
-            print(f"\n{sep}\n{msg}\n{sep}")
+            # stderr, not stdout: the notice must never pollute machine-readable
+            # output (e.g. `carta doctor --json`, `carta audit --json`).
+            print(f"\n{sep}\n{msg}\n{sep}", file=sys.stderr)
     except Exception:
         pass

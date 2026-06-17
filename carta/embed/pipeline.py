@@ -853,6 +853,27 @@ def _discover_visual_pending(repo_root: Path) -> list[tuple]:
     return out
 
 
+def _filter_visual_pending_in_scope(queued: list[tuple], scopes: list) -> list[tuple]:
+    """Drop (sidecar_path, sidecar) pairs whose source (``current_path``) is out of
+    ``colpali_scoped_paths``.
+
+    The two-pass visual drain must honor ``colpali_scoped_paths`` exactly like the
+    inline ColPali path (``_colpali_path_in_scope`` in ``_embed_one_file``).
+    Otherwise out-of-scope docs (e.g. patents) queued as ``visual_pending`` get
+    drained anyway — burning the expensive ColPali + OCR pass on docs the user
+    excluded and polluting the ``_visual`` collection with low-value figures.
+
+    Empty ``scopes`` means no restriction (backward compatible).
+    """
+    if not scopes:
+        return queued
+    return [
+        (sc_path, sc)
+        for (sc_path, sc) in queued
+        if _colpali_path_in_scope(sc.get("current_path") or "", scopes)
+    ]
+
+
 def _visual_chunk_index_pass2(page: int, i: int) -> str:
     """Return the chunk_index token used for pass-2 visual/OCR text chunks.
 
@@ -1029,6 +1050,20 @@ def run_visual_embed(
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
     queued = _discover_visual_pending(repo_root)
+    # Honor colpali_scoped_paths in the two-pass drain too (not just the inline path):
+    # skip out-of-scope sources (e.g. patents) that were queued as visual_pending,
+    # else the expensive ColPali pass burns on excluded docs and pollutes _visual.
+    _scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
+    if _scopes:
+        _before = len(queued)
+        queued = _filter_visual_pending_in_scope(queued, _scopes)
+        _skipped = _before - len(queued)
+        if _skipped:
+            print(
+                f"    visual drain: skipping {_skipped} out-of-scope source(s) "
+                f"(not in colpali_scoped_paths)",
+                flush=True,
+            )
     summary["files"] = len(queued)
     total_pages = sum(len(sc.get(VISUAL_PENDING_KEY, []) or []) for _, sc in queued)
 
