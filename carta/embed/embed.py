@@ -19,7 +19,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from carta.config import collection_name, collection_for_doc_type
+from carta.config import collection_name, collection_for_doc_type, ollama_keep_alive
 
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
@@ -89,7 +89,7 @@ def get_embedding(
     for attempt in range(4):
         resp = requests.post(
             f"{ollama_url}/api/embeddings",
-            json={"model": model, "prompt": f"{prefix}{attempt_text}"},
+            json={"model": model, "prompt": f"{prefix}{attempt_text}", "keep_alive": ollama_keep_alive()},
             timeout=60,
         )
         if resp.status_code == 200:
