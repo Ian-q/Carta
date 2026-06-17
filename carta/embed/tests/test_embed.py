@@ -640,6 +640,26 @@ def test_run_embed_qdrant_unreachable(mock_qdrant_cls, tmp_path):
     assert "Qdrant" in result["errors"][0]
 
 
+# Auto-induct discovery must match supported extensions case-insensitively, so an
+# uppercase `.PDF` is inducted like `.pdf` (the scanner already flags it via
+# `f.suffix.lower()`, so case-sensitive discovery left those files perpetually
+# "needs induction" but never embeddable without an explicit path).
+
+def test_iter_inductable_files_matches_extensions_case_insensitively(tmp_path):
+    from carta.embed.pipeline import _iter_inductable_files
+
+    docs = tmp_path / "docs"
+    (docs / "sub").mkdir(parents=True)
+    (docs / "a.pdf").write_bytes(b"%PDF")
+    (docs / "b.PDF").write_bytes(b"%PDF")
+    (docs / "sub" / "c.md").write_text("# c")
+    (docs / "sub" / "d.MD").write_text("# d")
+    (docs / "e.txt").write_text("nope")  # unsupported extension
+
+    found = {p.name for p in _iter_inductable_files(docs)}
+    assert found == {"a.pdf", "b.PDF", "c.md", "d.MD"}
+
+
 # ---------------------------------------------------------------------------
 # parse.py — encoding robustness (audit Group C: CA-13, BOM)
 # ---------------------------------------------------------------------------
