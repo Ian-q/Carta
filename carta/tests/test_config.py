@@ -144,3 +144,13 @@ def test_fusion_defaults_present():
     # Eval-swept optimum: maximizes ET-embed 62q text recall (0.839->0.887) while
     # holding the 14q visual eval flat at 0.857 (see RESULTS.md 2026-06-13).
     assert fusion["visual_max_ratio"] == 0.2
+
+
+def test_ollama_keep_alive_default_and_env_override(monkeypatch):
+    """keep_alive defaults to 10m (Ollama's own default is 5m) and is overridable
+    via CARTA_OLLAMA_KEEP_ALIVE (e.g. '-1' = keep resident indefinitely)."""
+    from carta.config import ollama_keep_alive
+    monkeypatch.delenv("CARTA_OLLAMA_KEEP_ALIVE", raising=False)
+    assert ollama_keep_alive() == "10m"
+    monkeypatch.setenv("CARTA_OLLAMA_KEEP_ALIVE", "-1")
+    assert ollama_keep_alive() == "-1"

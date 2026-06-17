@@ -20,7 +20,7 @@ from pathlib import Path
 
 import requests
 
-from carta.config import find_config, load_config, NOTE_DOC_TYPES
+from carta.config import find_config, load_config, NOTE_DOC_TYPES, ollama_keep_alive
 from carta.embed.pipeline import run_search
 
 
@@ -143,6 +143,7 @@ def _extract_query(prompt: str, cfg: dict) -> str:
                     {"role": "user", "content": prompt[:1000]},
                 ],
                 "stream": False,
+                "keep_alive": ollama_keep_alive(),
             },
             timeout=4,
         )

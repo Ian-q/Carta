@@ -1,6 +1,19 @@
 from pathlib import Path
 from typing import Optional
+import os
 import yaml
+
+
+def ollama_keep_alive() -> str:
+    """How long Ollama keeps a model resident after a request (its ``keep_alive``).
+
+    Default ``"10m"`` (Ollama's own default is 5m), overridable via
+    ``CARTA_OLLAMA_KEEP_ALIVE``. ``"-1"`` keeps models loaded indefinitely; ``"0"``
+    unloads immediately. Applied to every carta Ollama request (embed, rerank, hook
+    judge) so a model doesn't reload across idle gaps — notably the prompt-submit
+    hook, whose calls can be minutes apart.
+    """
+    return os.environ.get("CARTA_OLLAMA_KEEP_ALIVE", "10m")
 
 REQUIRED_FIELDS = ["project_name", "qdrant_url"]
 

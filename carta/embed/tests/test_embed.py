@@ -298,6 +298,19 @@ def test_get_embedding_raises_on_non_200(mock_requests):
         get_embedding("test text")
 
 
+@patch("carta.embed.embed.requests")
+def test_get_embedding_sends_keep_alive(mock_requests):
+    """Every Ollama embedding request carries keep_alive so the model stays resident
+    across idle gaps instead of reloading."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"embedding": [0.0] * 768}
+    mock_requests.post.return_value = mock_resp
+    get_embedding("hello world")
+    payload = mock_requests.post.call_args.kwargs["json"]
+    assert "keep_alive" in payload
+
+
 # ---------------------------------------------------------------------------
 # embed.py — ensure_collection create vs skip
 # ---------------------------------------------------------------------------
