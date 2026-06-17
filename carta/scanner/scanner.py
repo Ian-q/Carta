@@ -49,9 +49,18 @@ def parse_frontmatter(doc_path: Path) -> Optional[dict]:
 # Machine/tooling dirs that are never valid scan targets — excluded regardless
 # of user config, like .git (skipped in _iter_md_files). Existing repos carry a
 # config.yaml whose excluded_paths replaces DEFAULTS wholesale (_deep_merge does
-# not merge lists), so DEFAULTS alone would never reach them. `.claude/worktrees/`
-# holds full-repo worktree copies; `build/` holds packaging mirrors; `temp/` is scratch.
-_ALWAYS_EXCLUDED_DIRS = (".claude/worktrees/", "build/", "temp/")
+# not merge lists), so DEFAULTS alone would never reach them — these must live
+# here to reach existing installs. `.claude/worktrees/` holds full-repo worktree
+# copies; `build/`/`dist/` hold packaging mirrors; `temp/`/`tmp/` are scratch; the
+# rest are vendored deps / virtualenvs / tooling caches whose markdown (READMEs,
+# vendored docs, site-packages) is never project knowledge. Patterns are matched
+# as a path substring (see is_excluded), so envs nested under a subproject — e.g.
+# analysis/**/.pixi/.../site-packages/ — are caught too. All are commonly
+# gitignored yet were still being walked and reported as doc-hygiene issues.
+_ALWAYS_EXCLUDED_DIRS = (
+    ".claude/worktrees/", "build/", "dist/", "temp/", "tmp/",
+    "node_modules/", ".venv/", "venv/", ".pixi/", "site-packages/", ".tox/",
+)
 
 
 def is_excluded(file_path: Path, cfg: dict, repo_root: Path) -> bool:
@@ -481,7 +490,15 @@ def suggest_related_for_all(
 def check_orphaned_doc(
     doc_path: Path, frontmatter, inverted_index: dict, repo_root: Path
 ) -> Optional[dict]:
-    """Flag docs not referenced by any other doc's related: AND with no folder siblings."""
+    """Flag docs not referenced by any other doc's related: AND with no folder siblings.
+
+    READMEs are exempt: a directory README is a navigational index / front-door,
+    discoverable by structure rather than by graph edges, so having no inbound
+    related: links is expected, not a problem (parallels check_homeless_docs'
+    README skip). Without this, sole-README section indexes get false-flagged.
+    """
+    if doc_path.name == "README.md":
+        return None
     rel = str(doc_path.relative_to(repo_root))
     if rel in inverted_index:
         return None
