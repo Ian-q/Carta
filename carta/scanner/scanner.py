@@ -490,7 +490,15 @@ def suggest_related_for_all(
 def check_orphaned_doc(
     doc_path: Path, frontmatter, inverted_index: dict, repo_root: Path
 ) -> Optional[dict]:
-    """Flag docs not referenced by any other doc's related: AND with no folder siblings."""
+    """Flag docs not referenced by any other doc's related: AND with no folder siblings.
+
+    READMEs are exempt: a directory README is a navigational index / front-door,
+    discoverable by structure rather than by graph edges, so having no inbound
+    related: links is expected, not a problem (parallels check_homeless_docs'
+    README skip). Without this, sole-README section indexes get false-flagged.
+    """
+    if doc_path.name == "README.md":
+        return None
     rel = str(doc_path.relative_to(repo_root))
     if rel in inverted_index:
         return None

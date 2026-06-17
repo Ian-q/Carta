@@ -539,6 +539,21 @@ def test_orphaned_doc_not_flagged_if_has_siblings(tmp_path):
     assert check_orphaned_doc(doc, {}, idx, tmp_path) is None
 
 
+def test_orphaned_doc_exempts_readme(tmp_path):
+    """A directory README is a navigational index/front-door, discoverable by
+    structure rather than graph edges — so "nothing links to it" is expected, not
+    a problem. It must not be orphan-flagged even alone in its folder with no
+    inbound links (parallels check_homeless_docs' README skip). A non-README doc in
+    the same situation is still an orphan."""
+    _make_tree(tmp_path, ["docs/reference/suppliers/Goldgun/README.md"])
+    readme = tmp_path / "docs/reference/suppliers/Goldgun/README.md"
+    assert check_orphaned_doc(readme, {}, {}, tmp_path) is None
+    # control: a non-README alone in its folder with no inbound links IS flagged
+    _make_tree(tmp_path, ["docs/reference/suppliers/Acme/catalogue.md"])
+    other = tmp_path / "docs/reference/suppliers/Acme/catalogue.md"
+    assert check_orphaned_doc(other, {}, {}, tmp_path)["type"] == "orphaned_doc"
+
+
 # ---------------------------------------------------------------------------
 # get_current_git_hash / get_changed_since_hash
 # ---------------------------------------------------------------------------
