@@ -4,6 +4,17 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-06-17
+
+### Fixed
+- **Visual drain ignored `colpali_scoped_paths`.** Only the inline ColPali path enforced scope; the two-pass `--visual` drain processed every queued page, so out-of-scope docs (e.g. patents) got ColPali-embedded anyway — on ET-embed ~2126 of 2252 pages, burning the slow OCR+ColPali pass on excluded docs and polluting the `_visual` collection with low-value figures. `run_visual_embed` now skips out-of-scope sources.
+- **Hook judge inner timeout exceeded its outer budget.** `_call_ollama_judge` hardcoded a 4s Ollama timeout while the worker-thread budget is the configured `judge_timeout_s` (default 3s); since the executor waits for the thread on exit, the hook could block ~4s despite a 3s budget. The inner now tracks the outer budget.
+- **`carta doctor --json` / `audit --json` output was corrupted** when a newer version was available: the update-available notice printed to stdout. It now goes to stderr, keeping machine-readable stdout clean.
+
+### Changed — performance
+- **MPS productionized.** `colpali_device` now defaults to `"auto"` (MPS > CUDA > CPU); `CARTA_COLPALI_DEVICE` overrides at run time; a load-time guard falls back to CPU if the GPU device can't run the model instead of failing every page. ColPali no longer runs on CPU-by-default on Apple Silicon.
+- **Ollama `keep_alive`** is now set on every request (embed, rerank, hook judge, query extraction), configurable via `CARTA_OLLAMA_KEEP_ALIVE` (default `"10m"`; `"-1"` keeps models resident). Stops models reloading across idle gaps — chiefly the prompt-submit hook.
+
 ## [0.12.1] — 2026-06-16
 
 ### Fixed — scanner false positives
