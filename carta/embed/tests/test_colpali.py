@@ -1,5 +1,6 @@
 """Tests for carta.embed.colpali module."""
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock
@@ -214,3 +215,92 @@ class TestEmbedQuery:
         
         with pytest.raises(ColPaliError):
             embedder.embed_query("test query")
+
+
+class TestMPSProductionization:
+    """Auto-detect, CARTA_COLPALI_DEVICE override, and the device-load safety guard."""
+
+    @patch.dict("os.environ", {}, clear=False)
+    @patch("carta.embed.colpali._COLPALI_AVAILABLE", True)
+    @patch("carta.embed.colpali.np", MagicMock())
+    @patch("carta.embed.colpali.Image", MagicMock())
+    @patch("carta.embed.colpali.torch")
+    def test_auto_detects_mps_on_apple_silicon(self, mock_torch):
+        """device='auto' picks MPS when Apple Silicon Metal is available."""
+        from carta.embed.colpali import ColPaliEmbedder
+
+        os.environ.pop("CARTA_COLPALI_DEVICE", None)
+        mock_torch.backends.mps.is_available.return_value = True
+        with patch.object(Path, "mkdir"):
+            e = ColPaliEmbedder(device="auto")
+        assert e.device == "mps"
+
+    @patch.dict("os.environ", {}, clear=False)
+    @patch("carta.embed.colpali._COLPALI_AVAILABLE", True)
+    @patch("carta.embed.colpali.np", MagicMock())
+    @patch("carta.embed.colpali.Image", MagicMock())
+    @patch("carta.embed.colpali.torch")
+    def test_auto_falls_back_to_cpu_without_gpu(self, mock_torch):
+        """device='auto' resolves to CPU when neither MPS nor CUDA is available."""
+        from carta.embed.colpali import ColPaliEmbedder
+
+        os.environ.pop("CARTA_COLPALI_DEVICE", None)
+        mock_torch.backends.mps.is_available.return_value = False
+        mock_torch.cuda.is_available.return_value = False
+        with patch.object(Path, "mkdir"):
+            e = ColPaliEmbedder(device="auto")
+        assert e.device == "cpu"
+
+    @patch("carta.embed.colpali._COLPALI_AVAILABLE", True)
+    @patch("carta.embed.colpali.np", MagicMock())
+    @patch("carta.embed.colpali.Image", MagicMock())
+    @patch("carta.embed.colpali.torch")
+    def test_env_var_overrides_configured_device(self, mock_torch):
+        """CARTA_COLPALI_DEVICE overrides the configured device (run-time switch)."""
+        from carta.embed.colpali import ColPaliEmbedder
+
+        mock_torch.backends.mps.is_available.return_value = True
+        with patch.dict("os.environ", {"CARTA_COLPALI_DEVICE": "mps"}), patch.object(Path, "mkdir"):
+            e = ColPaliEmbedder(device="cpu")  # config says cpu; env wins
+        assert e.device == "mps"
+
+    def test_load_with_fallback_recovers_on_cpu(self):
+        """A GPU load failure (e.g. an unsupported MPS op) falls back to CPU."""
+        from carta.embed.colpali import _load_with_fallback
+
+        calls = []
+
+        def fake_load(dev):
+            calls.append(dev)
+            if dev != "cpu":
+                raise RuntimeError("MPS op 'aten::foo' not implemented")
+            return ("model", "proc")
+
+        model, proc, final = _load_with_fallback(fake_load, "mps")
+        assert final == "cpu"
+        assert (model, proc) == ("model", "proc")
+        assert calls == ["mps", "cpu"]
+
+    def test_load_with_fallback_reraises_cpu_failure(self):
+        """A genuine CPU load failure is real — re-raise, don't loop."""
+        from carta.embed.colpali import _load_with_fallback
+
+        def fake_load(dev):
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            _load_with_fallback(fake_load, "cpu")
+
+    def test_load_with_fallback_noop_when_device_works(self):
+        """When the requested device loads fine, no fallback occurs."""
+        from carta.embed.colpali import _load_with_fallback
+
+        calls = []
+
+        def fake_load(dev):
+            calls.append(dev)
+            return ("m", "p")
+
+        _, _, final = _load_with_fallback(fake_load, "mps")
+        assert final == "mps"
+        assert calls == ["mps"]
