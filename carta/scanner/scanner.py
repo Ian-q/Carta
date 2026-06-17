@@ -545,9 +545,6 @@ def check_nested_docs_folders(repo_root: Path, cfg: dict = None) -> list:
 # Sidecar (.embed-meta.yaml) support
 # ---------------------------------------------------------------------------
 
-_SIDECAR_SKIP_DIRS = frozenset([".git", ".pio", "node_modules", "build", "install", "__pycache__"])
-
-
 def _iter_sidecar_files(repo_root: Path, cfg: dict):
     """Yield .embed-meta.yaml files under .carta/sidecars/ whose source isn't excluded.
 
@@ -556,6 +553,14 @@ def _iter_sidecar_files(repo_root: Path, cfg: dict):
     entry of '.carta/' (common in user configs predating the sidecar relocation)
     would silently filter every sidecar. Sidecars without current_path
     (pre-lifecycle) are yielded unconditionally.
+
+    Non-canonical copies are skipped: a sidecar carrying a current_path whose
+    location under sidecars_root does not equal where that current_path maps to is
+    a stray duplicate — e.g. a whole sidecar tree replicated into
+    ``.carta/sidecars/.worktrees/<wt>/.carta/sidecars/...`` by a worktree checkout
+    or import. Scanning such a copy emits phantom sidecar_path_drift /
+    broken_related findings for a source it does not own. (Mirrors the canonical
+    check in ``carta.embed.induct.iter_canonical_sidecars``.)
     """
     sidecars_root = repo_root / ".carta" / "sidecars"
     if not sidecars_root.exists():
@@ -563,8 +568,16 @@ def _iter_sidecar_files(repo_root: Path, cfg: dict):
     for p in sidecars_root.rglob("*.embed-meta.yaml"):
         data = parse_sidecar(p)
         current_path = data.get("current_path") if data else None
-        if current_path and is_excluded(repo_root / current_path, cfg, repo_root):
-            continue
+        if current_path:
+            if is_excluded(repo_root / current_path, cfg, repo_root):
+                continue
+            expected_rel = Path(current_path).with_suffix(".embed-meta.yaml")
+            try:
+                actual_rel = p.relative_to(sidecars_root)
+            except ValueError:
+                continue
+            if actual_rel != expected_rel:
+                continue  # stray/nested junk copy, not this source's canonical sidecar
         yield p
 
 
