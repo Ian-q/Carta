@@ -251,6 +251,55 @@ def test_structural_dirs_excluded_regardless_of_config(tmp_path):
     assert is_excluded(tmp_path / "docs" / "X.md", cfg, tmp_path) is False
 
 
+def test_default_excludes_vendored_and_scratch_dirs(tmp_path):
+    """Vendored deps, virtualenvs, build/test output, and scratch dirs are
+    machine artifacts — never valid scan targets — so they must be excluded even
+    when a pre-existing config.yaml's excluded_paths omits them (#49 follow-up).
+    These are commonly gitignored (e.g. ET-embed's tmp/ and analysis/**/.pixi/),
+    yet the scanner walked them and reported their contents as doc-hygiene issues.
+    """
+    cfg = {"excluded_paths": []}  # existing install whose config omits these
+    # scratch dirs — DEFAULTS had `*.tmp` (files) but never `tmp/` (the dir)
+    assert is_excluded(tmp_path / "tmp" / "franks-notes.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / "tmp" / "dempsey" / "EXPORT.md", cfg, tmp_path) is True
+    # pixi env nested under a subproject — must match by substring, not just prefix
+    nested_pixi = (tmp_path / "analysis" / "dyn" / ".pixi" / "envs" / "default"
+                   / "lib" / "python3.14" / "site-packages" / "pyparsing" / "ai"
+                   / "best_practices.md")
+    assert is_excluded(nested_pixi, cfg, tmp_path) is True
+    # vendored deps / virtualenvs — robust for existing installs, not just new ones
+    assert is_excluded(tmp_path / "frontend" / "node_modules" / "p" / "guide.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / ".venv" / "lib" / "x" / "doc.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / "venv" / "x.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / "pkgs" / "site-packages" / "p" / "doc.md", cfg, tmp_path) is True
+    # build / test output
+    assert is_excluded(tmp_path / "dist" / "x.md", cfg, tmp_path) is True
+    assert is_excluded(tmp_path / ".tox" / "py311" / "x.md", cfg, tmp_path) is True
+    # Guard against over-matching: 'attempts/' must NOT be caught by 'tmp/'.
+    assert is_excluded(tmp_path / "docs" / "attempts" / "x.md", cfg, tmp_path) is False
+    assert is_excluded(tmp_path / "docs" / "X.md", cfg, tmp_path) is False
+
+
+def test_homeless_skips_tmp_and_vendored(tmp_path):
+    """check_homeless_docs must not flag scratch/vendored markdown — the bulk of
+    ET-embed's homeless_doc noise was tmp/ scratch plus a .pixi site-packages
+    file — while still flagging a genuinely homeless doc."""
+    _make_tree(tmp_path, [
+        "docs/real.md",
+        "tmp/franks-notes.md",
+        "analysis/dyn/.pixi/envs/default/lib/site-packages/pyparsing/ai/best_practices.md",
+        "frontend/node_modules/pkg/guide.md",
+        "stray-notes.md",  # genuinely homeless — should still be flagged
+    ])
+    cfg = _minimal_cfg(tmp_path)
+    issues = check_homeless_docs(tmp_path, cfg)
+    doc_paths = [i["doc"] for i in issues]
+    assert "tmp/franks-notes.md" not in doc_paths
+    assert "analysis/dyn/.pixi/envs/default/lib/site-packages/pyparsing/ai/best_practices.md" not in doc_paths
+    assert "frontend/node_modules/pkg/guide.md" not in doc_paths
+    assert "stray-notes.md" in doc_paths
+
+
 def test_homeless_skips_skills_dirs(tmp_path):
     """SKILL.md files under skills/ and carta/skills/ are intentional homes (#52)."""
     _make_tree(tmp_path, [
@@ -488,6 +537,21 @@ def test_orphaned_doc_not_flagged_if_has_siblings(tmp_path):
     doc = tmp_path / "docs/hardware/VCU-Power-Consumption.md"
     idx = {}
     assert check_orphaned_doc(doc, {}, idx, tmp_path) is None
+
+
+def test_orphaned_doc_exempts_readme(tmp_path):
+    """A directory README is a navigational index/front-door, discoverable by
+    structure rather than graph edges — so "nothing links to it" is expected, not
+    a problem. It must not be orphan-flagged even alone in its folder with no
+    inbound links (parallels check_homeless_docs' README skip). A non-README doc in
+    the same situation is still an orphan."""
+    _make_tree(tmp_path, ["docs/reference/suppliers/Goldgun/README.md"])
+    readme = tmp_path / "docs/reference/suppliers/Goldgun/README.md"
+    assert check_orphaned_doc(readme, {}, {}, tmp_path) is None
+    # control: a non-README alone in its folder with no inbound links IS flagged
+    _make_tree(tmp_path, ["docs/reference/suppliers/Acme/catalogue.md"])
+    other = tmp_path / "docs/reference/suppliers/Acme/catalogue.md"
+    assert check_orphaned_doc(other, {}, {}, tmp_path)["type"] == "orphaned_doc"
 
 
 # ---------------------------------------------------------------------------
