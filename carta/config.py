@@ -43,6 +43,7 @@ DEFAULTS = {
     },
     "search": {
         "top_n": 5,
+        "dedupe_results": True,
         "hybrid": {
             "enabled": True,
             "bm25_model": "Qdrant/bm25",

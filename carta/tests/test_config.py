@@ -154,3 +154,7 @@ def test_ollama_keep_alive_default_and_env_override(monkeypatch):
     assert ollama_keep_alive() == "10m"
     monkeypatch.setenv("CARTA_OLLAMA_KEEP_ALIVE", "-1")
     assert ollama_keep_alive() == "-1"
+
+
+def test_search_dedupe_results_default_on():
+    assert DEFAULTS["search"]["dedupe_results"] is True
