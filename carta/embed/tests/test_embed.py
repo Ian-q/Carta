@@ -845,8 +845,9 @@ def test_run_search_returns_hits(mock_qdrant_cls, mock_embed, mock_find_config):
     mock_client.query_points.return_value = mock_response
 
     results = run_search("what is the voltage rating", MINIMAL_CFG)
-    # Search now returns results from all collections (doc, notes, session)
-    assert len(results) == 3
+    # The doc/notes/session collections all return the same docs/spec.pdf hit in this
+    # mock; dedupe_results collapses identical-source hits to one distinct result.
+    assert len(results) == 1
     assert results[0]["score"] == pytest.approx(0.92)
     assert results[0]["source"] == "docs/spec.pdf"
     assert results[0]["excerpt"] == "relevant excerpt"
