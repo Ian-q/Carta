@@ -1807,11 +1807,16 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     graph_enabled = graph_cfg.get("enabled", False)
     candidate_depth = graph_cfg.get("candidate_depth", 50)
     # Fetch deep enough for the rerank pool AND graph promotion (whichever is wider).
+    dedupe_results = cfg.get("search", {}).get("dedupe_results", True)
     fetch_limit = top_n
     if rerank_enabled:
         fetch_limit = max(fetch_limit, candidate_pool)
     if graph_enabled:
         fetch_limit = max(fetch_limit, candidate_depth)
+    if dedupe_results:
+        # Dedup collapses duplicate chunks/visual pages; fetch a real pool so the
+        # top_n SHOWN results are distinct docs, not 2-3 docs' worth of dup chunks.
+        fetch_limit = max(fetch_limit, _RESULT_POOL_FLOOR)
 
     # Get all collections to search
     try:
@@ -1952,8 +1957,11 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     # visual_max_ratio caps the visual lane's share so text questions keep their depth.
     fusion_cfg = cfg.get("search", {}).get("fusion", {})
     visual_max_ratio = fusion_cfg.get("visual_max_ratio", 1.0)
+    # When deduping, defer the visual cap to the final stage (applied against top_n
+    # after dedup) so the deepened pool can't let visual over-inject. 1.0 = no cap.
+    merge_ratio = 1.0 if dedupe_results else visual_max_ratio
     all_results = _rrf_merge_collections(
-        per_collection, fetch_limit, visual_max_ratio=visual_max_ratio
+        per_collection, fetch_limit, visual_max_ratio=merge_ratio
     )
 
     # Graph-aware expansion: promote related:-adjacent docs into the pool the reranker
@@ -1961,6 +1969,11 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     # candidate_depth (default 50) widens the Qdrant fetch to seed the walk.
     if graph_enabled:
         all_results = _apply_graph_expansion(all_results, cfg, repo_root)
+
+    # De-duplicate by source so the reranker ranks distinct docs and the shown
+    # top_n covers distinct docs (not duplicate chunks of the same one).
+    if dedupe_results:
+        all_results = _dedupe_by_source(all_results)
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
     rerank_applied = False
@@ -1990,5 +2003,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     if stats is not None:
         stats["rerank_requested"] = rerank_enabled
         stats["rerank_applied"] = rerank_applied
+
+    # Cap the visual lane's share of the SHOWN results (relative to top_n, not the
+    # deepened fetch pool), preserving the #36 balance after dedup.
+    if dedupe_results:
+        all_results = _apply_visual_cap(all_results, top_n, visual_max_ratio)
 
     return all_results[:top_n]
