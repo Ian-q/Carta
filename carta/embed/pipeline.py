@@ -90,6 +90,10 @@ def _iter_inductable_files(docs_root: Path) -> Iterator[Path]:
 # Maximum seconds to allow a single file's embed processing to run
 FILE_TIMEOUT_S = 300
 
+# Minimum candidate pool fetched before de-duplication, so the top_n SHOWN results
+# can be top_n DISTINCT docs even when several high-ranked chunks share a doc.
+_RESULT_POOL_FLOOR = 30
+
 # Env var that, when set, points run_embed at a JSONL log it appends one row
 # to per processed file. Useful for profiling long batch runs.
 _PERF_LOG_ENV = "CARTA_PERF_LOG"
@@ -1647,6 +1651,35 @@ def _visual_collection_ready(client, coll_name: str) -> bool:
     return bool(count and count > 0)
 
 
+def _apply_visual_cap(ordered: list[dict], limit: int, visual_max_ratio: float = 1.0) -> list[dict]:
+    """Admit up to ``limit`` hits from an already-ordered list, capping the visual share.
+
+    Caps ``type == "visual"`` hits at ``round(visual_max_ratio * limit)``; overflow
+    visual is diverted and the freed slots are backfilled with deeper non-visual hits,
+    input order preserved among everything admitted. ``visual_max_ratio >= 1.0`` disables
+    the cap. Returns a list of length <= limit.
+    """
+    visual_cap = round(visual_max_ratio * limit)
+    result: list[dict] = []
+    overflow: list[dict] = []
+    visual_admitted = 0
+    for hit in ordered:
+        if len(result) >= limit:
+            break
+        if hit.get("type") == "visual":
+            if visual_admitted < visual_cap:
+                result.append(hit)
+                visual_admitted += 1
+            else:
+                overflow.append(hit)
+        else:
+            result.append(hit)
+    # Text too shallow to fill the pool: restore diverted visual, still in order.
+    if len(result) < limit and overflow:
+        result.extend(overflow[: limit - len(result)])
+    return result
+
+
 def _rrf_merge_collections(
     per_collection: list[list[dict]],
     top_n: int,
@@ -1689,28 +1722,8 @@ def _rrf_merge_collections(
     # -rrf: higher fused score first. coll_index/rank: deterministic, text-first ties.
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
 
-    # Cap the visual lane's share of the pool. No-op when no hit is visual or when
-    # visual_cap >= top_n (i.e. visual_max_ratio >= 1.0): the visual branch never
-    # diverts, so the walk reproduces scored[:top_n] exactly.
-    visual_cap = round(visual_max_ratio * top_n)
-    result: list[dict] = []
-    overflow: list[dict] = []
-    visual_admitted = 0
-    for _, _, _, hit in scored:
-        if len(result) >= top_n:
-            break
-        if hit.get("type") == "visual":
-            if visual_admitted < visual_cap:
-                result.append(hit)
-                visual_admitted += 1
-            else:
-                overflow.append(hit)
-        else:
-            result.append(hit)
-    # Text too shallow to fill the pool: restore diverted visual, still RRF order.
-    if len(result) < top_n and overflow:
-        result.extend(overflow[: top_n - len(result)])
-    return result
+    ordered = [hit for _, _, _, hit in scored]
+    return _apply_visual_cap(ordered, top_n, visual_max_ratio)
 
 
 def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[dict]:
