@@ -111,16 +111,18 @@ def test_ratio_zero_excludes_visual_when_text_fills_pool():
 
 
 def test_run_search_forwards_configured_visual_max_ratio(monkeypatch, tmp_path):
-    # The configured search.fusion.visual_max_ratio must reach _rrf_merge_collections.
+    # With dedupe on (default) the configured ratio is applied at the FINAL visual
+    # cap (the merge runs uncapped, deferring the cap to after dedup).
     import carta.embed.pipeline as pipeline
 
     captured = {}
+    monkeypatch.setattr(pipeline, "_rrf_merge_collections", lambda *a, **k: [])
 
-    def fake_merge(per_collection, top_n, k=60, visual_max_ratio=1.0):
+    def fake_cap(ordered, limit, visual_max_ratio=1.0):
         captured["ratio"] = visual_max_ratio
-        return []
+        return list(ordered)[:limit]
 
-    monkeypatch.setattr(pipeline, "_rrf_merge_collections", fake_merge)
+    monkeypatch.setattr(pipeline, "_apply_visual_cap", fake_cap)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr(pipeline, "find_config", lambda: str(tmp_path / ".carta" / "config.yaml"))
     # No collections -> the per-collection loop is skipped and the merge is still called.

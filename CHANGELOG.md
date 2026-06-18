@@ -4,6 +4,9 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Fixed
+- **`carta search` returned duplicate-chunk results, burying distinct docs.** `run_search` truncated the fused candidate pool to `top_n` without de-duplicating, so several high-ranked chunks of the same document — or the same visual page repeated — could fill the shown results (e.g. 3 of the top-5 being one spec doc), even when a relevant document sat just below at the 5th *distinct* position. `run_search` now fetches a deeper candidate pool, de-duplicates by source, and applies the visual-share cap (#36) against the final `top_n`. On the ET-embed eval, recall@5 **0.952 → 0.984** / MRR 0.855 → 0.875 with **zero regressions** — it recovered both the RJ45/CTS-harness and FSM-gain-scheduler docs that duplicate chunks had been crowding out (the lone remaining miss is a patent not yet OCR'd into the index). Provably non-decreasing at the doc level. Gated by `search.dedupe_results` (default on).
+
 ## [0.12.3] — 2026-06-17
 
 ### Fixed
