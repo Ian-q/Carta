@@ -31,7 +31,7 @@ def test_hybrid_query_uses_prefetch_and_rrf(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _make_run_search_cfg(*, top_n=5, rerank_enabled=False, candidate_pool=30,
-                          hybrid_enabled=False):
+                          hybrid_enabled=False, dedupe_results=False):
     """Return a minimal carta config dict for run_search tests."""
     return {
         "project_name": "test_proj",
@@ -43,6 +43,7 @@ def _make_run_search_cfg(*, top_n=5, rerank_enabled=False, candidate_pool=30,
         },
         "search": {
             "top_n": top_n,
+            "dedupe_results": dedupe_results,
             "hybrid": {"enabled": hybrid_enabled, "prefetch_limit": 40,
                        "bm25_model": "Qdrant/bm25"},
             "rerank": {"enabled": rerank_enabled, "candidate_pool": candidate_pool,
@@ -140,7 +141,7 @@ def test_run_search_overfetch_when_rerank_enabled(monkeypatch):
 
 
 def test_run_search_no_overfetch_when_rerank_disabled(monkeypatch):
-    """With rerank disabled, retrieval should use limit=top_n (5) — no change."""
+    """With rerank AND dedup disabled, retrieval uses limit=top_n (5) — no overfetch."""
     captured_limits = []
     _patch_run_search_deps(monkeypatch, captured_limits=captured_limits,
                            n_points_per_collection=5, is_hybrid=False)
@@ -155,6 +156,23 @@ def test_run_search_no_overfetch_when_rerank_disabled(monkeypatch):
         )
 
     assert len(results) <= 5
+
+
+def test_run_search_deepens_fetch_for_dedup_when_enabled(monkeypatch):
+    """With dedup on, fetch is deepened to the pool floor (30) even when rerank is
+    off, so dedup has headroom to backfill top_n distinct docs."""
+    captured_limits = []
+    _patch_run_search_deps(monkeypatch, captured_limits=captured_limits,
+                           n_points_per_collection=30, is_hybrid=False)
+
+    cfg = _make_run_search_cfg(top_n=5, rerank_enabled=False, dedupe_results=True)
+    pipeline.run_search("serial bridge baud", cfg)
+
+    assert captured_limits, "No query_points calls were captured"
+    for lim in captured_limits:
+        assert lim == 30, (
+            f"Expected deepened fetch 30 (pool floor) with dedup on, got {lim}"
+        )
 
 
 def test_run_search_hybrid_overfetch_when_rerank_enabled(monkeypatch):
