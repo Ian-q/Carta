@@ -1680,6 +1680,26 @@ def _apply_visual_cap(ordered: list[dict], limit: int, visual_max_ratio: float =
     return result
 
 
+def _dedupe_by_source(results: list[dict]) -> list[dict]:
+    """Keep the first (best-ranked) occurrence of each distinct ``source``, drop the rest.
+
+    Order preserved. Hits without a ``source`` are passed through (treated as distinct),
+    so a missing key never collapses unrelated results.
+    """
+    seen: set = set()
+    out: list[dict] = []
+    for hit in results:
+        src = hit.get("source")
+        if src is None:
+            out.append(hit)
+            continue
+        if src in seen:
+            continue
+        seen.add(src)
+        out.append(hit)
+    return out
+
+
 def _rrf_merge_collections(
     per_collection: list[list[dict]],
     top_n: int,
