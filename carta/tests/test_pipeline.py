@@ -1369,3 +1369,20 @@ class TestFocusOutline:
         client = MagicMock(); client.scroll.return_value = ([], None)
         _focus_outline(client, ["test-project_visual"], _file_filter("imu.pdf"), "imu.pdf")
         client.scroll.assert_not_called()  # visual collections are skipped
+
+    def test_outline_raises_on_transport_failure(self):
+        import pytest
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+        client = MagicMock()
+        client.scroll.side_effect = Exception("Connection refused")
+        with pytest.raises(RuntimeError, match="Qdrant"):
+            _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
+
+    def test_outline_swallows_collection_not_found(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+        client = MagicMock()
+        client.scroll.side_effect = Exception("Collection not found: status_code=404")
+        rows = _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
+        assert rows == []  # 404 is swallowed → empty outline, no raise
