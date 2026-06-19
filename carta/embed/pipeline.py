@@ -1608,7 +1608,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
 
 def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
-                              prefetch_limit, bm25_model):
+                              prefetch_limit, bm25_model, query_filter=None):
     """Run a hybrid BM25+dense query with Qdrant RRF fusion.
 
     Fetches `prefetch_limit` candidates from each of the dense and sparse
@@ -1619,15 +1619,19 @@ def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
     to return).  When reranking is enabled, callers should pass `fetch_limit`
     (= candidate_pool) here so that the reranker has a wide enough pool to
     promote lower-ranked relevant documents.
+
+    `query_filter` (optional) is applied to BOTH prefetch lanes so the filter
+    takes effect before fusion (used by run_focus to scope to one file).
     """
     sv = embed_sparse_query(query, model_name=bm25_model)
     return client.query_points(
         collection_name=coll_name,
         prefetch=[
-            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME, limit=prefetch_limit),
+            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME,
+                             limit=prefetch_limit, filter=query_filter),
             qmodels.Prefetch(
                 query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
-                using=SPARSE_VECTOR_NAME, limit=prefetch_limit,
+                using=SPARSE_VECTOR_NAME, limit=prefetch_limit, filter=query_filter,
             ),
         ],
         query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
