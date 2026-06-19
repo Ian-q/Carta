@@ -324,6 +324,52 @@ def cmd_search(args):
 
     _notify_if_update(cfg_path, cfg)
 
+def cmd_focus(args):
+    from carta.config import load_config
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
+    if not cfg["modules"].get("doc_search"):
+        print("doc_search module is disabled in config.", file=sys.stderr)
+        sys.exit(1)
+    from carta.embed.pipeline import run_focus
+    repo_root = cfg_path.parent.parent
+    query = " ".join(args.query) if args.query else ""
+    try:
+        results = run_focus(args.source, cfg, query=query, limit=args.limit)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not results:
+        print(f"No focus results for {args.source!r}. Is the file embedded? "
+              f"Use `carta search` to find the exact source path.")
+        return
+
+    if not query:
+        print(f"Outline of {args.source} ({len(results)} sections):")
+        for r in results:
+            page = r.get("page")
+            page_s = f"p.{page}" if page is not None else "p.?"
+            heading = r.get("section_heading") or "(no heading)"
+            print(f"  {page_s:>6}  {heading}")
+        return
+
+    cache_dir = repo_root / ".carta" / "cache" / "focus"
+    stem = Path(args.source).stem
+    for r in results:
+        page = r.get("page")
+        page_s = f"p.{page}" if page is not None else "p.?"
+        heading = r.get("section_heading") or ""
+        head_s = f" §{heading}" if heading else ""
+        print(f"[{r['score']:.2f}] {r['source']} {page_s}{head_s} — {r['excerpt']}")
+        if r.get("image_b64"):
+            import base64
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            img_path = cache_dir / f"{stem}-p{page}.png"
+            img_path.write_bytes(base64.b64decode(r["image_b64"]))
+            print(f"        ↳ page image: {img_path}")
+
+
 def cmd_update(args):
     """Check for and apply carta updates."""
     from carta.update.updater import run_update, print_check
@@ -945,6 +991,16 @@ def main():
         ),
     )
 
+    focus_p = sub.add_parser(
+        "focus",
+        help="Go deep in one file: page-anchored passages, or an outline (omit the query)")
+    focus_p.add_argument("query", nargs="*",
+                         help="Query to search within the file; omit for a section/page outline")
+    focus_p.add_argument("--source", required=True, metavar="PATH",
+                         help="Repo-relative file path (the 'source' from a carta search result)")
+    focus_p.add_argument("--limit", type=int, default=15,
+                         help="Max passages to return (default 15)")
+
     eval_p = sub.add_parser("eval", help="Score retrieval quality against an eval set")
     eval_p.add_argument("eval_path", help="Path to eval-set YAML (see carta/eval/datasets/example.yaml)")
     eval_p.add_argument("-k", type=int, default=5, help="top-k cutoff (default 5)")
@@ -1042,6 +1098,7 @@ def main():
         "scan": cmd_scan,
         "embed": cmd_embed,
         "search": cmd_search,
+        "focus": cmd_focus,
         "audit": cmd_audit,
         "doctor": cmd_doctor,
         "eval": cmd_eval,
