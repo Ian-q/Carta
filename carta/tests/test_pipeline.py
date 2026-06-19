@@ -611,6 +611,39 @@ class TestRunSearch:
 
         assert results == []
 
+    def test_results_carry_page_and_section_anchors(self):
+        """run_search surfaces page + section_heading from the payload on each hit."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        cfg = {
+            "project_name": "test-project",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://localhost:11434",
+                      "ollama_model": "nomic-embed-text", "colpali_enabled": False},
+            "search": {"top_n": 5},
+            "modules": {"doc_search": True},
+        }
+
+        point = MagicMock()
+        point.score = 0.91
+        point.payload = {"file_path": "docs/imu.pdf", "text": "sensitivity register",
+                         "page": 47, "section_heading": "6.3 Gyro Config", "doc_type": ""}
+        resp = MagicMock(); resp.points = [point]
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = resp
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("imu sensitivity", cfg)
+
+        assert results, "expected at least one hit"
+        assert results[0]["page"] == 47
+        assert results[0]["section_heading"] == "6.3 Gyro Config"
+
 
 class TestVisionProgressWiring:
     """Verify _vision_callback is passed and _vision_events are handled correctly."""
@@ -1209,3 +1242,238 @@ def test_run_search_passes_repo_root_not_dotcarta_to_graph_expansion(tmp_path):
         pipeline.run_search("q", cfg)
 
     assert captured["repo_root"] == tmp_path  # repo root, NOT tmp_path/.carta
+
+
+class TestHybridQueryFilter:
+    """_hybrid_query_collection threads an optional Qdrant filter into each prefetch lane."""
+
+    def test_query_filter_applied_to_prefetch(self):
+        from unittest.mock import MagicMock, patch
+        from carta.embed.pipeline import _hybrid_query_collection
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        client = MagicMock()
+        client.query_points.return_value = MagicMock(points=[])
+        ff = Filter(must=[FieldCondition(key="file_path", match=MatchValue(value="a.pdf"))])
+
+        with patch("carta.embed.pipeline.embed_sparse_query",
+                   return_value=MagicMock(indices=[1], values=[1.0])):
+            _hybrid_query_collection(client, "c", "q", [0.0] * 768, 10,
+                                     prefetch_limit=40, bm25_model="Qdrant/bm25",
+                                     query_filter=ff)
+
+        kwargs = client.query_points.call_args.kwargs
+        prefetches = kwargs["prefetch"]
+        assert all(p.filter is ff for p in prefetches), "filter must reach every prefetch lane"
+
+
+class TestFocusSourceHelpers:
+    def test_normalize_strips_visual_page_suffix(self):
+        from carta.embed.pipeline import _normalize_source
+        assert _normalize_source("docs/imu.pdf (page 12)") == "docs/imu.pdf"
+        assert _normalize_source("docs/imu.pdf") == "docs/imu.pdf"
+        assert _normalize_source("  a/b.md  ") == "a/b.md"
+
+    def test_file_filter_matches_file_path(self):
+        from carta.embed.pipeline import _file_filter
+        ff = _file_filter("docs/imu.pdf")
+        cond = ff.must[0]
+        assert cond.key == "file_path"
+        assert cond.match.value == "docs/imu.pdf"
+
+    def test_ensure_index_swallows_errors(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _ensure_file_path_index
+        client = MagicMock()
+        client.create_payload_index.side_effect = Exception("already exists")
+        # Must not raise.
+        _ensure_file_path_index(client, "test-project_doc")
+        client.create_payload_index.assert_called_once()
+
+
+class TestRenderPageImages:
+    def test_non_pdf_returns_none(self, tmp_path):
+        from carta.embed.pipeline import render_page_png
+        md = tmp_path / "a.md"; md.write_text("hello")
+        assert render_page_png(md, 1, tmp_path) is None
+
+    def test_cache_hit_returns_cached_bytes(self, tmp_path):
+        from carta.embed.pipeline import render_page_png
+        pdf = tmp_path / "imu.pdf"; pdf.write_bytes(b"%PDF-1.4 fake")
+        cache = tmp_path / ".carta" / "visual_cache" / "imu"
+        cache.mkdir(parents=True)
+        (cache / "page_0007.png").write_bytes(b"CACHEDPNG")
+        assert render_page_png(pdf, 7, tmp_path) == b"CACHEDPNG"
+
+    def test_real_render_and_out_of_range(self, tmp_path):
+        import fitz
+        from carta.embed.pipeline import render_page_png
+        pdf = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page(); doc.new_page()
+        doc.save(str(pdf)); doc.close()
+        png = render_page_png(pdf, 1, tmp_path)
+        assert png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert render_page_png(pdf, 99, tmp_path) is None  # out of range
+
+    def test_attach_images_only_to_visual_hits(self, tmp_path):
+        from unittest.mock import patch
+        from carta.embed.pipeline import _attach_page_images
+        hits = [
+            {"type": "text", "page": 3},
+            {"type": "visual", "page": 7},
+            {"type": "visual", "page": None},
+        ]
+        with patch("carta.embed.pipeline.render_page_png", return_value=b"PNGBYTES"):
+            out = _attach_page_images(hits, tmp_path / "imu.pdf", tmp_path)
+        assert "image_b64" not in out[0]            # text untouched
+        assert out[1]["image_b64"]                  # visual w/ page rendered
+        assert "image_b64" not in out[2]            # visual w/o page skipped
+
+    def test_cache_hit_honors_custom_sidecar_path(self, tmp_path):
+        from carta.embed.pipeline import render_page_png
+        pdf = tmp_path / "imu.pdf"; pdf.write_bytes(b"%PDF-1.4 fake")
+        cache = tmp_path / "custom_cache" / "imu"
+        cache.mkdir(parents=True)
+        (cache / "page_0003.png").write_bytes(b"CUSTOMPNG")
+        # Default path would miss; the configured path must hit.
+        assert render_page_png(pdf, 3, tmp_path,
+                               {"colpali_sidecar_path": "custom_cache/"}) == b"CUSTOMPNG"
+        assert render_page_png(pdf, 3, tmp_path) is None  # default path: no cache, fake PDF -> None
+
+
+class TestFocusOutline:
+    def test_outline_returns_distinct_sections_in_page_order(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+
+        def mk(page, heading):
+            p = MagicMock(); p.payload = {"page": page, "section_heading": heading}; return p
+
+        client = MagicMock()
+        # Unordered, with a duplicate (3,"Intro") that must collapse.
+        client.scroll.return_value = (
+            [mk(3, "Intro"), mk(1, "Cover"), mk(3, "Intro"), mk(2, "Setup")], None)
+
+        rows = _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
+
+        assert [(r["page"], r["section_heading"]) for r in rows] == [
+            (1, "Cover"), (2, "Setup"), (3, "Intro")]
+        assert all(r["type"] == "outline" and r["source"] == "imu.pdf" for r in rows)
+        # Outline must not embed anything — it scrolls payloads only.
+        client.scroll.assert_called_once()
+
+    def test_outline_skips_visual_collections(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+        client = MagicMock(); client.scroll.return_value = ([], None)
+        _focus_outline(client, ["test-project_visual"], _file_filter("imu.pdf"), "imu.pdf")
+        client.scroll.assert_not_called()  # visual collections are skipped
+
+    def test_outline_raises_on_transport_failure(self):
+        import pytest
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+        client = MagicMock()
+        client.scroll.side_effect = Exception("Connection refused")
+        with pytest.raises(RuntimeError, match="Qdrant"):
+            _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
+
+    def test_outline_swallows_collection_not_found(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+        client = MagicMock()
+        client.scroll.side_effect = Exception("Collection not found: status_code=404")
+        rows = _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
+        assert rows == []  # 404 is swallowed → empty outline, no raise
+
+
+class TestRunFocus:
+    BASE_CFG = {
+        "project_name": "test-project",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://localhost:11434",
+                  "ollama_model": "nomic-embed-text", "colpali_enabled": False},
+        "search": {"top_n": 5},
+        "modules": {"doc_search": True},
+    }
+
+    def test_deep_filters_to_file_and_keeps_all_chunks(self):
+        """Deep mode applies the file filter and does NOT dedup (multiple chunks, one source)."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+
+        def mk(page):
+            p = MagicMock(); p.score = 1.0 / page
+            p.payload = {"file_path": "docs/imu.pdf", "text": f"chunk p{page}",
+                         "page": page, "section_heading": f"S{page}", "doc_type": ""}
+            return p
+        resp = MagicMock(); resp.points = [mk(10), mk(11), mk(12)]
+        client = MagicMock(); client.query_points.return_value = resp
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/imu.pdf (page 10)", self.BASE_CFG, query="sensitivity")
+
+        # All three chunks of the one file survive (dedup is off in focus).
+        assert len(results) == 3
+        assert {r["page"] for r in results} == {10, 11, 12}
+        assert all(r["source"] == "docs/imu.pdf" for r in results)
+        # Filter reached Qdrant (normalized — no '(page 10)' suffix).
+        ff = client.query_points.call_args.kwargs["query_filter"]
+        assert ff.must[0].match.value == "docs/imu.pdf"
+
+    def test_empty_query_returns_outline(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+
+        def mk(page, heading):
+            p = MagicMock(); p.payload = {"page": page, "section_heading": heading}; return p
+        client = MagicMock(); client.scroll.return_value = ([mk(1, "Cover"), mk(2, "Setup")], None)
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.embed.pipeline.get_embedding") as mock_embed, \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/imu.pdf", self.BASE_CFG)  # no query
+
+        assert [r["type"] for r in results] == ["outline", "outline"]
+        assert [r["page"] for r in results] == [1, 2]
+        mock_embed.assert_not_called()  # outline does no embedding
+
+    def test_visual_lane_failure_degrades_to_text(self):
+        """A broken ColPali/visual lane must not fail the focus query — text results still return."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+
+        text_point = MagicMock(); text_point.score = 0.9
+        text_point.payload = {"file_path": "docs/imu.pdf", "text": "gyro regs",
+                              "page": 5, "section_heading": "Regs", "doc_type": ""}
+        text_resp = MagicMock(); text_resp.points = [text_point]
+        client = MagicMock(); client.query_points.return_value = text_resp
+
+        cfg = dict(self.BASE_CFG)
+        cfg["embed"] = {**self.BASE_CFG["embed"], "colpali_enabled": True}
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.embed.pipeline._visual_collection_ready", return_value=True), \
+             patch("carta.embed.colpali.is_colpali_available", return_value=True), \
+             patch("carta.embed.colpali.ColPaliEmbedder",
+                   side_effect=Exception("colpali model load failed: timeout")), \
+             patch("carta.search.scoped.get_search_collections",
+                   return_value=["test-project_doc", "test-project_visual"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/imu.pdf", cfg, query="gyro")
+
+        # Visual lane raised with a 'timeout' message that WOULD trip the transport-error
+        # branch if it reached the outer handler. Focus must instead degrade to text.
+        assert [r["source"] for r in results] == ["docs/imu.pdf"]
+        assert results[0]["page"] == 5

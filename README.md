@@ -190,6 +190,7 @@ last_reviewed: 2026-03-20
 | `/doc-audit` | Structural + semantic audit, generates `docs/AUDIT_REPORT.md` |
 | `/doc-embed` | Ingest PDFs, manuals, and audio transcripts into Qdrant |
 | `/doc-search` | Natural language search over the embedded knowledge base |
+| `carta focus` / `carta_focus` | Deep retrieval scoped to one file: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `/doc-search` (locate → go deep) |
 | `carta remember` / `carta_remember` | Save a curated project note (quirk / bug-note / helpful-note) as a repo markdown file and embed it |
 
 ---
