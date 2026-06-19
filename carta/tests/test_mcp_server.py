@@ -173,3 +173,13 @@ class TestCartaFocus:
         with patch.object(server, "_load_cfg", side_effect=ConfigError("no config")):
             out = server.carta_focus(source="x.pdf")
         assert out["error"] == "service_unavailable"
+        assert "detail" in out and out["detail"]
+
+    def test_returns_error_dict_on_runtime_error(self):
+        from unittest.mock import patch
+        import carta.mcp.server as server
+        with patch.object(server, "_load_cfg", return_value={}), \
+             patch.object(server, "run_focus", side_effect=RuntimeError("Qdrant down")):
+            out = server.carta_focus(source="x.pdf")
+        assert out["error"] == "service_unavailable"
+        assert "Qdrant down" in out["detail"]
