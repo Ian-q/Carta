@@ -1886,6 +1886,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                             "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
                             "type": "visual",
                             "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page_num"),
+                            "section_heading": "",
                         })
                         
                 except Exception:
@@ -1935,6 +1937,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         "excerpt": payload.get("text", ""),
                         "type": "text",
                         "doc_type": payload.get("doc_type", ""),
+                        "page": payload.get("page"),
+                        "section_heading": payload.get("section_heading", ""),
                     })
 
             per_collection.append(coll_results)
