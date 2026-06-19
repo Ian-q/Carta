@@ -186,6 +186,12 @@ def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | d
     return formatted
 
 
+# Registered via add_tool() rather than the @mcp_server.tool() decorator the sibling
+# tools use. This is registration-equivalent (FastMCP's tool() decorator just calls
+# add_tool(fn) then returns fn), but it keeps carta_focus a plain, callable function in
+# this module's namespace. The test suite mocks out mcp.server.fastmcp, so the decorator
+# would replace carta_focus with a MagicMock and make it un-unit-testable. Do not "fix"
+# this back to the decorator without first making the carta_focus tests patch the mock.
 mcp_server.add_tool(carta_focus)
 
 
