@@ -1242,3 +1242,26 @@ def test_run_search_passes_repo_root_not_dotcarta_to_graph_expansion(tmp_path):
         pipeline.run_search("q", cfg)
 
     assert captured["repo_root"] == tmp_path  # repo root, NOT tmp_path/.carta
+
+
+class TestHybridQueryFilter:
+    """_hybrid_query_collection threads an optional Qdrant filter into each prefetch lane."""
+
+    def test_query_filter_applied_to_prefetch(self):
+        from unittest.mock import MagicMock, patch
+        from carta.embed.pipeline import _hybrid_query_collection
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        client = MagicMock()
+        client.query_points.return_value = MagicMock(points=[])
+        ff = Filter(must=[FieldCondition(key="file_path", match=MatchValue(value="a.pdf"))])
+
+        with patch("carta.embed.pipeline.embed_sparse_query",
+                   return_value=MagicMock(indices=[1], values=[1.0])):
+            _hybrid_query_collection(client, "c", "q", [0.0] * 768, 10,
+                                     prefetch_limit=40, bm25_model="Qdrant/bm25",
+                                     query_filter=ff)
+
+        kwargs = client.query_points.call_args.kwargs
+        prefetches = kwargs["prefetch"]
+        assert all(p.filter is ff for p in prefetches), "filter must reach every prefetch lane"
