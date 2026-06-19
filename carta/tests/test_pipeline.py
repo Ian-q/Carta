@@ -1289,3 +1289,43 @@ class TestFocusSourceHelpers:
         # Must not raise.
         _ensure_file_path_index(client, "test-project_doc")
         client.create_payload_index.assert_called_once()
+
+
+class TestRenderPageImages:
+    def test_non_pdf_returns_none(self, tmp_path):
+        from carta.embed.pipeline import render_page_png
+        md = tmp_path / "a.md"; md.write_text("hello")
+        assert render_page_png(md, 1, tmp_path) is None
+
+    def test_cache_hit_returns_cached_bytes(self, tmp_path):
+        from carta.embed.pipeline import render_page_png
+        pdf = tmp_path / "imu.pdf"; pdf.write_bytes(b"%PDF-1.4 fake")
+        cache = tmp_path / ".carta" / "visual_cache" / "imu"
+        cache.mkdir(parents=True)
+        (cache / "page_0007.png").write_bytes(b"CACHEDPNG")
+        assert render_page_png(pdf, 7, tmp_path) == b"CACHEDPNG"
+
+    def test_real_render_and_out_of_range(self, tmp_path):
+        import fitz
+        from carta.embed.pipeline import render_page_png
+        pdf = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        doc.new_page(); doc.new_page()
+        doc.save(str(pdf)); doc.close()
+        png = render_page_png(pdf, 1, tmp_path)
+        assert png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert render_page_png(pdf, 99, tmp_path) is None  # out of range
+
+    def test_attach_images_only_to_visual_hits(self, tmp_path):
+        from unittest.mock import patch
+        from carta.embed.pipeline import _attach_page_images
+        hits = [
+            {"type": "text", "page": 3},
+            {"type": "visual", "page": 7},
+            {"type": "visual", "page": None},
+        ]
+        with patch("carta.embed.pipeline.render_page_png", return_value=b"PNGBYTES"):
+            out = _attach_page_images(hits, tmp_path / "imu.pdf", tmp_path)
+        assert "image_b64" not in out[0]            # text untouched
+        assert out[1]["image_b64"]                  # visual w/ page rendered
+        assert "image_b64" not in out[2]            # visual w/o page skipped
