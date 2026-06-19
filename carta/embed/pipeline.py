@@ -1684,6 +1684,36 @@ def _apply_visual_cap(ordered: list[dict], limit: int, visual_max_ratio: float =
     return result
 
 
+_FOCUS_DEFAULT_LIMIT = 15  # passages returned by a deep focus query
+
+
+def _normalize_source(source: str) -> str:
+    """Strip a trailing ' (page N)' suffix (the visual-hit source form) to the bare file_path."""
+    return re.sub(r"\s*\(page\s+\S+\)\s*$", "", source).strip()
+
+
+def _file_filter(source: str) -> Filter:
+    """Qdrant filter matching points whose file_path payload equals `source`."""
+    return Filter(must=[qmodels.FieldCondition(
+        key="file_path", match=qmodels.MatchValue(value=source))])
+
+
+def _ensure_file_path_index(client, coll_name: str) -> None:
+    """Idempotently create a keyword payload index on file_path to speed the focus filter.
+
+    Fail-open: an existing index, a missing collection, or an older server all just mean
+    the filter runs unindexed (correct, slower) — never an error to the caller.
+    """
+    try:
+        client.create_payload_index(
+            collection_name=coll_name,
+            field_name="file_path",
+            field_schema=qmodels.PayloadSchemaType.KEYWORD,
+        )
+    except Exception:
+        pass
+
+
 def _dedupe_by_source(results: list[dict]) -> list[dict]:
     """Keep the first (best-ranked) occurrence of each distinct ``source``, drop the rest.
 

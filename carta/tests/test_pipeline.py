@@ -1265,3 +1265,27 @@ class TestHybridQueryFilter:
         kwargs = client.query_points.call_args.kwargs
         prefetches = kwargs["prefetch"]
         assert all(p.filter is ff for p in prefetches), "filter must reach every prefetch lane"
+
+
+class TestFocusSourceHelpers:
+    def test_normalize_strips_visual_page_suffix(self):
+        from carta.embed.pipeline import _normalize_source
+        assert _normalize_source("docs/imu.pdf (page 12)") == "docs/imu.pdf"
+        assert _normalize_source("docs/imu.pdf") == "docs/imu.pdf"
+        assert _normalize_source("  a/b.md  ") == "a/b.md"
+
+    def test_file_filter_matches_file_path(self):
+        from carta.embed.pipeline import _file_filter
+        ff = _file_filter("docs/imu.pdf")
+        cond = ff.must[0]
+        assert cond.key == "file_path"
+        assert cond.match.value == "docs/imu.pdf"
+
+    def test_ensure_index_swallows_errors(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _ensure_file_path_index
+        client = MagicMock()
+        client.create_payload_index.side_effect = Exception("already exists")
+        # Must not raise.
+        _ensure_file_path_index(client, "test-project_doc")
+        client.create_payload_index.assert_called_once()
