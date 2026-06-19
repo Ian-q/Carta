@@ -1816,22 +1816,25 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                     continue
                 if not _visual_collection_ready(client, coll_name):
                     continue
-                embedder = ColPaliEmbedder(
-                    model_name=embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf"),
-                    device=embed_cfg.get("colpali_device", "cpu"), batch_size=1)
-                qv = embedder.embed_query(query)
-                qv = qv.tolist() if hasattr(qv, "tolist") else list(qv)
-                response = client.query_points(
-                    collection_name=coll_name, query=qv, using="colpali",
-                    limit=limit, with_payload=True, query_filter=ff)
-                for r in response.points:
-                    payload = r.payload or {}
-                    coll_results.append({
-                        "score": r.score,
-                        "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
-                        "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
-                        "type": "visual", "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page_num"), "section_heading": ""})
+                try:
+                    embedder = ColPaliEmbedder(
+                        model_name=embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf"),
+                        device=embed_cfg.get("colpali_device", "cpu"), batch_size=1)
+                    qv = embedder.embed_query(query)
+                    qv = qv.tolist() if hasattr(qv, "tolist") else list(qv)
+                    response = client.query_points(
+                        collection_name=coll_name, query=qv, using="colpali",
+                        limit=limit, with_payload=True, query_filter=ff)
+                    for r in response.points:
+                        payload = r.payload or {}
+                        coll_results.append({
+                            "score": r.score,
+                            "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
+                            "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
+                            "type": "visual", "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page_num"), "section_heading": ""})
+                except Exception:
+                    pass  # visual lane is auxiliary — skip on any ColPali/query error, keep text results
             else:
                 ollama_url = cfg["embed"]["ollama_url"]
                 model = cfg["embed"]["ollama_model"]
