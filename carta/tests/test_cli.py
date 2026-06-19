@@ -932,3 +932,42 @@ def test_cmd_embed_exits_nonzero_on_failed_or_partial(tmp_path):
         with pytest.raises(SystemExit) as exc:
             cli.cmd_embed(args)
     assert exc.value.code == 1
+
+
+class TestCmdFocus:
+    def _cfg(self, tmp_path):
+        return {"modules": {"doc_search": True}, "project_name": "p",
+                "qdrant_url": "http://localhost:6333", "embed": {}}
+
+    def test_outline_mode_prints_sections(self, tmp_path, capsys):
+        import argparse
+        from unittest.mock import patch
+        from carta import cli
+        outline = [{"score": 0.0, "source": "imu.pdf", "page": 1,
+                    "section_heading": "Cover", "excerpt": "", "type": "outline"}]
+        args = argparse.Namespace(source="imu.pdf", query=[], limit=15)
+        with patch("carta.cli.find_config", return_value=tmp_path / ".carta" / "config.yaml"), \
+             patch("carta.config.load_config", return_value=self._cfg(tmp_path)), \
+             patch("carta.embed.pipeline.run_focus", return_value=outline):
+            cli.cmd_focus(args)
+        out = capsys.readouterr().out
+        assert "Outline of imu.pdf" in out and "Cover" in out
+
+    def test_deep_mode_writes_image_and_prints_path(self, tmp_path, capsys):
+        import argparse, base64
+        from unittest.mock import patch
+        from carta import cli
+        (tmp_path / ".carta").mkdir()
+        hits = [{"score": 0.9, "source": "imu.pdf", "page": 47,
+                 "section_heading": "Gyro", "excerpt": "regs",
+                 "type": "visual", "image_b64": base64.b64encode(b"PNG").decode()}]
+        args = argparse.Namespace(source="imu.pdf", query=["gyro", "regs"], limit=15)
+        with patch("carta.cli.find_config", return_value=tmp_path / ".carta" / "config.yaml"), \
+             patch("carta.config.load_config", return_value=self._cfg(tmp_path)), \
+             patch("carta.embed.pipeline.run_focus", return_value=hits):
+            cli.cmd_focus(args)
+        out = capsys.readouterr().out
+        assert "p.47" in out and "Gyro" in out
+        img = tmp_path / ".carta" / "cache" / "focus" / "imu-p47.png"
+        assert img.is_file() and img.read_bytes() == b"PNG"
+        assert str(img) in out
