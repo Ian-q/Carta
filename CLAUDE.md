@@ -147,6 +147,7 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 | `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
 | `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair` re-embeds damaged points |
 | `search` | Hybrid (BM25 + dense, RRF) semantic search |
+| `focus` | Deep retrieval scoped to **one file**: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `search` (locate → go deep) |
 | `audit` | Embed-pipeline **data integrity** check → JSON |
 | `doctor` | Diagnose environment (Qdrant/Ollama/models); `--fix` auto-installs |
 | `eval` | Score retrieval quality against an eval set |
@@ -159,7 +160,7 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 
 ### MCP — `carta-mcp` (stdio, `carta/mcp/server.py`)
 
-Claude-initiated tools: `carta_search`, `carta_embed`, `carta_scan`, `carta_remember`.
+Claude-initiated tools: `carta_search`, `carta_focus`, `carta_embed`, `carta_scan`, `carta_remember`.
 
 ### Hook — `carta-hook` (+ `carta/hooks/*.sh`)
 
