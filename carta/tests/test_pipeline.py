@@ -1386,3 +1386,62 @@ class TestFocusOutline:
         client.scroll.side_effect = Exception("Collection not found: status_code=404")
         rows = _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
         assert rows == []  # 404 is swallowed → empty outline, no raise
+
+
+class TestRunFocus:
+    BASE_CFG = {
+        "project_name": "test-project",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://localhost:11434",
+                  "ollama_model": "nomic-embed-text", "colpali_enabled": False},
+        "search": {"top_n": 5},
+        "modules": {"doc_search": True},
+    }
+
+    def test_deep_filters_to_file_and_keeps_all_chunks(self):
+        """Deep mode applies the file filter and does NOT dedup (multiple chunks, one source)."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+
+        def mk(page):
+            p = MagicMock(); p.score = 1.0 / page
+            p.payload = {"file_path": "docs/imu.pdf", "text": f"chunk p{page}",
+                         "page": page, "section_heading": f"S{page}", "doc_type": ""}
+            return p
+        resp = MagicMock(); resp.points = [mk(10), mk(11), mk(12)]
+        client = MagicMock(); client.query_points.return_value = resp
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/imu.pdf (page 10)", self.BASE_CFG, query="sensitivity")
+
+        # All three chunks of the one file survive (dedup is off in focus).
+        assert len(results) == 3
+        assert {r["page"] for r in results} == {10, 11, 12}
+        assert all(r["source"] == "docs/imu.pdf" for r in results)
+        # Filter reached Qdrant (normalized — no '(page 10)' suffix).
+        ff = client.query_points.call_args.kwargs["query_filter"]
+        assert ff.must[0].match.value == "docs/imu.pdf"
+
+    def test_empty_query_returns_outline(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+
+        def mk(page, heading):
+            p = MagicMock(); p.payload = {"page": page, "section_heading": heading}; return p
+        client = MagicMock(); client.scroll.return_value = ([mk(1, "Cover"), mk(2, "Setup")], None)
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.embed.pipeline.get_embedding") as mock_embed, \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/imu.pdf", self.BASE_CFG)  # no query
+
+        assert [r["type"] for r in results] == ["outline", "outline"]
+        assert [r["page"] for r in results] == [1, 2]
+        mock_embed.assert_not_called()  # outline does no embedding
