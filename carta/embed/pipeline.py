@@ -1799,6 +1799,125 @@ def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> l
              "doc_type": ""} for _sort, page, heading in rows]
 
 
+def _focus_deep(client, collections: list[str], ff: Filter, query: str,
+                cfg: dict, repo_root: Path, source: str, limit: int) -> list[dict]:
+    """File-scoped deep retrieval: filtered per-collection queries, RRF fused, NO dedup,
+    NO visual cap, NO graph expansion; visual hits get a rendered page image."""
+    per_collection: list[list[dict]] = []
+    for coll_name in collections:
+        coll_results: list[dict] = []
+        try:
+            if coll_name.endswith("_visual"):
+                embed_cfg = cfg.get("embed", {})
+                if embed_cfg.get("colpali_enabled", None) is False:
+                    continue
+                from carta.embed.colpali import is_colpali_available, ColPaliEmbedder
+                if not is_colpali_available():
+                    continue
+                if not _visual_collection_ready(client, coll_name):
+                    continue
+                embedder = ColPaliEmbedder(
+                    model_name=embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf"),
+                    device=embed_cfg.get("colpali_device", "cpu"), batch_size=1)
+                qv = embedder.embed_query(query)
+                qv = qv.tolist() if hasattr(qv, "tolist") else list(qv)
+                response = client.query_points(
+                    collection_name=coll_name, query=qv, using="colpali",
+                    limit=limit, with_payload=True, query_filter=ff)
+                for r in response.points:
+                    payload = r.payload or {}
+                    coll_results.append({
+                        "score": r.score,
+                        "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
+                        "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
+                        "type": "visual", "doc_type": payload.get("doc_type", ""),
+                        "page": payload.get("page_num"), "section_heading": ""})
+            else:
+                ollama_url = cfg["embed"]["ollama_url"]
+                model = cfg["embed"]["ollama_model"]
+                query_vec = get_embedding(query, ollama_url=ollama_url, model=model,
+                                          prefix="search_query: ")
+                hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
+                is_hybrid = collection_is_hybrid(client, coll_name)
+                if hybrid_cfg.get("enabled", False) and is_hybrid:
+                    response = _hybrid_query_collection(
+                        client, coll_name, query, query_vec, limit,
+                        prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
+                        bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
+                        query_filter=ff)
+                elif is_hybrid:
+                    response = client.query_points(
+                        collection_name=coll_name, query=query_vec, using=DENSE_VECTOR_NAME,
+                        limit=limit, with_payload=True, query_filter=ff)
+                else:
+                    response = client.query_points(
+                        collection_name=coll_name, query=query_vec,
+                        limit=limit, with_payload=True, query_filter=ff)
+                for r in response.points:
+                    payload = r.payload or {}
+                    coll_results.append({
+                        "score": r.score,
+                        "source": payload.get("file_path", payload.get("slug", "")),
+                        "excerpt": payload.get("text", ""), "type": "text",
+                        "doc_type": payload.get("doc_type", ""),
+                        "page": payload.get("page"),
+                        "section_heading": payload.get("section_heading", "")})
+            per_collection.append(coll_results)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "404" in err_str or "not found" in err_str or "doesn't exist" in err_str:
+                continue
+            if any(kw in err_str for kw in ("connection refused", "connection error",
+                                            "network", "timeout", "unreachable")):
+                raise RuntimeError(
+                    f"Cannot reach Qdrant — is it running? "
+                    f"Start it with: carta doctor --fix\n(Detail: {e})") from e
+            continue
+
+    # RRF fuse across lanes; visual_max_ratio=1.0 disables the cap (we WANT the file's pages).
+    fused = _rrf_merge_collections(per_collection, limit, visual_max_ratio=1.0)
+    # embed_cfg threaded so render_page_png honors a custom colpali_sidecar_path.
+    fused = _attach_page_images(fused, repo_root / source, repo_root, cfg.get("embed", {}))
+    return fused[:limit]
+
+
+def run_focus(source: str, cfg: dict, *, query: str = "",
+              limit: int = _FOCUS_DEFAULT_LIMIT) -> list[dict]:
+    """Deep, file-scoped retrieval over a single source file.
+
+    Modes:
+      - query == "" : outline — the file's distinct (section_heading, page) rows in page order.
+      - query set   : deep — up to `limit` page-anchored passages from the file (dedup off,
+                      no graph expansion, visual cap off); visual hits carry image_b64.
+
+    Returns list of dicts: {score, source, page, section_heading, excerpt, type, doc_type, image_b64?}.
+    Fail-open: an unknown/never-embedded file yields []. Raises RuntimeError only on Qdrant transport failure.
+    """
+    from carta.search.scoped import get_search_collections
+
+    source = _normalize_source(source)
+    repo_root = Path(find_config()).parent.parent
+    try:
+        client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
+    except Exception as e:
+        raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
+
+    try:
+        collections = get_search_collections(cfg, "repo")
+    except ValueError:
+        collections = [collection_name(cfg, "doc")]
+        if cfg.get("embed", {}).get("colpali_enabled", None) is not False:
+            collections.append(f"{cfg['project_name']}_visual")
+
+    ff = _file_filter(source)
+    for coll in collections:
+        _ensure_file_path_index(client, coll)
+
+    if not query:
+        return _focus_outline(client, collections, ff, source)
+    return _focus_deep(client, collections, ff, query, cfg, repo_root, source, limit)
+
+
 def _dedupe_by_source(results: list[dict]) -> list[dict]:
     """Keep the first (best-ranked) occurrence of each distinct ``source``, drop the rest.
 
