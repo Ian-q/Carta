@@ -1445,3 +1445,35 @@ class TestRunFocus:
         assert [r["type"] for r in results] == ["outline", "outline"]
         assert [r["page"] for r in results] == [1, 2]
         mock_embed.assert_not_called()  # outline does no embedding
+
+    def test_visual_lane_failure_degrades_to_text(self):
+        """A broken ColPali/visual lane must not fail the focus query — text results still return."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+
+        text_point = MagicMock(); text_point.score = 0.9
+        text_point.payload = {"file_path": "docs/imu.pdf", "text": "gyro regs",
+                              "page": 5, "section_heading": "Regs", "doc_type": ""}
+        text_resp = MagicMock(); text_resp.points = [text_point]
+        client = MagicMock(); client.query_points.return_value = text_resp
+
+        cfg = dict(self.BASE_CFG)
+        cfg["embed"] = {**self.BASE_CFG["embed"], "colpali_enabled": True}
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.embed.pipeline._visual_collection_ready", return_value=True), \
+             patch("carta.embed.colpali.is_colpali_available", return_value=True), \
+             patch("carta.embed.colpali.ColPaliEmbedder",
+                   side_effect=Exception("colpali model load failed: timeout")), \
+             patch("carta.search.scoped.get_search_collections",
+                   return_value=["test-project_doc", "test-project_visual"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/imu.pdf", cfg, query="gyro")
+
+        # Visual lane raised with a 'timeout' message that WOULD trip the transport-error
+        # branch if it reached the outer handler. Focus must instead degrade to text.
+        assert [r["source"] for r in results] == ["docs/imu.pdf"]
+        assert results[0]["page"] == 5
