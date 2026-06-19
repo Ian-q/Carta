@@ -141,3 +141,45 @@ def test_remember_no_config_maps_to_service_unavailable():
     with patch.object(server, "_load_cfg", side_effect=ConfigError("no .carta")):
         out = server._remember("x")
     assert out["error"] == "service_unavailable"
+
+
+class TestCartaFocus:
+    def test_formats_results_and_passes_through_image(self):
+        from unittest.mock import patch
+        import carta.mcp.server as server
+
+        fake = [
+            {"score": 0.876543, "source": "docs/imu.pdf", "page": 47,
+             "section_heading": "6.3 Gyro", "excerpt": "x" * 400, "type": "text"},
+            {"score": 0.5, "source": "docs/imu.pdf (page 47)", "page": 47,
+             "section_heading": "", "excerpt": "[Visual]", "type": "visual",
+             "image_b64": "QkFTRTY0"},
+        ]
+        with patch.object(server, "_load_cfg", return_value={"x": 1}), \
+             patch.object(server, "run_focus", return_value=fake) as mock_focus:
+            out = server.carta_focus(source="docs/imu.pdf (page 47)", query="sensitivity", top_k=15)
+
+        mock_focus.assert_called_once_with("docs/imu.pdf (page 47)", {"x": 1},
+                                           query="sensitivity", limit=15)
+        assert out[0]["score"] == 0.8765          # rounded to 4dp
+        assert out[0]["page"] == 47
+        assert len(out[0]["excerpt"]) == 300       # truncated
+        assert out[1]["image_b64"] == "QkFTRTY0"   # passed through on visual hits
+
+    def test_returns_error_dict_on_config_failure(self):
+        from unittest.mock import patch
+        import carta.mcp.server as server
+        from carta.config import ConfigError
+        with patch.object(server, "_load_cfg", side_effect=ConfigError("no config")):
+            out = server.carta_focus(source="x.pdf")
+        assert out["error"] == "service_unavailable"
+        assert "detail" in out and out["detail"]
+
+    def test_returns_error_dict_on_runtime_error(self):
+        from unittest.mock import patch
+        import carta.mcp.server as server
+        with patch.object(server, "_load_cfg", return_value={}), \
+             patch.object(server, "run_focus", side_effect=RuntimeError("Qdrant down")):
+            out = server.carta_focus(source="x.pdf")
+        assert out["error"] == "service_unavailable"
+        assert "Qdrant down" in out["detail"]

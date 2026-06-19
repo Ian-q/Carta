@@ -1608,7 +1608,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
 
 def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
-                              prefetch_limit, bm25_model):
+                              prefetch_limit, bm25_model, query_filter=None):
     """Run a hybrid BM25+dense query with Qdrant RRF fusion.
 
     Fetches `prefetch_limit` candidates from each of the dense and sparse
@@ -1619,15 +1619,19 @@ def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
     to return).  When reranking is enabled, callers should pass `fetch_limit`
     (= candidate_pool) here so that the reranker has a wide enough pool to
     promote lower-ranked relevant documents.
+
+    `query_filter` (optional) is applied to BOTH prefetch lanes so the filter
+    takes effect before fusion (used by run_focus to scope to one file).
     """
     sv = embed_sparse_query(query, model_name=bm25_model)
     return client.query_points(
         collection_name=coll_name,
         prefetch=[
-            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME, limit=prefetch_limit),
+            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME,
+                             limit=prefetch_limit, filter=query_filter),
             qmodels.Prefetch(
                 query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
-                using=SPARSE_VECTOR_NAME, limit=prefetch_limit,
+                using=SPARSE_VECTOR_NAME, limit=prefetch_limit, filter=query_filter,
             ),
         ],
         query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
@@ -1678,6 +1682,243 @@ def _apply_visual_cap(ordered: list[dict], limit: int, visual_max_ratio: float =
     if len(result) < limit and overflow:
         result.extend(overflow[: limit - len(result)])
     return result
+
+
+_FOCUS_DEFAULT_LIMIT = 15  # passages returned by a deep focus query
+_FOCUS_OUTLINE_SCROLL_LIMIT = 10_000  # raise the limit if any single file exceeds this chunk count
+
+
+def _normalize_source(source: str) -> str:
+    """Strip a trailing ' (page N)' suffix (the visual-hit source form) to the bare file_path."""
+    return re.sub(r"\s*\(page\s+\S+\)\s*$", "", source).strip()
+
+
+def _file_filter(source: str) -> Filter:
+    """Qdrant filter matching points whose file_path payload equals `source`."""
+    return Filter(must=[qmodels.FieldCondition(
+        key="file_path", match=qmodels.MatchValue(value=source))])
+
+
+def _ensure_file_path_index(client, coll_name: str) -> None:
+    """Idempotently create a keyword payload index on file_path to speed the focus filter.
+
+    Fail-open: an existing index, a missing collection, or an older server all just mean
+    the filter runs unindexed (correct, slower) — never an error to the caller.
+    """
+    try:
+        client.create_payload_index(
+            collection_name=coll_name,
+            field_name="file_path",
+            field_schema=qmodels.PayloadSchemaType.KEYWORD,
+        )
+    except Exception:
+        pass
+
+
+_FOCUS_RENDER_DPI = 150  # page-image resolution for focus visual hits
+
+
+def render_page_png(abs_file_path: Path, page: int, repo_root: Path,
+                    embed_cfg: dict | None = None) -> bytes | None:
+    """Return PNG bytes for a 1-indexed PDF page, or None if it can't be produced.
+
+    Fast path: a ColPali cache PNG under the configured colpali_sidecar_path
+    (default .carta/visual_cache/), at <cache_dir>/<stem>/page_NNNN.png.
+    Fallback: render on demand with PyMuPDF. Non-PDF, out-of-range page, or any
+    failure returns None so the caller degrades to anchors-only for that hit.
+    """
+    try:
+        if abs_file_path.suffix.lower() != ".pdf":
+            return None
+        cache_dir = Path((embed_cfg or {}).get("colpali_sidecar_path", ".carta/visual_cache/"))
+        if not cache_dir.is_absolute():
+            cache_dir = repo_root / cache_dir
+        cached = cache_dir / abs_file_path.stem / f"page_{page:04d}.png"
+        if cached.is_file():
+            return cached.read_bytes()
+        import fitz  # PyMuPDF, imported lazily
+        with fitz.open(str(abs_file_path)) as doc:
+            if page < 1 or page > len(doc):
+                return None
+            pix = doc[page - 1].get_pixmap(dpi=_FOCUS_RENDER_DPI)
+            return pix.tobytes("png")
+    except Exception:
+        return None
+
+
+def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path,
+                        embed_cfg: dict | None = None) -> list[dict]:
+    """Attach a base64 page PNG to each visual hit that has a page number. Mutates + returns hits."""
+    import base64
+    for hit in hits:
+        if hit.get("type") == "visual" and hit.get("page"):
+            png = render_page_png(abs_source_path, hit["page"], repo_root, embed_cfg)
+            if png is not None:
+                hit["image_b64"] = base64.b64encode(png).decode("ascii")
+    return hits
+
+
+def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> list[dict]:
+    """Return the file's distinct (section_heading, page) rows in page order — a synthetic TOC.
+
+    Scrolls text-collection payloads only (no embedding); pages with no number sort last.
+    """
+    seen: set = set()
+    rows: list[tuple] = []
+    for coll in collections:
+        if coll.endswith("_visual"):
+            continue
+        try:
+            points, _ = client.scroll(
+                collection_name=coll, scroll_filter=ff,
+                with_payload=True, limit=_FOCUS_OUTLINE_SCROLL_LIMIT,
+            )
+        except Exception as e:
+            err_str = str(e).lower()
+            if "404" in err_str or "not found" in err_str or "doesn't exist" in err_str:
+                continue
+            if any(kw in err_str for kw in ("connection refused", "connection error",
+                                            "network", "timeout", "unreachable")):
+                raise RuntimeError(
+                    f"Cannot reach Qdrant — is it running? "
+                    f"Start it with: carta doctor --fix\n(Detail: {e})") from e
+            continue
+        for p in points:
+            payload = p.payload or {}
+            page = payload.get("page")
+            heading = payload.get("section_heading", "")
+            key = (page, heading)
+            if key in seen:
+                continue
+            seen.add(key)
+            sort_page = page if isinstance(page, int) else 1_000_000
+            rows.append((sort_page, page, heading))
+    rows.sort(key=lambda r: r[0])
+    return [{"score": 0.0, "source": source, "page": page,
+             "section_heading": heading, "excerpt": "", "type": "outline",
+             "doc_type": ""} for _sort, page, heading in rows]
+
+
+def _focus_deep(client, collections: list[str], ff: Filter, query: str,
+                cfg: dict, repo_root: Path, source: str, limit: int) -> list[dict]:
+    """File-scoped deep retrieval: filtered per-collection queries, RRF fused, NO dedup,
+    NO visual cap, NO graph expansion; visual hits get a rendered page image."""
+    per_collection: list[list[dict]] = []
+    for coll_name in collections:
+        coll_results: list[dict] = []
+        try:
+            if coll_name.endswith("_visual"):
+                embed_cfg = cfg.get("embed", {})
+                if embed_cfg.get("colpali_enabled", None) is False:
+                    continue
+                from carta.embed.colpali import is_colpali_available, ColPaliEmbedder
+                if not is_colpali_available():
+                    continue
+                if not _visual_collection_ready(client, coll_name):
+                    continue
+                try:
+                    embedder = ColPaliEmbedder(
+                        model_name=embed_cfg.get("colpali_model", "vidore/colqwen2-v1.0-hf"),
+                        device=embed_cfg.get("colpali_device", "cpu"), batch_size=1)
+                    qv = embedder.embed_query(query)
+                    qv = qv.tolist() if hasattr(qv, "tolist") else list(qv)
+                    response = client.query_points(
+                        collection_name=coll_name, query=qv, using="colpali",
+                        limit=limit, with_payload=True, query_filter=ff)
+                    for r in response.points:
+                        payload = r.payload or {}
+                        coll_results.append({
+                            "score": r.score,
+                            "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
+                            "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
+                            "type": "visual", "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page_num"), "section_heading": ""})
+                except Exception:
+                    pass  # visual lane is auxiliary — skip on any ColPali/query error, keep text results
+            else:
+                ollama_url = cfg["embed"]["ollama_url"]
+                model = cfg["embed"]["ollama_model"]
+                query_vec = get_embedding(query, ollama_url=ollama_url, model=model,
+                                          prefix="search_query: ")
+                hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
+                is_hybrid = collection_is_hybrid(client, coll_name)
+                if hybrid_cfg.get("enabled", False) and is_hybrid:
+                    response = _hybrid_query_collection(
+                        client, coll_name, query, query_vec, limit,
+                        prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
+                        bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
+                        query_filter=ff)
+                elif is_hybrid:
+                    response = client.query_points(
+                        collection_name=coll_name, query=query_vec, using=DENSE_VECTOR_NAME,
+                        limit=limit, with_payload=True, query_filter=ff)
+                else:
+                    response = client.query_points(
+                        collection_name=coll_name, query=query_vec,
+                        limit=limit, with_payload=True, query_filter=ff)
+                for r in response.points:
+                    payload = r.payload or {}
+                    coll_results.append({
+                        "score": r.score,
+                        "source": payload.get("file_path", payload.get("slug", "")),
+                        "excerpt": payload.get("text", ""), "type": "text",
+                        "doc_type": payload.get("doc_type", ""),
+                        "page": payload.get("page"),
+                        "section_heading": payload.get("section_heading", "")})
+            per_collection.append(coll_results)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "404" in err_str or "not found" in err_str or "doesn't exist" in err_str:
+                continue
+            if any(kw in err_str for kw in ("connection refused", "connection error",
+                                            "network", "timeout", "unreachable")):
+                raise RuntimeError(
+                    f"Cannot reach Qdrant — is it running? "
+                    f"Start it with: carta doctor --fix\n(Detail: {e})") from e
+            continue
+
+    # RRF fuse across lanes; visual_max_ratio=1.0 disables the cap (we WANT the file's pages).
+    fused = _rrf_merge_collections(per_collection, limit, visual_max_ratio=1.0)
+    # embed_cfg threaded so render_page_png honors a custom colpali_sidecar_path.
+    fused = _attach_page_images(fused, repo_root / source, repo_root, cfg.get("embed", {}))
+    return fused[:limit]
+
+
+def run_focus(source: str, cfg: dict, *, query: str = "",
+              limit: int = _FOCUS_DEFAULT_LIMIT) -> list[dict]:
+    """Deep, file-scoped retrieval over a single source file.
+
+    Modes:
+      - query == "" : outline — the file's distinct (section_heading, page) rows in page order.
+      - query set   : deep — up to `limit` page-anchored passages from the file (dedup off,
+                      no graph expansion, visual cap off); visual hits carry image_b64.
+
+    Returns list of dicts: {score, source, page, section_heading, excerpt, type, doc_type, image_b64?}.
+    Fail-open: an unknown/never-embedded file yields []. Raises RuntimeError only on Qdrant transport failure.
+    """
+    from carta.search.scoped import get_search_collections
+
+    source = _normalize_source(source)
+    repo_root = Path(find_config()).parent.parent
+    try:
+        client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
+    except Exception as e:
+        raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
+
+    try:
+        collections = get_search_collections(cfg, "repo")
+    except ValueError:
+        collections = [collection_name(cfg, "doc")]
+        if cfg.get("embed", {}).get("colpali_enabled", None) is not False:
+            collections.append(f"{cfg['project_name']}_visual")
+
+    ff = _file_filter(source)
+    for coll in collections:
+        _ensure_file_path_index(client, coll)
+
+    if not query:
+        return _focus_outline(client, collections, ff, source)
+    return _focus_deep(client, collections, ff, query, cfg, repo_root, source, limit)
 
 
 def _dedupe_by_source(results: list[dict]) -> list[dict]:
@@ -1886,6 +2127,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                             "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
                             "type": "visual",
                             "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page_num"),
+                            "section_heading": "",
                         })
                         
                 except Exception:
@@ -1935,6 +2178,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         "excerpt": payload.get("text", ""),
                         "type": "text",
                         "doc_type": payload.get("doc_type", ""),
+                        "page": payload.get("page"),
+                        "section_heading": payload.get("section_heading", ""),
                     })
 
             per_collection.append(coll_results)
