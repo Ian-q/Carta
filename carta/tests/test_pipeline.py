@@ -1340,3 +1340,32 @@ class TestRenderPageImages:
         assert render_page_png(pdf, 3, tmp_path,
                                {"colpali_sidecar_path": "custom_cache/"}) == b"CUSTOMPNG"
         assert render_page_png(pdf, 3, tmp_path) is None  # default path: no cache, fake PDF -> None
+
+
+class TestFocusOutline:
+    def test_outline_returns_distinct_sections_in_page_order(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+
+        def mk(page, heading):
+            p = MagicMock(); p.payload = {"page": page, "section_heading": heading}; return p
+
+        client = MagicMock()
+        # Unordered, with a duplicate (3,"Intro") that must collapse.
+        client.scroll.return_value = (
+            [mk(3, "Intro"), mk(1, "Cover"), mk(3, "Intro"), mk(2, "Setup")], None)
+
+        rows = _focus_outline(client, ["test-project_doc"], _file_filter("imu.pdf"), "imu.pdf")
+
+        assert [(r["page"], r["section_heading"]) for r in rows] == [
+            (1, "Cover"), (2, "Setup"), (3, "Intro")]
+        assert all(r["type"] == "outline" and r["source"] == "imu.pdf" for r in rows)
+        # Outline must not embed anything — it scrolls payloads only.
+        client.scroll.assert_called_once()
+
+    def test_outline_skips_visual_collections(self):
+        from unittest.mock import MagicMock
+        from carta.embed.pipeline import _focus_outline, _file_filter
+        client = MagicMock(); client.scroll.return_value = ([], None)
+        _focus_outline(client, ["test-project_visual"], _file_filter("imu.pdf"), "imu.pdf")
+        client.scroll.assert_not_called()  # visual collections are skipped
