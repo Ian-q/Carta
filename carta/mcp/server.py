@@ -174,7 +174,7 @@ def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | d
     for r in results:
         item = {
             "score": round(r.get("score", 0.0), 4),
-            "source": r["source"],
+            "source": r.get("source", ""),
             "page": r.get("page"),
             "section_heading": r.get("section_heading", ""),
             "excerpt": (r.get("excerpt") or "")[:300],
