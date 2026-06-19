@@ -611,6 +611,39 @@ class TestRunSearch:
 
         assert results == []
 
+    def test_results_carry_page_and_section_anchors(self):
+        """run_search surfaces page + section_heading from the payload on each hit."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        cfg = {
+            "project_name": "test-project",
+            "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://localhost:11434",
+                      "ollama_model": "nomic-embed-text", "colpali_enabled": False},
+            "search": {"top_n": 5},
+            "modules": {"doc_search": True},
+        }
+
+        point = MagicMock()
+        point.score = 0.91
+        point.payload = {"file_path": "docs/imu.pdf", "text": "sensitivity register",
+                         "page": 47, "section_heading": "6.3 Gyro Config", "doc_type": ""}
+        resp = MagicMock(); resp.points = [point]
+        mock_client = MagicMock()
+        mock_client.query_points.return_value = resp
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("imu sensitivity", cfg)
+
+        assert results, "expected at least one hit"
+        assert results[0]["page"] == 47
+        assert results[0]["section_heading"] == "6.3 Gyro Config"
+
 
 class TestVisionProgressWiring:
     """Verify _vision_callback is passed and _vision_events are handled correctly."""
