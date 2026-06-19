@@ -1717,18 +1717,22 @@ def _ensure_file_path_index(client, coll_name: str) -> None:
 _FOCUS_RENDER_DPI = 150  # page-image resolution for focus visual hits
 
 
-def render_page_png(abs_file_path: Path, page: int, repo_root: Path) -> bytes | None:
+def render_page_png(abs_file_path: Path, page: int, repo_root: Path,
+                    embed_cfg: dict | None = None) -> bytes | None:
     """Return PNG bytes for a 1-indexed PDF page, or None if it can't be produced.
 
-    Fast path: a ColPali cache PNG at .carta/visual_cache/<stem>/page_NNNN.png.
+    Fast path: a ColPali cache PNG under the configured colpali_sidecar_path
+    (default .carta/visual_cache/), at <cache_dir>/<stem>/page_NNNN.png.
     Fallback: render on demand with PyMuPDF. Non-PDF, out-of-range page, or any
     failure returns None so the caller degrades to anchors-only for that hit.
     """
     try:
         if abs_file_path.suffix.lower() != ".pdf":
             return None
-        cached = (repo_root / ".carta" / "visual_cache" /
-                  abs_file_path.stem / f"page_{page:04d}.png")
+        cache_dir = Path((embed_cfg or {}).get("colpali_sidecar_path", ".carta/visual_cache/"))
+        if not cache_dir.is_absolute():
+            cache_dir = repo_root / cache_dir
+        cached = cache_dir / abs_file_path.stem / f"page_{page:04d}.png"
         if cached.is_file():
             return cached.read_bytes()
         import fitz  # PyMuPDF, imported lazily
@@ -1741,12 +1745,13 @@ def render_page_png(abs_file_path: Path, page: int, repo_root: Path) -> bytes | 
         return None
 
 
-def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path) -> list[dict]:
+def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path,
+                        embed_cfg: dict | None = None) -> list[dict]:
     """Attach a base64 page PNG to each visual hit that has a page number. Mutates + returns hits."""
     import base64
     for hit in hits:
         if hit.get("type") == "visual" and hit.get("page"):
-            png = render_page_png(abs_source_path, hit["page"], repo_root)
+            png = render_page_png(abs_source_path, hit["page"], repo_root, embed_cfg)
             if png is not None:
                 hit["image_b64"] = base64.b64encode(png).decode("ascii")
     return hits
