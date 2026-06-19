@@ -1757,6 +1757,39 @@ def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path
     return hits
 
 
+def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> list[dict]:
+    """Return the file's distinct (section_heading, page) rows in page order — a synthetic TOC.
+
+    Scrolls text-collection payloads only (no embedding); pages with no number sort last.
+    """
+    seen: set = set()
+    rows: list[tuple] = []
+    for coll in collections:
+        if coll.endswith("_visual"):
+            continue
+        try:
+            points, _ = client.scroll(
+                collection_name=coll, scroll_filter=ff,
+                with_payload=True, limit=10_000,
+            )
+        except Exception:
+            continue
+        for p in points:
+            payload = p.payload or {}
+            page = payload.get("page")
+            heading = payload.get("section_heading", "")
+            key = (page, heading)
+            if key in seen:
+                continue
+            seen.add(key)
+            sort_page = page if isinstance(page, int) else 1_000_000
+            rows.append((sort_page, page, heading))
+    rows.sort(key=lambda r: r[0])
+    return [{"score": 0.0, "source": source, "page": page,
+             "section_heading": heading, "excerpt": "", "type": "outline",
+             "doc_type": ""} for _sort, page, heading in rows]
+
+
 def _dedupe_by_source(results: list[dict]) -> list[dict]:
     """Keep the first (best-ranked) occurrence of each distinct ``source``, drop the rest.
 
