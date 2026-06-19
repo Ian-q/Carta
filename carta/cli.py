@@ -324,6 +324,7 @@ def cmd_search(args):
 
     _notify_if_update(cfg_path, cfg)
 
+
 def cmd_focus(args):
     from carta.config import load_config
     cfg_path = find_config()
@@ -343,6 +344,7 @@ def cmd_focus(args):
     if not results:
         print(f"No focus results for {args.source!r}. Is the file embedded? "
               f"Use `carta search` to find the exact source path.")
+        _notify_if_update(cfg_path, cfg)
         return
 
     if not query:
@@ -352,6 +354,7 @@ def cmd_focus(args):
             page_s = f"p.{page}" if page is not None else "p.?"
             heading = r.get("section_heading") or "(no heading)"
             print(f"  {page_s:>6}  {heading}")
+        _notify_if_update(cfg_path, cfg)
         return
 
     cache_dir = repo_root / ".carta" / "cache" / "focus"
@@ -368,6 +371,7 @@ def cmd_focus(args):
             img_path = cache_dir / f"{stem}-p{page}.png"
             img_path.write_bytes(base64.b64decode(r["image_b64"]))
             print(f"        ↳ page image: {img_path}")
+    _notify_if_update(cfg_path, cfg)
 
 
 def cmd_update(args):
