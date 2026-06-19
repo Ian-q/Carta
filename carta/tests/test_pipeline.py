@@ -1329,3 +1329,14 @@ class TestRenderPageImages:
         assert "image_b64" not in out[0]            # text untouched
         assert out[1]["image_b64"]                  # visual w/ page rendered
         assert "image_b64" not in out[2]            # visual w/o page skipped
+
+    def test_cache_hit_honors_custom_sidecar_path(self, tmp_path):
+        from carta.embed.pipeline import render_page_png
+        pdf = tmp_path / "imu.pdf"; pdf.write_bytes(b"%PDF-1.4 fake")
+        cache = tmp_path / "custom_cache" / "imu"
+        cache.mkdir(parents=True)
+        (cache / "page_0003.png").write_bytes(b"CUSTOMPNG")
+        # Default path would miss; the configured path must hit.
+        assert render_page_png(pdf, 3, tmp_path,
+                               {"colpali_sidecar_path": "custom_cache/"}) == b"CUSTOMPNG"
+        assert render_page_png(pdf, 3, tmp_path) is None  # default path: no cache, fake PDF -> None
