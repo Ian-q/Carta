@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import Literal, Optional, Union
 
 from carta.config import find_config, load_config, ConfigError
-from carta.embed.pipeline import run_search, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
+from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
 from carta.embed.lock import embed_lock, EmbedLockHeld
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
 from carta.search.scoped import get_search_collections
@@ -136,6 +136,57 @@ def carta_search(
         formatted.append(result)
     
     return formatted
+
+
+def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | dict:
+    """Go deep in ONE already-located file: page-anchored passages, an outline, and
+    table/figure pages returned as images.
+
+    Use AFTER carta_search has identified the relevant file — pass that result's `source`
+    string here. With an EMPTY query, returns the file's section/page outline (a synthetic
+    table of contents) so you can choose where to read.
+
+    Args:
+        source: Repo-relative file path (the `source` from a carta_search result; a
+                trailing " (page N)" from a visual result is fine — it is stripped).
+        query: Natural-language query. Empty string => outline mode.
+        top_k: Maximum passages to return (default 15).
+
+    Returns:
+        List of dicts: {score, source, page, section_heading, excerpt, type, image_b64?}.
+        `image_b64` is present on visual (table/figure) hits. On failure:
+        {"error": "<type>", "detail": "<message>"}.
+    """
+    try:
+        cfg = _load_cfg()
+    except (ConfigError, FileNotFoundError) as e:
+        return {"error": "service_unavailable", "detail": str(e)}
+
+    try:
+        results = run_focus(source, cfg, query=query, limit=top_k)
+    except RuntimeError as e:
+        return {"error": "service_unavailable", "detail": str(e)}
+    except Exception as e:
+        _logger.warning("carta_focus unexpected error: %s", e)
+        return {"error": "service_unavailable", "detail": str(e)}
+
+    formatted = []
+    for r in results:
+        item = {
+            "score": round(r.get("score", 0.0), 4),
+            "source": r["source"],
+            "page": r.get("page"),
+            "section_heading": r.get("section_heading", ""),
+            "excerpt": (r.get("excerpt") or "")[:300],
+            "type": r.get("type", "text"),
+        }
+        if r.get("image_b64"):
+            item["image_b64"] = r["image_b64"]
+        formatted.append(item)
+    return formatted
+
+
+mcp_server.add_tool(carta_focus)
 
 
 def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: int) -> list[dict]:
