@@ -1685,6 +1685,7 @@ def _apply_visual_cap(ordered: list[dict], limit: int, visual_max_ratio: float =
 
 
 _FOCUS_DEFAULT_LIMIT = 15  # passages returned by a deep focus query
+_FOCUS_OUTLINE_SCROLL_LIMIT = 10_000  # raise the limit if any single file exceeds this chunk count
 
 
 def _normalize_source(source: str) -> str:
@@ -1770,9 +1771,17 @@ def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> l
         try:
             points, _ = client.scroll(
                 collection_name=coll, scroll_filter=ff,
-                with_payload=True, limit=10_000,
+                with_payload=True, limit=_FOCUS_OUTLINE_SCROLL_LIMIT,
             )
-        except Exception:
+        except Exception as e:
+            err_str = str(e).lower()
+            if "404" in err_str or "not found" in err_str or "doesn't exist" in err_str:
+                continue
+            if any(kw in err_str for kw in ("connection refused", "connection error",
+                                            "network", "timeout", "unreachable")):
+                raise RuntimeError(
+                    f"Cannot reach Qdrant — is it running? "
+                    f"Start it with: carta doctor --fix\n(Detail: {e})") from e
             continue
         for p in points:
             payload = p.payload or {}
