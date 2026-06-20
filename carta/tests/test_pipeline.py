@@ -1501,6 +1501,25 @@ class TestRunFocus:
         assert [r["source"] for r in results] == ["docs/imu.pdf"]
         assert results[0]["page"] == 5
 
+    def test_focus_ocr_chunk_gets_ocr_visual_tier_and_page(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+        point = MagicMock(); point.score = 0.9
+        point.payload = {"file_path": "docs/board.pdf", "text": "32M Hz callouts",
+                         "doc_type": "image_description", "model_used": "llava", "page_num": 3}
+        resp = MagicMock(); resp.points = [point]
+        client = MagicMock(); client.query_points.return_value = resp
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.embed.pipeline._attach_page_images", side_effect=lambda hits, *a, **k: hits), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/board.pdf", self.BASE_CFG, query="32mhz")
+        assert results[0]["text_source"] == "ocr_visual"
+        assert results[0]["page"] == 3
+
 
 class TestTextSource:
     def test_text_layer_for_non_image_description(self):

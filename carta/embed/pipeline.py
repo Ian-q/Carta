@@ -1851,7 +1851,8 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                             "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
                             "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
                             "type": "visual", "doc_type": payload.get("doc_type", ""),
-                            "page": payload.get("page_num"), "section_heading": ""})
+                            "page": payload.get("page_num"), "section_heading": "",
+                            "text_source": "visual"})
                 except Exception:
                     pass  # visual lane is auxiliary — skip on any ColPali/query error, keep text results
             else:
@@ -1882,8 +1883,9 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                         "source": payload.get("file_path", payload.get("slug", "")),
                         "excerpt": payload.get("text", ""), "type": "text",
                         "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page"),
-                        "section_heading": payload.get("section_heading", "")})
+                        "page": payload.get("page") or payload.get("page_num"),
+                        "section_heading": payload.get("section_heading", ""),
+                        "text_source": _text_source(payload)})
             per_collection.append(coll_results)
         except Exception as e:
             err_str = str(e).lower()
