@@ -4,6 +4,14 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-20
+
+### Added
+- **OCR trust handling — diagram-OCR is marked doubted.** Every search result now carries a read-time `text_source` trust tier — `text_layer` (real PDF text), `ocr_table` (glm-ocr transcription of structured/scanned text — trusted), `ocr_visual` (llava diagram description — **doubted**) — derived from chunk payload that already exists, so it applies *retroactively* to embedded OCR chunks with no re-embed. Broad search (`carta search` CLI / `carta_search` MCP) flags `ocr_visual` hits with a caveat, and `carta focus` attaches the rendered page image to them so an agent verifies against the page rather than trusting hallucination-prone diagram prose. Trusted text-layer and table-OCR hits are unmarked. Additive metadata only — no ranking change.
+
+### Changed
+- **The diagram-OCR prompt now transcribes instead of interprets.** `LLAVA_PROMPT` (the vision-model prompt for image/diagram pages) was rewritten to transcribe visible labels, values, pin names, and reference designators exactly as printed and to *not* infer functions, designators, or values that aren't legible — eliminating fabricated facts (e.g. inventing a component's function) while preserving the findable labels (`32M Hz`, pin names, etc.). Applies to newly embedded image pages; the table-OCR path (`GLM_OCR_PROMPT`) is unchanged.
+
 ## [0.13.0] — 2026-06-20
 
 ### Added
