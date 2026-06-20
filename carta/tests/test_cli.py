@@ -971,3 +971,24 @@ class TestCmdFocus:
         img = tmp_path / ".carta" / "cache" / "focus" / "imu-p47.png"
         assert img.is_file() and img.read_bytes() == b"PNG"
         assert str(img) in out
+
+
+class TestCmdSearchAnchors:
+    def test_search_shows_page_when_present_omits_when_absent(self, tmp_path, capsys):
+        import argparse
+        from unittest.mock import patch
+        from carta import cli
+        results = [
+            {"score": 0.8, "source": "docs/imu.pdf", "excerpt": "regs",
+             "doc_type": "", "type": "text", "page": 47, "section_heading": "6.3 Gyro"},
+            {"score": 0.7, "source": "docs/readme.md", "excerpt": "intro",
+             "doc_type": "", "type": "text", "page": None, "section_heading": ""},
+        ]
+        args = argparse.Namespace(query=["gyro"], hops=0)
+        with patch("carta.cli.find_config", return_value=tmp_path / ".carta" / "config.yaml"), \
+             patch("carta.config.load_config", return_value={"modules": {"doc_search": True}}), \
+             patch("carta.embed.pipeline.run_search", return_value=results):
+            cli.cmd_search(args)
+        lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("[")]
+        assert "p.47" in lines[0] and "6.3 Gyro" in lines[0]
+        assert "p." not in lines[1]   # no page -> no "p.N" noise on broad results
