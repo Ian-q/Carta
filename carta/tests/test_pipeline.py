@@ -1364,6 +1364,22 @@ class TestRenderPageImages:
                                {"colpali_sidecar_path": "custom_cache/"}) == b"CUSTOMPNG"
         assert render_page_png(pdf, 3, tmp_path) is None  # default path: no cache, fake PDF -> None
 
+    def test_attach_images_also_covers_ocr_visual_text_hits(self, tmp_path):
+        from unittest.mock import patch
+        from carta.embed.pipeline import _attach_page_images
+        hits = [
+            {"type": "text", "text_source": "ocr_visual", "page": 3},   # doubted OCR → image
+            {"type": "text", "text_source": "ocr_table", "page": 4},    # trusted table → none
+            {"type": "text", "text_source": "text_layer", "page": 5},   # real text → none
+            {"type": "visual", "text_source": "visual", "page": 6},     # ColPali → image (unchanged)
+        ]
+        with patch("carta.embed.pipeline.render_page_png", return_value=b"PNG"):
+            out = _attach_page_images(hits, tmp_path / "board.pdf", tmp_path)
+        assert out[0]["image_b64"]              # ocr_visual text hit gets the page image
+        assert "image_b64" not in out[1]        # ocr_table untouched
+        assert "image_b64" not in out[2]        # text_layer untouched
+        assert out[3]["image_b64"]              # visual still works
+
 
 class TestFocusOutline:
     def test_outline_returns_distinct_sections_in_page_order(self):
