@@ -1758,6 +1758,22 @@ def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path
     return hits
 
 
+def _text_source(payload: dict) -> str:
+    """Classify a hit's provenance from existing payload fields.
+
+    "text_layer" — real PDF text (trusted); "ocr_table" — glm-ocr transcription of
+    structured text (reliable); "ocr_visual" — llava diagram description (doubted).
+    Safe default for an unmarked image_description chunk is ocr_visual (doubted).
+    """
+    if payload.get("doc_type") != "image_description":
+        return "text_layer"
+    model = (payload.get("model_used") or "").lower()
+    content = (payload.get("content_type") or "").lower()
+    if "glm" in model or content == "structured_text":
+        return "ocr_table"
+    return "ocr_visual"
+
+
 def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> list[dict]:
     """Return the file's distinct (section_heading, page) rows in page order — a synthetic TOC.
 
