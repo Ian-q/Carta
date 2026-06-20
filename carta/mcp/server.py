@@ -52,14 +52,17 @@ def _repo_root_from_cfg() -> Path:
 
 def _format_search_result(r: dict) -> dict:
     """Shape a raw search hit into the MCP wire dict: rounded score, page/section anchors,
-    truncated excerpt, and (for visual hits) the page image. Defensive .get() throughout."""
+    trust tier, truncated excerpt, and (for visual hits) the page image. Defensive .get()."""
     item = {
         "score": round(r.get("score", 0.0), 4),
         "source": r.get("source", ""),
         "page": r.get("page"),
         "section_heading": r.get("section_heading", ""),
         "excerpt": (r.get("excerpt") or "")[:300],
+        "text_source": r.get("text_source", "text_layer"),
     }
+    if r.get("text_source") == "ocr_visual":
+        item["caveat"] = "OCR diagram description — unverified; call carta_focus for the page image."
     if r.get("type") == "visual":
         item["type"] = "visual"
         if r.get("image_b64"):
