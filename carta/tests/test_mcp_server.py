@@ -184,6 +184,21 @@ class TestCartaFocus:
         assert out["error"] == "service_unavailable"
         assert "Qdrant down" in out["detail"]
 
+    def test_surfaces_text_source_tier(self):
+        from unittest.mock import patch
+        import carta.mcp.server as server
+        fake = [
+            {"score": 0.9, "source": "docs/board.pdf", "page": 3, "section_heading": "",
+             "excerpt": "32M Hz", "type": "text", "text_source": "ocr_visual"},
+            {"score": 0.5, "source": "docs/spec.md", "page": 1, "section_heading": "",
+             "excerpt": "x", "type": "text"},   # no text_source → default text_layer
+        ]
+        with patch.object(server, "_load_cfg", return_value={"x": 1}), \
+             patch.object(server, "run_focus", return_value=fake):
+            out = server.carta_focus(source="docs/board.pdf", query="32mhz")
+        assert out[0]["text_source"] == "ocr_visual"
+        assert out[1]["text_source"] == "text_layer"   # default when key absent
+
 
 class TestSearchAnchors:
     def test_run_search_collection_includes_page_and_section(self):
