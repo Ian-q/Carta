@@ -1477,3 +1477,24 @@ class TestRunFocus:
         # branch if it reached the outer handler. Focus must instead degrade to text.
         assert [r["source"] for r in results] == ["docs/imu.pdf"]
         assert results[0]["page"] == 5
+
+
+class TestTextSource:
+    def test_text_layer_for_non_image_description(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "spec"}) == "text_layer"
+        assert _text_source({}) == "text_layer"
+
+    def test_ocr_table_for_glm_or_structured(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description", "model_used": "glm-ocr"}) == "ocr_table"
+        assert _text_source({"doc_type": "image_description", "content_type": "structured_text"}) == "ocr_table"
+
+    def test_ocr_visual_for_llava(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description", "model_used": "llava"}) == "ocr_visual"
+        assert _text_source({"doc_type": "image_description", "content_type": "visual"}) == "ocr_visual"
+
+    def test_ocr_visual_is_safe_default_when_unmarked(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description"}) == "ocr_visual"
