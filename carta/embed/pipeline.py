@@ -2148,6 +2148,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                             "doc_type": payload.get("doc_type", ""),
                             "page": payload.get("page_num"),
                             "section_heading": "",
+                            "text_source": "visual",
                         })
                         
                 except Exception:
@@ -2197,8 +2198,9 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         "excerpt": payload.get("text", ""),
                         "type": "text",
                         "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page"),
+                        "page": payload.get("page") or payload.get("page_num"),
                         "section_heading": payload.get("section_heading", ""),
+                        "text_source": _text_source(payload),
                     })
 
             per_collection.append(coll_results)
