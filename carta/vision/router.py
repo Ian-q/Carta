@@ -118,9 +118,12 @@ For technical specifications:
 Output only the extracted content with markdown formatting. No explanatory text."""
 
 LLAVA_PROMPT = (
-    "Describe this technical diagram for engineering documentation search. "
-    "Include: data values, axis labels, register names, waveform descriptions, "
-    "block labels, pin names, and any visible technical annotations."
+    "Transcribe the text visible in this technical image for documentation search. "
+    "List every visible text label, annotation, axis label, value with its unit, pin name, "
+    "block label, and reference designator exactly as printed. "
+    "Do NOT infer or guess component functions, designators, values, or connections that "
+    "are not directly legible as text in the image. If something is unreadable, omit it. "
+    "Output only the transcribed items, one per line."
 )
 
 

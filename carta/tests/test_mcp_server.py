@@ -184,6 +184,21 @@ class TestCartaFocus:
         assert out["error"] == "service_unavailable"
         assert "Qdrant down" in out["detail"]
 
+    def test_surfaces_text_source_tier(self):
+        from unittest.mock import patch
+        import carta.mcp.server as server
+        fake = [
+            {"score": 0.9, "source": "docs/board.pdf", "page": 3, "section_heading": "",
+             "excerpt": "32M Hz", "type": "text", "text_source": "ocr_visual"},
+            {"score": 0.5, "source": "docs/spec.md", "page": 1, "section_heading": "",
+             "excerpt": "x", "type": "text"},   # no text_source → default text_layer
+        ]
+        with patch.object(server, "_load_cfg", return_value={"x": 1}), \
+             patch.object(server, "run_focus", return_value=fake):
+            out = server.carta_focus(source="docs/board.pdf", query="32mhz")
+        assert out[0]["text_source"] == "ocr_visual"
+        assert out[1]["text_source"] == "text_layer"   # default when key absent
+
 
 class TestSearchAnchors:
     def test_run_search_collection_includes_page_and_section(self):
@@ -221,3 +236,34 @@ class TestSearchAnchors:
         assert out["type"] == "visual"
         assert out["image_b64"] == "QkE="
         assert out["page"] == 47
+
+    def test_format_adds_caveat_and_text_source_for_ocr_visual(self):
+        import carta.mcp.server as server
+        out = server._format_search_result(
+            {"score": 0.8, "source": "docs/board.pdf", "excerpt": "32M Hz",
+             "page": 3, "section_heading": "", "type": "text", "text_source": "ocr_visual"})
+        assert out["text_source"] == "ocr_visual"
+        assert "caveat" in out and "carta_focus" in out["caveat"]
+
+    def test_format_no_caveat_for_trusted_text(self):
+        import carta.mcp.server as server
+        out = server._format_search_result(
+            {"score": 0.7, "source": "docs/spec.md", "excerpt": "x",
+             "page": 2, "section_heading": "Intro", "type": "text", "text_source": "text_layer"})
+        assert out["text_source"] == "text_layer"
+        assert "caveat" not in out
+
+    def test_run_search_collection_classifies_ocr_visual_with_page_fallback(self):
+        from unittest.mock import patch, MagicMock
+        import carta.mcp.server as server
+        point = MagicMock(); point.score = 0.8
+        point.payload = {"file_path": "docs/board.pdf", "text": "32M Hz",
+                         "doc_type": "image_description", "model_used": "llava", "page_num": 3}
+        resp = MagicMock(); resp.points = [point]
+        client = MagicMock(); client.query_points.return_value = resp
+        cfg = {"qdrant_url": "http://localhost:6333", "embed": {"ollama_url": "x", "ollama_model": "m"}}
+        with patch("qdrant_client.QdrantClient", return_value=client), \
+             patch("carta.embed.embed.get_embedding", return_value=[0.0] * 768):
+            hits = server._run_search_collection("32mhz", cfg, "p_doc", 5)
+        assert hits[0]["text_source"] == "ocr_visual"   # MCP path now classifies the tier
+        assert hits[0]["page"] == 3                       # page resolved from page_num

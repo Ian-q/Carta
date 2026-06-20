@@ -644,6 +644,29 @@ class TestRunSearch:
         assert results[0]["page"] == 47
         assert results[0]["section_heading"] == "6.3 Gyro Config"
 
+    def test_ocr_chunk_gets_ocr_visual_tier_and_page_from_page_num(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+        cfg = {
+            "project_name": "test-project", "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "x", "ollama_model": "m", "colpali_enabled": False},
+            "search": {"top_n": 5}, "modules": {"doc_search": True},
+        }
+        point = MagicMock(); point.score = 0.8
+        # OCR chunk: image_description + llava + page_num (no "page" key)
+        point.payload = {"file_path": "docs/board.pdf", "text": "32M Hz",
+                         "doc_type": "image_description", "model_used": "llava", "page_num": 3}
+        resp = MagicMock(); resp.points = [point]
+        client = MagicMock(); client.query_points.return_value = resp
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("32mhz", cfg)
+        assert results[0]["text_source"] == "ocr_visual"
+        assert results[0]["page"] == 3   # resolved from page_num
+
 
 class TestVisionProgressWiring:
     """Verify _vision_callback is passed and _vision_events are handled correctly."""
@@ -1341,6 +1364,22 @@ class TestRenderPageImages:
                                {"colpali_sidecar_path": "custom_cache/"}) == b"CUSTOMPNG"
         assert render_page_png(pdf, 3, tmp_path) is None  # default path: no cache, fake PDF -> None
 
+    def test_attach_images_also_covers_ocr_visual_text_hits(self, tmp_path):
+        from unittest.mock import patch
+        from carta.embed.pipeline import _attach_page_images
+        hits = [
+            {"type": "text", "text_source": "ocr_visual", "page": 3},   # doubted OCR → image
+            {"type": "text", "text_source": "ocr_table", "page": 4},    # trusted table → none
+            {"type": "text", "text_source": "text_layer", "page": 5},   # real text → none
+            {"type": "visual", "text_source": "visual", "page": 6},     # ColPali → image (unchanged)
+        ]
+        with patch("carta.embed.pipeline.render_page_png", return_value=b"PNG"):
+            out = _attach_page_images(hits, tmp_path / "board.pdf", tmp_path)
+        assert out[0]["image_b64"]              # ocr_visual text hit gets the page image
+        assert "image_b64" not in out[1]        # ocr_table untouched
+        assert "image_b64" not in out[2]        # text_layer untouched
+        assert out[3]["image_b64"]              # visual still works
+
 
 class TestFocusOutline:
     def test_outline_returns_distinct_sections_in_page_order(self):
@@ -1477,3 +1516,49 @@ class TestRunFocus:
         # branch if it reached the outer handler. Focus must instead degrade to text.
         assert [r["source"] for r in results] == ["docs/imu.pdf"]
         assert results[0]["page"] == 5
+
+    def test_focus_ocr_chunk_gets_ocr_visual_tier_and_page(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+        point = MagicMock(); point.score = 0.9
+        point.payload = {"file_path": "docs/board.pdf", "text": "32M Hz callouts",
+                         "doc_type": "image_description", "model_used": "llava", "page_num": 3}
+        resp = MagicMock(); resp.points = [point]
+        client = MagicMock(); client.query_points.return_value = resp
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.embed.pipeline._attach_page_images", side_effect=lambda hits, *a, **k: hits), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_focus("docs/board.pdf", self.BASE_CFG, query="32mhz")
+        assert results[0]["text_source"] == "ocr_visual"
+        assert results[0]["page"] == 3
+
+
+class TestTextSource:
+    def test_text_layer_for_non_image_description(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "spec"}) == "text_layer"
+        assert _text_source({}) == "text_layer"
+
+    def test_ocr_table_for_glm_or_structured(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description", "model_used": "glm-ocr"}) == "ocr_table"
+        assert _text_source({"doc_type": "image_description", "content_type": "structured_text"}) == "ocr_table"
+
+    def test_ocr_visual_for_llava(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description", "model_used": "llava"}) == "ocr_visual"
+        assert _text_source({"doc_type": "image_description", "content_type": "visual"}) == "ocr_visual"
+
+    def test_ocr_visual_is_safe_default_when_unmarked(self):
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description"}) == "ocr_visual"
+
+    def test_flattened_glm_is_trusted_transcription(self):
+        # glm-ocr transcribes (never interprets), even on flattened/scanned pages → ocr_table.
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description",
+                             "model_used": "glm-ocr", "content_type": "flattened"}) == "ocr_table"
