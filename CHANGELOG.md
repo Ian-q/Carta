@@ -4,6 +4,12 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-20
+
+### Added
+- **`carta focus` (CLI) and `carta_focus` (MCP) — file-scoped deep retrieval.** The two-step partner to `carta search`: locate a file, then go *deep* in it. Deep mode returns up to 15 page-anchored passages from a single file (dedup off, visual cap off) so multi-part answers and register tables aren't collapsed away; an empty query returns the file's section/page outline — a synthetic table of contents straight from the payloads, no embedding. Table/figure pages come back as images: the MCP tool returns base64 inline, the CLI writes the PNG to `.carta/cache/focus/` and prints the path — rendered on demand via PyMuPDF with the ColPali page cache as a fast path. The engine reuses the existing hybrid/RRF/rerank query path with a `file_path` payload filter on every lane; read-path only, no re-embed and no change to broad-search ranking.
+- **Page and section anchors on every search result.** `carta search` (CLI) now prints ` p.N §heading` when present (omitted for page-less hits), and `carta_search` (MCP) returns `page` + `section_heading`. The data was already stamped into the Qdrant payload at chunk time; search now surfaces it, so even broad results point at "≈ p.47, §6.3" instead of just naming the file.
+
 ## [0.12.4] — 2026-06-18
 
 ### Fixed
