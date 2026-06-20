@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import Literal, Optional, Union
 
 from carta.config import find_config, load_config, ConfigError
-from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
+from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S, _text_source
 from carta.embed.lock import embed_lock, EmbedLockHeld
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
 from carta.search.scoped import get_search_collections
@@ -241,8 +241,9 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
             "score": r.score,
             "source": payload.get("file_path", payload.get("slug", "")),
             "excerpt": payload.get("text", ""),
-            "page": payload.get("page"),
+            "page": payload.get("page") or payload.get("page_num"),
             "section_heading": payload.get("section_heading", ""),
+            "text_source": _text_source(payload),
         })
     return hits
 
@@ -332,6 +333,7 @@ def _run_search_visual_collection(
                 "page": payload.get("page_num"),
                 "section_heading": "",
                 "png_path": png_path_str,
+                "text_source": "visual",
             })
         
         return hits
