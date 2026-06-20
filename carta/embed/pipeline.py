@@ -1748,10 +1748,12 @@ def render_page_png(abs_file_path: Path, page: int, repo_root: Path,
 
 def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path,
                         embed_cfg: dict | None = None) -> list[dict]:
-    """Attach a base64 page PNG to each visual hit that has a page number. Mutates + returns hits."""
+    """Attach a base64 page PNG to hits worth verifying against the page: ColPali visual
+    hits and doubted ocr_visual (diagram-OCR) text hits. Mutates + returns hits."""
     import base64
     for hit in hits:
-        if hit.get("type") == "visual" and hit.get("page"):
+        wants_image = hit.get("type") == "visual" or hit.get("text_source") == "ocr_visual"
+        if wants_image and hit.get("page"):
             png = render_page_png(abs_source_path, hit["page"], repo_root, embed_cfg)
             if png is not None:
                 hit["image_b64"] = base64.b64encode(png).decode("ascii")

@@ -185,6 +185,7 @@ def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | d
             "section_heading": r.get("section_heading", ""),
             "excerpt": (r.get("excerpt") or "")[:300],
             "type": r.get("type", "text"),
+            "text_source": r.get("text_source", "text_layer"),
         }
         if r.get("image_b64"):
             item["image_b64"] = r["image_b64"]
