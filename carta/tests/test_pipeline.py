@@ -644,6 +644,29 @@ class TestRunSearch:
         assert results[0]["page"] == 47
         assert results[0]["section_heading"] == "6.3 Gyro Config"
 
+    def test_ocr_chunk_gets_ocr_visual_tier_and_page_from_page_num(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+        cfg = {
+            "project_name": "test-project", "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "x", "ollama_model": "m", "colpali_enabled": False},
+            "search": {"top_n": 5}, "modules": {"doc_search": True},
+        }
+        point = MagicMock(); point.score = 0.8
+        # OCR chunk: image_description + llava + page_num (no "page" key)
+        point.payload = {"file_path": "docs/board.pdf", "text": "32M Hz",
+                         "doc_type": "image_description", "model_used": "llava", "page_num": 3}
+        resp = MagicMock(); resp.points = [point]
+        client = MagicMock(); client.query_points.return_value = resp
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("32mhz", cfg)
+        assert results[0]["text_source"] == "ocr_visual"
+        assert results[0]["page"] == 3   # resolved from page_num
+
 
 class TestVisionProgressWiring:
     """Verify _vision_callback is passed and _vision_events are handled correctly."""
