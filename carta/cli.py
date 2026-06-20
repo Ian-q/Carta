@@ -311,7 +311,9 @@ def cmd_search(args):
         heading = r.get("section_heading") or ""
         if heading:
             loc += f" §{heading}"
-        print(f"[{r['score']:.2f}] {tag}{r['source']}{loc} — {r['excerpt']}")
+        caveat = ("  ⚠ OCR-diagram, unverified — `carta focus` for the page image"
+                  if r.get("text_source") == "ocr_visual" else "")
+        print(f"[{r['score']:.2f}] {tag}{r['source']}{loc} — {r['excerpt']}{caveat}")
 
     hops = getattr(args, "hops", 0)
     if hops > 0:

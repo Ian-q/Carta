@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import Literal, Optional, Union
 
 from carta.config import find_config, load_config, ConfigError
-from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S
+from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S, _text_source
 from carta.embed.lock import embed_lock, EmbedLockHeld
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
 from carta.search.scoped import get_search_collections
@@ -52,14 +52,17 @@ def _repo_root_from_cfg() -> Path:
 
 def _format_search_result(r: dict) -> dict:
     """Shape a raw search hit into the MCP wire dict: rounded score, page/section anchors,
-    truncated excerpt, and (for visual hits) the page image. Defensive .get() throughout."""
+    trust tier, truncated excerpt, and (for visual hits) the page image. Defensive .get()."""
     item = {
         "score": round(r.get("score", 0.0), 4),
         "source": r.get("source", ""),
         "page": r.get("page"),
         "section_heading": r.get("section_heading", ""),
         "excerpt": (r.get("excerpt") or "")[:300],
+        "text_source": r.get("text_source", "text_layer"),
     }
+    if r.get("text_source") == "ocr_visual":
+        item["caveat"] = "OCR diagram description — unverified; call carta_focus for the page image."
     if r.get("type") == "visual":
         item["type"] = "visual"
         if r.get("image_b64"):
@@ -182,6 +185,7 @@ def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | d
             "section_heading": r.get("section_heading", ""),
             "excerpt": (r.get("excerpt") or "")[:300],
             "type": r.get("type", "text"),
+            "text_source": r.get("text_source", "text_layer"),
         }
         if r.get("image_b64"):
             item["image_b64"] = r["image_b64"]
@@ -237,8 +241,9 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
             "score": r.score,
             "source": payload.get("file_path", payload.get("slug", "")),
             "excerpt": payload.get("text", ""),
-            "page": payload.get("page"),
+            "page": payload.get("page") or payload.get("page_num"),
             "section_heading": payload.get("section_heading", ""),
+            "text_source": _text_source(payload),
         })
     return hits
 
@@ -328,6 +333,7 @@ def _run_search_visual_collection(
                 "page": payload.get("page_num"),
                 "section_heading": "",
                 "png_path": png_path_str,
+                "text_source": "visual",
             })
         
         return hits

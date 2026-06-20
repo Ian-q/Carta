@@ -1748,14 +1748,35 @@ def render_page_png(abs_file_path: Path, page: int, repo_root: Path,
 
 def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path,
                         embed_cfg: dict | None = None) -> list[dict]:
-    """Attach a base64 page PNG to each visual hit that has a page number. Mutates + returns hits."""
+    """Attach a base64 page PNG to hits worth verifying against the page: ColPali visual
+    hits and doubted ocr_visual (diagram-OCR) text hits. Mutates + returns hits."""
     import base64
     for hit in hits:
-        if hit.get("type") == "visual" and hit.get("page"):
+        wants_image = hit.get("type") == "visual" or hit.get("text_source") == "ocr_visual"
+        if wants_image and hit.get("page"):
             png = render_page_png(abs_source_path, hit["page"], repo_root, embed_cfg)
             if png is not None:
                 hit["image_b64"] = base64.b64encode(png).decode("ascii")
     return hits
+
+
+def _text_source(payload: dict) -> str:
+    """Classify a hit's provenance from existing payload fields.
+
+    The tier reflects TRANSCRIPTION vs INTERPRETATION: glm-ocr transcribes visible text
+    (reliable, no fabrication) on both structured-text and flattened/scanned pages, so all
+    glm-ocr output is "ocr_table" (trusted); llava *describes/infers* diagrams, so it is
+    "ocr_visual" (doubted). "text_layer" is real PDF text (trusted). An unmarked
+    image_description chunk defaults to ocr_visual because the embed pipeline's legacy
+    model_used fallback is llava.
+    """
+    if payload.get("doc_type") != "image_description":
+        return "text_layer"
+    model = (payload.get("model_used") or "").lower()
+    content = (payload.get("content_type") or "").lower()
+    if "glm" in model or content == "structured_text":
+        return "ocr_table"
+    return "ocr_visual"
 
 
 def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> list[dict]:
@@ -1832,7 +1853,8 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                             "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
                             "excerpt": f"[Visual result] Page {payload.get('page_num', '?')} - {payload.get('file_path', '')}",
                             "type": "visual", "doc_type": payload.get("doc_type", ""),
-                            "page": payload.get("page_num"), "section_heading": ""})
+                            "page": payload.get("page_num"), "section_heading": "",
+                            "text_source": "visual"})
                 except Exception:
                     pass  # visual lane is auxiliary — skip on any ColPali/query error, keep text results
             else:
@@ -1863,8 +1885,9 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                         "source": payload.get("file_path", payload.get("slug", "")),
                         "excerpt": payload.get("text", ""), "type": "text",
                         "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page"),
-                        "section_heading": payload.get("section_heading", "")})
+                        "page": payload.get("page") or payload.get("page_num"),
+                        "section_heading": payload.get("section_heading", ""),
+                        "text_source": _text_source(payload)})
             per_collection.append(coll_results)
         except Exception as e:
             err_str = str(e).lower()
@@ -2129,6 +2152,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                             "doc_type": payload.get("doc_type", ""),
                             "page": payload.get("page_num"),
                             "section_heading": "",
+                            "text_source": "visual",
                         })
                         
                 except Exception:
@@ -2178,8 +2202,9 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         "excerpt": payload.get("text", ""),
                         "type": "text",
                         "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page"),
+                        "page": payload.get("page") or payload.get("page_num"),
                         "section_heading": payload.get("section_heading", ""),
+                        "text_source": _text_source(payload),
                     })
 
             per_collection.append(coll_results)
