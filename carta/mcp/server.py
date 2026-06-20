@@ -50,6 +50,23 @@ def _repo_root_from_cfg() -> Path:
     return find_config().parent.parent
 
 
+def _format_search_result(r: dict) -> dict:
+    """Shape a raw search hit into the MCP wire dict: rounded score, page/section anchors,
+    truncated excerpt, and (for visual hits) the page image. Defensive .get() throughout."""
+    item = {
+        "score": round(r.get("score", 0.0), 4),
+        "source": r.get("source", ""),
+        "page": r.get("page"),
+        "section_heading": r.get("section_heading", ""),
+        "excerpt": (r.get("excerpt") or "")[:300],
+    }
+    if r.get("type") == "visual":
+        item["type"] = "visual"
+        if r.get("image_b64"):
+            item["image_b64"] = r["image_b64"]
+    return item
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
@@ -73,8 +90,8 @@ def carta_search(
                permitted cross-project), or "global" (global collections only).
 
     Returns:
-        List of result dicts. Text results: {score, source, excerpt}.
-        Visual results: {score, source, type, image_b64, excerpt}.
+        List of result dicts: {score, source, page, section_heading, excerpt}.
+        Visual results also include {type: "visual", image_b64}.
         On failure, returns {"error": "<type>", "detail": "<message>"}.
     """
     try:
@@ -120,22 +137,8 @@ def carta_search(
         _logger.warning("carta_search unexpected error: %s", e)
         return {"error": "service_unavailable", "detail": str(e)}
     
-    # Format results for return
-    formatted = []
-    for r in results:
-        result = {
-            "score": round(r["score"], 4),
-            "source": r["source"],
-            "excerpt": r["excerpt"][:300],
-        }
-        # Include type if present
-        if r.get("type") == "visual":
-            result["type"] = "visual"
-            if r.get("image_b64"):
-                result["image_b64"] = r["image_b64"]
-        formatted.append(result)
-    
-    return formatted
+    # Format results for return (page/section anchors + visual image passthrough)
+    return [_format_search_result(r) for r in results]
 
 
 def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | dict:
@@ -205,7 +208,8 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
         top_n: Maximum number of results.
     
     Returns:
-        List of dicts: {"score": float, "source": str, "excerpt": str}
+        List of dicts: {"score": float, "source": str, "excerpt": str,
+        "page": int|None, "section_heading": str}
     """
     from qdrant_client import QdrantClient
     from carta.embed.embed import get_embedding
@@ -233,6 +237,8 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
             "score": r.score,
             "source": payload.get("file_path", payload.get("slug", "")),
             "excerpt": payload.get("text", ""),
+            "page": payload.get("page"),
+            "section_heading": payload.get("section_heading", ""),
         })
     return hits
 
@@ -319,7 +325,8 @@ def _run_search_visual_collection(
                 "excerpt": f"Visual match from page {payload.get('page_num', '?')}",
                 "type": "visual",
                 "image_b64": image_b64,
-                "page_num": payload.get("page_num"),
+                "page": payload.get("page_num"),
+                "section_heading": "",
                 "png_path": png_path_str,
             })
         
