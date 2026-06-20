@@ -183,3 +183,41 @@ class TestCartaFocus:
             out = server.carta_focus(source="x.pdf")
         assert out["error"] == "service_unavailable"
         assert "Qdrant down" in out["detail"]
+
+
+class TestSearchAnchors:
+    def test_run_search_collection_includes_page_and_section(self):
+        from unittest.mock import patch, MagicMock
+        import carta.mcp.server as server
+        point = MagicMock(); point.score = 0.9
+        point.payload = {"file_path": "docs/imu.pdf", "text": "regs",
+                         "page": 47, "section_heading": "6.3 Gyro"}
+        resp = MagicMock(); resp.points = [point]
+        client = MagicMock(); client.query_points.return_value = resp
+        cfg = {"qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "x", "ollama_model": "m"}}
+        with patch("qdrant_client.QdrantClient", return_value=client), \
+             patch("carta.embed.embed.get_embedding", return_value=[0.0] * 768):
+            hits = server._run_search_collection("gyro", cfg, "p_doc", 5)
+        assert hits[0]["page"] == 47
+        assert hits[0]["section_heading"] == "6.3 Gyro"
+
+    def test_format_search_result_surfaces_page_section_truncates(self):
+        import carta.mcp.server as server
+        out = server._format_search_result(
+            {"score": 0.87654, "source": "docs/imu.pdf", "excerpt": "x" * 400,
+             "page": 47, "section_heading": "6.3 Gyro", "type": "text"})
+        assert out["page"] == 47
+        assert out["section_heading"] == "6.3 Gyro"
+        assert out["score"] == 0.8765
+        assert len(out["excerpt"]) == 300
+        assert "image_b64" not in out
+
+    def test_format_search_result_passes_through_visual_image(self):
+        import carta.mcp.server as server
+        out = server._format_search_result(
+            {"score": 0.5, "source": "docs/imu.pdf (page 47)", "excerpt": "[Visual]",
+             "page": 47, "section_heading": "", "type": "visual", "image_b64": "QkE="})
+        assert out["type"] == "visual"
+        assert out["image_b64"] == "QkE="
+        assert out["page"] == 47

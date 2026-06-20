@@ -306,7 +306,12 @@ def cmd_search(args):
     from carta.config import NOTE_DOC_TYPES
     for r in results:
         tag = f"[{r['doc_type']}] " if r.get("doc_type") in NOTE_DOC_TYPES else ""
-        print(f"[{r['score']:.2f}] {tag}{r['source']} — {r['excerpt']}")
+        page = r.get("page")
+        loc = f" p.{page}" if page is not None else ""
+        heading = r.get("section_heading") or ""
+        if heading:
+            loc += f" §{heading}"
+        print(f"[{r['score']:.2f}] {tag}{r['source']}{loc} — {r['excerpt']}")
 
     hops = getattr(args, "hops", 0)
     if hops > 0:
