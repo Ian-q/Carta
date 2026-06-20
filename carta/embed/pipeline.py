@@ -1761,9 +1761,12 @@ def _attach_page_images(hits: list[dict], abs_source_path: Path, repo_root: Path
 def _text_source(payload: dict) -> str:
     """Classify a hit's provenance from existing payload fields.
 
-    "text_layer" — real PDF text (trusted); "ocr_table" — glm-ocr transcription of
-    structured text (reliable); "ocr_visual" — llava diagram description (doubted).
-    Safe default for an unmarked image_description chunk is ocr_visual (doubted).
+    The tier reflects TRANSCRIPTION vs INTERPRETATION: glm-ocr transcribes visible text
+    (reliable, no fabrication) on both structured-text and flattened/scanned pages, so all
+    glm-ocr output is "ocr_table" (trusted); llava *describes/infers* diagrams, so it is
+    "ocr_visual" (doubted). "text_layer" is real PDF text (trusted). An unmarked
+    image_description chunk defaults to ocr_visual because the embed pipeline's legacy
+    model_used fallback is llava.
     """
     if payload.get("doc_type") != "image_description":
         return "text_layer"

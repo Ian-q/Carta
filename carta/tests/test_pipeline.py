@@ -1498,3 +1498,9 @@ class TestTextSource:
     def test_ocr_visual_is_safe_default_when_unmarked(self):
         from carta.embed.pipeline import _text_source
         assert _text_source({"doc_type": "image_description"}) == "ocr_visual"
+
+    def test_flattened_glm_is_trusted_transcription(self):
+        # glm-ocr transcribes (never interprets), even on flattened/scanned pages → ocr_table.
+        from carta.embed.pipeline import _text_source
+        assert _text_source({"doc_type": "image_description",
+                             "model_used": "glm-ocr", "content_type": "flattened"}) == "ocr_table"
