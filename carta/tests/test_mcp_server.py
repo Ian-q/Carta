@@ -221,3 +221,19 @@ class TestSearchAnchors:
         assert out["type"] == "visual"
         assert out["image_b64"] == "QkE="
         assert out["page"] == 47
+
+    def test_format_adds_caveat_and_text_source_for_ocr_visual(self):
+        import carta.mcp.server as server
+        out = server._format_search_result(
+            {"score": 0.8, "source": "docs/board.pdf", "excerpt": "32M Hz",
+             "page": 3, "section_heading": "", "type": "text", "text_source": "ocr_visual"})
+        assert out["text_source"] == "ocr_visual"
+        assert "caveat" in out and "carta_focus" in out["caveat"]
+
+    def test_format_no_caveat_for_trusted_text(self):
+        import carta.mcp.server as server
+        out = server._format_search_result(
+            {"score": 0.7, "source": "docs/spec.md", "excerpt": "x",
+             "page": 2, "section_heading": "Intro", "type": "text", "text_source": "text_layer"})
+        assert out["text_source"] == "text_layer"
+        assert "caveat" not in out

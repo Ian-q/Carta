@@ -992,3 +992,22 @@ class TestCmdSearchAnchors:
         lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("[")]
         assert "p.47" in lines[0] and "6.3 Gyro" in lines[0]
         assert "p." not in lines[1]   # no page -> no "p.N" noise on broad results
+
+    def test_search_marks_ocr_visual_hits_with_caveat(self, tmp_path, capsys):
+        import argparse
+        from unittest.mock import patch
+        from carta import cli
+        results = [
+            {"score": 0.8, "source": "docs/board.pdf", "excerpt": "32M Hz", "doc_type": "image_description",
+             "type": "text", "page": 3, "section_heading": "", "text_source": "ocr_visual"},
+            {"score": 0.7, "source": "docs/spec.md", "excerpt": "intro", "doc_type": "",
+             "type": "text", "page": 2, "section_heading": "Intro", "text_source": "text_layer"},
+        ]
+        args = argparse.Namespace(query=["x"], hops=0)
+        with patch("carta.cli.find_config", return_value=tmp_path / ".carta" / "config.yaml"), \
+             patch("carta.config.load_config", return_value={"modules": {"doc_search": True}}), \
+             patch("carta.embed.pipeline.run_search", return_value=results):
+            cli.cmd_search(args)
+        lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("[")]
+        assert "OCR" in lines[0] and "carta focus" in lines[0]   # doubted hit caveated
+        assert "OCR" not in lines[1]                              # trusted hit clean
