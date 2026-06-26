@@ -31,6 +31,12 @@ Each finding has:
 
 `skipped_pinned` / `skipped_unchanged` are informational (pinned or already-reconciled sections).
 
+**Heed `judge_errors`.** If `judge_errors` > 0, that many judge calls timed out or failed — those
+sections were *not actually evaluated*, and a non-responding judge reads as "not superseded." So a
+`0 findings` result with `judge_errors` > 0 is **not** a clean bill of health. Tell the user the
+judge is timing out and to raise `hooks.stale_scan.judge_timeout_s` (and/or check the Ollama judge
+model) before trusting the result.
+
 ---
 
 ## Step 2: Draft a correction per finding

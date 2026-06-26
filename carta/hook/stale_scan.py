@@ -34,6 +34,7 @@ class StaleScanResult:
     scanned: int = 0
     judge_calls: int = 0
     skipped_overflow: int = 0
+    judge_errors: int = 0   # judge calls that returned None (timeout/error) — fail-open, but tracked
 
 
 def _search_cfg(cfg: dict) -> dict:
@@ -234,6 +235,8 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
                 verdict = judge_fn(chunk["text"], hits[0])
             except Exception:
                 verdict = None
+            if verdict is None:
+                result.judge_errors += 1
             if verdict:
                 result.findings.append(StaleFinding(
                     file=doc.path,
