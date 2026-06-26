@@ -25,6 +25,7 @@ class StaleFinding:
     snippet: str
     candidate_path: str
     candidate_score: float
+    candidate_excerpt: str = ""
 
 
 @dataclass
@@ -240,5 +241,6 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
                     snippet=chunk["text"][:160],
                     candidate_path=hits[0].get("source", ""),
                     candidate_score=hits[0].get("score", 0.0),
+                    candidate_excerpt=hits[0].get("excerpt", ""),
                 ))
     return result
