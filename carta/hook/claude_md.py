@@ -45,3 +45,51 @@ def group_findings_by_heading(findings: list, sections: list[dict]) -> list[dict
         entry.pop("_seen", None)
         out.append(entry)
     return out
+
+
+def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None) -> dict:
+    """Scan CLAUDE.md against the docs graph and return superseded sections.
+
+    Skips pinned sections, and sections whose text is unchanged AND whose graph is
+    unchanged since last_synced. Builds a ChangedDoc from the remaining sections and
+    reuses run_stale_scan. Detection only; never edits CLAUDE.md."""
+    if not (repo_root / CLAUDE_MD).exists():
+        return {"scanned": False, "reason": "no CLAUDE.md", "findings": []}
+
+    sections = _read_sections(repo_root)
+    sidecar = sc.load_sync_sidecar(repo_root)
+    meta = sidecar.get("sections", {})
+    graph_changed = sc.graph_changed_since(repo_root, sidecar.get("last_synced"))
+
+    to_scan: list[dict] = []
+    skipped_pinned = 0
+    skipped_unchanged = 0
+    for s in sections:
+        heading = s["headings"][0]
+        entry = meta.get(heading, {})
+        if entry.get("pinned"):
+            skipped_pinned += 1
+            continue
+        if not graph_changed and entry.get("hash") == sc.section_hash(s["text"]):
+            skipped_unchanged += 1
+            continue
+        to_scan.append(s)
+
+    findings: list = []
+    judge_calls = 0
+    if to_scan:
+        scan_text = "\n\n".join(s["text"] for s in to_scan)
+        result = run_stale_scan(
+            repo_root, cfg, [ChangedDoc(path=CLAUDE_MD, text=scan_text)],
+            search_fn=search_fn, judge_fn=judge_fn,
+        )
+        findings = result.findings
+        judge_calls = result.judge_calls
+
+    return {
+        "scanned": True,
+        "findings": group_findings_by_heading(findings, sections),
+        "skipped_pinned": skipped_pinned,
+        "skipped_unchanged": skipped_unchanged,
+        "judge_calls": judge_calls,
+    }
