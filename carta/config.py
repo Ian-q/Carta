@@ -146,6 +146,7 @@ DEFAULTS = {
             "judge_timeout_s": 5,
             "ollama_model": "qwen3.5:0.8b",
             "max_judge_calls": 30,
+            "claude_md_nudge": True,
         },
     },
     "cross_project_recall": {
