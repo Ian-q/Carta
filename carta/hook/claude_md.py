@@ -93,3 +93,23 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
         "skipped_unchanged": skipped_unchanged,
         "judge_calls": judge_calls,
     }
+
+
+def record_sync(repo_root: Path, now_iso: str) -> dict:
+    """Re-hash all current CLAUDE.md sections and stamp last_synced. Preserves pins;
+    drops sections that no longer exist. Call after approved edits are applied."""
+    sidecar = sc.load_sync_sidecar(repo_root)
+    prev = sidecar.get("sections", {})
+    new_sections: dict[str, dict] = {}
+    for s in _read_sections(repo_root):
+        heading = s["headings"][0]
+        new_sections[heading] = {
+            "hash": sc.section_hash(s["text"]),
+            "pinned": bool(prev.get(heading, {}).get("pinned", False)),
+            "last_reviewed": now_iso,
+        }
+    sidecar["schema"] = 1
+    sidecar["sections"] = new_sections
+    sidecar["last_synced"] = now_iso
+    sc.write_sync_sidecar(repo_root, sidecar)
+    return sidecar
