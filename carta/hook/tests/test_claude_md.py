@@ -105,3 +105,13 @@ def test_record_sync_hashes_sections_and_preserves_pins(tmp_path):
     assert "### Surface" in written["sections"]                      # new section recorded
     # round-trips through disk
     assert sc.load_sync_sidecar(tmp_path)["sections"]["### Surface"]["hash"]
+
+
+def test_skill_file_exists_and_names_the_commands():
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[2] / "skills" / "claude-md-sync" / "SKILL.md"
+    assert p.exists(), "claude-md-sync SKILL.md missing"
+    body = p.read_text(encoding="utf-8")
+    assert "carta claude-md check" in body
+    assert "carta claude-md record" in body
+    assert "name: claude-md-sync" in body
