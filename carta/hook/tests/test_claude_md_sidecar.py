@@ -34,3 +34,28 @@ def test_write_then_load_round_trips(tmp_path: Path):
     data = sc.load_sync_sidecar(tmp_path)
     assert data["last_synced"] == "2026-06-26T00:00:00+00:00"
     assert data["sections"]["## A"]["pinned"] is True
+
+
+def _write_embed_sidecar(repo_root: Path, name: str, indexed_at):
+    p = repo_root / ".carta" / "sidecars" / "docs" / f"{name}.embed-meta.yaml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"slug: {name}\nindexed_at: {indexed_at}\n", encoding="utf-8")
+
+
+def test_graph_changed_when_no_last_synced(tmp_path: Path):
+    assert sc.graph_changed_since(tmp_path, None) is True
+
+
+def test_graph_unchanged_when_no_embed_newer(tmp_path: Path):
+    _write_embed_sidecar(tmp_path, "a", "2026-06-20T00:00:00+00:00")
+    assert sc.graph_changed_since(tmp_path, "2026-06-25T00:00:00+00:00") is False
+
+
+def test_graph_changed_when_embed_is_newer(tmp_path: Path):
+    _write_embed_sidecar(tmp_path, "a", "2026-06-26T12:00:00+00:00")
+    assert sc.graph_changed_since(tmp_path, "2026-06-25T00:00:00+00:00") is True
+
+
+def test_graph_changed_handles_z_suffix(tmp_path: Path):
+    _write_embed_sidecar(tmp_path, "a", "2026-06-26T12:00:00Z")
+    assert sc.graph_changed_since(tmp_path, "2026-06-25T00:00:00Z") is True
