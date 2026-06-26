@@ -77,6 +77,7 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
 
     findings: list = []
     judge_calls = 0
+    judge_errors = 0
     if to_scan:
         scan_text = "\n\n".join(s["text"] for s in to_scan)
         result = run_stale_scan(
@@ -85,6 +86,7 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
         )
         findings = result.findings
         judge_calls = result.judge_calls
+        judge_errors = result.judge_errors
 
     return {
         "scanned": True,
@@ -92,6 +94,7 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
         "skipped_pinned": skipped_pinned,
         "skipped_unchanged": skipped_unchanged,
         "judge_calls": judge_calls,
+        "judge_errors": judge_errors,
     }
 
 

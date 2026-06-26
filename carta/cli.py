@@ -839,6 +839,13 @@ def cmd_status(args):
 
 
 def _print_stale_result(result, scfg):
+    if getattr(result, "judge_errors", 0):
+        print(
+            f"  ⚠  {result.judge_errors} judge call(s) timed out/failed — results may be "
+            f"INCOMPLETE (a non-responding judge reads as 'not stale'). Raise "
+            f"hooks.stale_scan.judge_timeout_s or check the Ollama judge model.",
+            file=sys.stderr,
+        )
     if not result.findings:
         return
     print(f"carta stale-scan: scanned {result.scanned} doc(s)...", file=sys.stderr)
@@ -904,6 +911,13 @@ def cmd_claude_md(args):
     except Exception as e:
         print(json.dumps({"scanned": False, "reason": f"scan error (fail-open): {e}", "findings": []}))
         sys.exit(0)
+    if out.get("judge_errors"):
+        print(
+            f"WARNING: {out['judge_errors']} judge call(s) timed out/failed — findings may be "
+            f"INCOMPLETE (a non-responding judge reads as 'not superseded'). Raise "
+            f"hooks.stale_scan.judge_timeout_s or check the Ollama judge model.",
+            file=sys.stderr,
+        )
     print(json.dumps(out, indent=2))
     sys.exit(0)
 

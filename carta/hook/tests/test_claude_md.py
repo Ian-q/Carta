@@ -66,6 +66,18 @@ def test_scan_returns_not_scanned_when_no_claude_md(tmp_path):
     assert out["findings"] == []
 
 
+def test_scan_surfaces_judge_errors(tmp_path):
+    """A judge that times out (returns None) must be surfaced as judge_errors so a
+    non-responding judge is not mistaken for 'CLAUDE.md is in sync' (0 findings)."""
+    _write_claude_md(tmp_path, "### Surface\n\nThe embed command does the old thing.\n")
+    search_fn = lambda q: [{"source": "docs/embed.md", "score": 0.9, "excerpt": "replaced"}]
+    judge_fn = lambda section_text, candidate: None  # timeout
+
+    out = claude_md.scan_claude_md(tmp_path, {}, search_fn=search_fn, judge_fn=judge_fn)
+    assert out["findings"] == []
+    assert out["judge_errors"] >= 1
+
+
 def test_scan_skips_unchanged_when_graph_unchanged(tmp_path):
     from carta.embed.parse import sections_from_markdown
     body = "### Surface\n\nstable text here\n"

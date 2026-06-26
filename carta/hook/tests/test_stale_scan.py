@@ -270,3 +270,21 @@ def test_finding_carries_candidate_excerpt():
     )
     assert len(result.findings) == 1
     assert result.findings[0].candidate_excerpt == "The polling approach was replaced by push events."
+
+
+def test_judge_none_counts_as_error_not_finding():
+    """A judge that returns None (timeout/error) must be counted, not silently
+    treated as 'not stale' — otherwise a non-responding judge looks like a clean bill."""
+    from carta.hook.stale_scan import run_stale_scan, ChangedDoc
+
+    doc = ChangedDoc(path="docs/a.md", text="## Title\n\nOld approach uses polling.")
+    search_fn = lambda q: [{"source": "docs/b.md", "score": 0.9, "excerpt": "replaced by push."}]
+    judge_fn = lambda section_text, candidate: None  # simulate timeout
+
+    result = run_stale_scan(
+        repo_root=None, cfg={}, changed_docs=[doc],
+        search_fn=search_fn, judge_fn=judge_fn,
+    )
+    assert result.findings == []
+    assert result.judge_calls == 1
+    assert result.judge_errors == 1
