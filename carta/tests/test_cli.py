@@ -1035,3 +1035,57 @@ def test_cmd_claude_md_check_prints_json(tmp_path, monkeypatch, capsys):
     assert ex.value.code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["scanned"] is True
+
+
+def test_cmd_claude_md_record_prints_json(tmp_path, monkeypatch, capsys):
+    import json
+    from carta import cli
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("project_name: demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: {"project_name": "demo"})
+
+    record_calls = []
+
+    def _fake_record_sync(repo_root, now_iso):
+        record_calls.append((repo_root, now_iso))
+        return {}
+
+    monkeypatch.setattr("carta.hook.claude_md.record_sync", _fake_record_sync)
+
+    args = type("A", (), {"claude_md_action": "record"})()
+    with pytest.raises(SystemExit) as ex:
+        cli.cmd_claude_md(args)
+    assert ex.value.code == 0
+    assert len(record_calls) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recorded"] is True
+    assert "last_synced" in payload
+
+
+def test_cmd_claude_md_record_fail_open(tmp_path, monkeypatch, capsys):
+    """record_sync failure must not propagate — exit 0 with recorded:False envelope."""
+    import json
+    from carta import cli
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("project_name: demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: {"project_name": "demo"})
+    monkeypatch.setattr(
+        "carta.hook.claude_md.record_sync",
+        lambda repo_root, now_iso: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    args = type("A", (), {"claude_md_action": "record"})()
+    with pytest.raises(SystemExit) as ex:
+        cli.cmd_claude_md(args)
+    assert ex.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recorded"] is False
+    assert "reason" in payload
