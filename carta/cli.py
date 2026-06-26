@@ -858,6 +858,22 @@ def _print_stale_result(result, scfg):
         print("  (warn-only; set hooks.stale_scan.block_on_stale: true to fail)", file=sys.stderr)
 
 
+def _maybe_claude_md_nudge(result, scfg, repo_root):
+    """One-line reminder that changed docs may have left CLAUDE.md stale. Cheap:
+    no judge calls — fires only when docs were actually scanned. Fail-open."""
+    try:
+        if not scfg.get("claude_md_nudge", True):
+            return
+        if getattr(result, "scanned", 0) and (repo_root / "CLAUDE.md").exists():
+            print(
+                f"  ↪ {result.scanned} doc(s) changed — CLAUDE.md may need a sync; "
+                f"run /claude-md-sync (or `carta claude-md check`).",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+
+
 def cmd_claude_md(args):
     import json
     from datetime import datetime, timezone
@@ -955,6 +971,7 @@ def cmd_hook(args):
             print(f"carta stale-scan: scan error (fail-open): {e}", file=sys.stderr)
             sys.exit(0)
         _print_stale_result(result, scfg)
+        _maybe_claude_md_nudge(result, scfg, repo_root)
         fail = getattr(args, "fail_on_stale", False) or scfg.get("block_on_stale", False)
         if result.findings and fail:
             sys.exit(1)
