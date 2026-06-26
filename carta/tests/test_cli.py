@@ -1089,3 +1089,24 @@ def test_cmd_claude_md_record_fail_open(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["recorded"] is False
     assert "reason" in payload
+
+
+def test_hook_check_emits_claude_md_nudge(tmp_path, capsys):
+    from carta.cli import _maybe_claude_md_nudge
+
+    (tmp_path / "CLAUDE.md").write_text("# x\n", encoding="utf-8")
+    result = type("R", (), {"scanned": 2})()
+    _maybe_claude_md_nudge(result, {"claude_md_nudge": True}, tmp_path)
+
+    err = capsys.readouterr().err
+    assert "CLAUDE.md may need a sync" in err
+
+
+def test_hook_check_nudge_silent_when_disabled(tmp_path, capsys):
+    from carta.cli import _maybe_claude_md_nudge
+
+    (tmp_path / "CLAUDE.md").write_text("# x\n", encoding="utf-8")
+    result = type("R", (), {"scanned": 2})()
+    _maybe_claude_md_nudge(result, {"claude_md_nudge": False}, tmp_path)
+
+    assert "sync" not in capsys.readouterr().err
