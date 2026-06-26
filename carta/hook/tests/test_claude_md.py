@@ -88,3 +88,20 @@ def test_scan_skips_unchanged_when_graph_unchanged(tmp_path):
     out = claude_md.scan_claude_md(tmp_path, {}, search_fn=search_fn, judge_fn=lambda *a: False)
     assert out["skipped_unchanged"] == 1
     assert called["n"] == 0  # unchanged + graph-unchanged → never searched
+
+
+def test_record_sync_hashes_sections_and_preserves_pins(tmp_path):
+    _write_claude_md(tmp_path, "## Constraints\n\nAlways TDD.\n\n### Surface\n\nNew text.\n")
+    sc.write_sync_sidecar(tmp_path, {
+        "schema": 1, "last_synced": None,
+        "sections": {"## Constraints": {"hash": "old", "pinned": True}},
+    })
+
+    written = claude_md.record_sync(tmp_path, "2026-06-26T09:00:00+00:00")
+
+    assert written["last_synced"] == "2026-06-26T09:00:00+00:00"
+    assert written["sections"]["## Constraints"]["pinned"] is True   # pin preserved
+    assert written["sections"]["## Constraints"]["hash"] != "old"    # re-hashed
+    assert "### Surface" in written["sections"]                      # new section recorded
+    # round-trips through disk
+    assert sc.load_sync_sidecar(tmp_path)["sections"]["### Surface"]["hash"]
