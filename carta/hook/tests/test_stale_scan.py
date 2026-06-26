@@ -251,3 +251,22 @@ def test_collect_range_two_dot_range(repo):
     docs = collect_range(repo, cfg, f"{base}..HEAD")
     assert [d.path for d in docs] == ["docs/a.md"]
     assert "v2" in docs[0].text
+
+
+def test_finding_carries_candidate_excerpt():
+    from carta.hook.stale_scan import run_stale_scan, ChangedDoc
+
+    doc = ChangedDoc(path="docs/a.md", text="## Title\n\nOld approach uses polling.")
+    search_fn = lambda q: [{
+        "source": "docs/b.md",
+        "score": 0.9,
+        "excerpt": "The polling approach was replaced by push events.",
+    }]
+    judge_fn = lambda section_text, candidate: True
+
+    result = run_stale_scan(
+        repo_root=None, cfg={}, changed_docs=[doc],
+        search_fn=search_fn, judge_fn=judge_fn,
+    )
+    assert len(result.findings) == 1
+    assert result.findings[0].candidate_excerpt == "The polling approach was replaced by push events."
