@@ -155,6 +155,7 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 | `status` | System-wide status across registered projects (`~/.carta/registry.json`) |
 | `statusline` | Status-line widget output (embed progress) |
 | `hook` | Install/run the stale-reference git hook (`hook install`, `hook check`; pre-push default) |
+| `claude-md` | Reconcile CLAUDE.md against the docs graph: `check` reports superseded sections (JSON), `record` stamps the sync sidecar. Pairs with the `/claude-md-sync` skill |
 | `export` / `import` | Share / restore embeddings + sidecars |
 | `update` | Self-update the installed package |
 
@@ -175,6 +176,11 @@ Core in `carta/hook/stale_scan.py`; shim install/removal in `carta/hook/git_hook
 shared yes/no judge in `carta/hook/judge.py`. Run on demand as a whole-branch pre-PR
 audit with `carta hook check --diff [range]` (default range `<default-branch>...HEAD`;
 `--fail-on-stale` to exit non-zero).
+
+After a doc change, `carta hook check` also nudges toward `/claude-md-sync` when CLAUDE.md may
+have drifted from the docs. The sync itself runs via the `/claude-md-sync` skill (detect →
+agent drafts → human approves → `carta claude-md record`); metadata lives out-of-band in
+`.carta/sidecars/CLAUDE.md.sync.yaml`.
 
 ### Sidecars
 
