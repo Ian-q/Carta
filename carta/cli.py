@@ -875,7 +875,11 @@ def cmd_claude_md(args):
 
     if action == "record":
         now_iso = datetime.now(timezone.utc).isoformat()
-        claude_md.record_sync(repo_root, now_iso)
+        try:
+            claude_md.record_sync(repo_root, now_iso)
+        except Exception as e:
+            print(json.dumps({"recorded": False, "reason": f"record error (fail-open): {e}"}))
+            sys.exit(0)
         print(json.dumps({"recorded": True, "last_synced": now_iso}))
         sys.exit(0)
 
