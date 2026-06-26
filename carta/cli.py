@@ -858,6 +858,36 @@ def _print_stale_result(result, scfg):
         print("  (warn-only; set hooks.stale_scan.block_on_stale: true to fail)", file=sys.stderr)
 
 
+def cmd_claude_md(args):
+    import json
+    from datetime import datetime, timezone
+    from carta.config import load_config
+    from carta.hook import claude_md
+
+    try:
+        cfg_path = find_config()
+    except FileNotFoundError:
+        print(json.dumps({"scanned": False, "reason": "not a Carta repo", "findings": []}))
+        sys.exit(0)
+    cfg = load_config(cfg_path)
+    repo_root = cfg_path.parent.parent
+    action = getattr(args, "claude_md_action", None) or "check"
+
+    if action == "record":
+        now_iso = datetime.now(timezone.utc).isoformat()
+        claude_md.record_sync(repo_root, now_iso)
+        print(json.dumps({"recorded": True, "last_synced": now_iso}))
+        sys.exit(0)
+
+    try:
+        out = claude_md.scan_claude_md(repo_root, cfg)
+    except Exception as e:
+        print(json.dumps({"scanned": False, "reason": f"scan error (fail-open): {e}", "findings": []}))
+        sys.exit(0)
+    print(json.dumps(out, indent=2))
+    sys.exit(0)
+
+
 def cmd_hook(args):
     import subprocess as _subprocess
 
@@ -1085,6 +1115,12 @@ def main():
         "--json", action="store_true", help="Output status as JSON",
     )
 
+    claude_md_p = sub.add_parser("claude-md", help="Sync CLAUDE.md against the docs graph")
+    cm_sub = claude_md_p.add_subparsers(dest="claude_md_action")
+    cm_sub.add_parser("check", help="Report CLAUDE.md sections the docs have superseded (JSON)")
+    cm_sub.add_parser("record", help="Re-hash sections and stamp last_synced after a sync")
+    claude_md_p.set_defaults(func=cmd_claude_md)
+
     hook_p = sub.add_parser("hook", help="Manage Carta git hooks (stale-reference scan)")
     hook_sub = hook_p.add_subparsers(dest="hook_action")
     hook_install = hook_sub.add_parser("install", help="Install/remove the managed git hook")
@@ -1120,6 +1156,7 @@ def main():
         "import": cmd_import,
         "status": cmd_status,
         "hook": cmd_hook,
+        "claude-md": cmd_claude_md,
     }
 
     if args.command not in dispatch:

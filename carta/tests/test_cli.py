@@ -1011,3 +1011,27 @@ class TestCmdSearchAnchors:
         lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("[")]
         assert "OCR" in lines[0] and "carta focus" in lines[0]   # doubted hit caveated
         assert "OCR" not in lines[1]                              # trusted hit clean
+
+
+def test_cmd_claude_md_check_prints_json(tmp_path, monkeypatch, capsys):
+    import json
+    from carta import cli
+
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("project_name: demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "find_config", lambda: cfg_path)
+    monkeypatch.setattr("carta.config.load_config", lambda p: {"project_name": "demo"})
+    monkeypatch.setattr(
+        "carta.hook.claude_md.scan_claude_md",
+        lambda repo_root, cfg, **kw: {"scanned": True, "findings": [], "skipped_pinned": 0,
+                                      "skipped_unchanged": 0, "judge_calls": 0},
+    )
+
+    args = type("A", (), {"claude_md_action": "check"})()
+    with pytest.raises(SystemExit) as ex:
+        cli.cmd_claude_md(args)
+    assert ex.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scanned"] is True
