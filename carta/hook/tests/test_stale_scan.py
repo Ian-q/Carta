@@ -131,7 +131,8 @@ _JCFG = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {"ollama_m
 
 def test_stale_judge_calls_ollama_with_both_excerpts():
     cand = {"source": "docs/cobs.md", "excerpt": "COBS+JSON replaced micro-ROS"}
-    with patch("carta.hook.stale_scan.ollama_yesno", return_value=True) as oj:
+    with patch("carta.hook.stale_scan.ollama_json",
+               return_value={"section_claim": "micro-ROS", "doc_clause": "COBS+JSON replaced micro-ROS", "conflict": True}) as oj:
         out = _stale_judge("micro-ROS UART section", cand, _JCFG)
     assert out is True
     args, kwargs = oj.call_args
@@ -288,3 +289,31 @@ def test_judge_none_counts_as_error_not_finding():
     assert result.findings == []
     assert result.judge_calls == 1
     assert result.judge_errors == 1
+
+
+def test_stale_judge_true_only_on_conflict(monkeypatch):
+    from carta.hook import stale_scan
+
+    cfg = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {}}}
+    cand = {"source": "docs/a.md", "excerpt": "X was removed and replaced by Y."}
+
+    monkeypatch.setattr(stale_scan, "ollama_json",
+                        lambda *a, **k: {"section_claim": "uses X", "doc_clause": "X removed", "conflict": True})
+    assert stale_scan._stale_judge("we use X", cand, cfg) is True
+
+    monkeypatch.setattr(stale_scan, "ollama_json",
+                        lambda *a, **k: {"section_claim": "uses X", "doc_clause": "X discussed", "conflict": False})
+    assert stale_scan._stale_judge("we use X", cand, cfg) is False
+
+
+def test_stale_judge_none_on_bad_or_missing_output(monkeypatch):
+    from carta.hook import stale_scan
+
+    cfg = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {}}}
+    cand = {"source": "docs/a.md", "excerpt": "..."}
+
+    monkeypatch.setattr(stale_scan, "ollama_json", lambda *a, **k: None)
+    assert stale_scan._stale_judge("s", cand, cfg) is None
+
+    monkeypatch.setattr(stale_scan, "ollama_json", lambda *a, **k: {"section_claim": "x"})  # no 'conflict'
+    assert stale_scan._stale_judge("s", cand, cfg) is None
