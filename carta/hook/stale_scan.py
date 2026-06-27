@@ -9,7 +9,7 @@ from pathlib import Path
 
 from carta.scanner.scanner import is_excluded
 from carta.embed.parse import chunk_text, sections_from_markdown
-from carta.hook.judge import ollama_yesno
+from carta.hook.judge import ollama_json
 
 
 @dataclass
@@ -60,26 +60,36 @@ def _in_doc_scope(rel_path: str, cfg: dict, repo_root: Path) -> bool:
 
 
 def _stale_judge(section_text: str, candidate: dict, cfg: dict):
-    """Ask the small model whether `candidate` indicates `section_text` is superseded.
-    Returns True/False/None (None on error → caller fails open)."""
+    """Evidence-citation supersession gate. Returns True/False/None (None on error
+    → caller fails open). True only when the judge cites a clause that genuinely
+    conflicts with a claim in the section — not merely related/corroborating text."""
     sc = cfg.get("hooks", {}).get("stale_scan", {})
     ollama_url = cfg["embed"]["ollama_url"]
-    model = sc.get("ollama_model", "qwen3.5:0.8b")
-    timeout_s = sc.get("judge_timeout_s", 5)
+    model = sc.get("ollama_model", "qwen3.5:9b")
+    timeout_s = sc.get("judge_timeout_s", 30)
     system = (
-        "You decide whether a documentation section has been SUPERSEDED. "
-        "Answer only 'yes' or 'no'. Answer 'yes' only if the knowledge-base "
-        "excerpt clearly indicates the approach, component, or protocol in the "
-        "committed section has been replaced or deprecated. If they are merely "
-        "related or complementary, answer 'no'."
+        "You decide whether a documentation section has been SUPERSEDED by a "
+        "knowledge-base excerpt. A section is superseded ONLY if the excerpt states "
+        "something that makes a specific claim in the section wrong, replaced, or "
+        "deprecated. Content that is merely related, complementary, corroborating, or "
+        "duplicated is NOT supersession. Respond with a JSON object only."
     )
     user = (
         f"Committed section:\n{section_text[:600]}\n\n"
         f"Knowledge-base excerpt ({candidate.get('source', '')}):\n"
         f"{candidate.get('excerpt', '')[:600]}\n\n"
-        f"Has the committed section been replaced or deprecated?"
+        'Return a JSON object with exactly these keys: '
+        '"section_claim" (an exact quote from the committed section), '
+        '"doc_clause" (an exact quote from the excerpt), and '
+        '"conflict" (true or false). '
+        'Set "conflict" to true ONLY if doc_clause makes section_claim wrong, replaced, '
+        'or deprecated. If the excerpt merely repeats, supports, or relates to the '
+        'section, set "conflict" to false.'
     )
-    return ollama_yesno(ollama_url, model, system, user, timeout_s=timeout_s)
+    result = ollama_json(ollama_url, model, system, user, timeout_s=timeout_s)
+    if not isinstance(result, dict) or "conflict" not in result:
+        return None
+    return bool(result["conflict"])
 
 
 ZERO_OID = "0" * 40
