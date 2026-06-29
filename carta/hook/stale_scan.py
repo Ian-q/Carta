@@ -74,10 +74,13 @@ def _stale_judge(section_text: str, candidate: dict, cfg: dict):
         "deprecated. Content that is merely related, complementary, corroborating, or "
         "duplicated is NOT supersession. Respond with a JSON object only."
     )
+    # 1500 (not 600): run_stale_scan already hands us a <=400-token chunk, and a
+    # tighter cut here can sever the very claim the excerpt contradicts (the
+    # contradicted clause often sits after the matching prose).
     user = (
-        f"Committed section:\n{section_text[:600]}\n\n"
+        f"Committed section:\n{section_text[:1500]}\n\n"
         f"Knowledge-base excerpt ({candidate.get('source', '')}):\n"
-        f"{candidate.get('excerpt', '')[:600]}\n\n"
+        f"{candidate.get('excerpt', '')[:1500]}\n\n"
         'Return a JSON object with exactly these keys: '
         '"section_claim" (an exact quote from the committed section), '
         '"doc_clause" (an exact quote from the excerpt), and '

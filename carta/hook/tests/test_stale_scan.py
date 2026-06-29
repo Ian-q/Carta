@@ -11,7 +11,7 @@ def test_stale_scan_defaults_present():
     assert sc["enabled"] is True
     assert sc["block_on_stale"] is False
     assert sc["candidate_threshold"] == 0.65
-    assert sc["judge_timeout_s"] == 30
+    assert sc["judge_timeout_s"] == 60
     assert sc["ollama_model"] == "qwen3.5:9b"
     assert sc["max_judge_calls"] == 30
 
