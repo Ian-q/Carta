@@ -11,8 +11,8 @@ def test_stale_scan_defaults_present():
     assert sc["enabled"] is True
     assert sc["block_on_stale"] is False
     assert sc["candidate_threshold"] == 0.65
-    assert sc["judge_timeout_s"] == 5
-    assert sc["ollama_model"] == "qwen3.5:0.8b"
+    assert sc["judge_timeout_s"] == 60
+    assert sc["ollama_model"] == "qwen3.5:9b"
     assert sc["max_judge_calls"] == 30
 
 
@@ -131,7 +131,8 @@ _JCFG = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {"ollama_m
 
 def test_stale_judge_calls_ollama_with_both_excerpts():
     cand = {"source": "docs/cobs.md", "excerpt": "COBS+JSON replaced micro-ROS"}
-    with patch("carta.hook.stale_scan.ollama_yesno", return_value=True) as oj:
+    with patch("carta.hook.stale_scan.ollama_json",
+               return_value={"section_claim": "micro-ROS", "doc_clause": "COBS+JSON replaced micro-ROS", "conflict": True}) as oj:
         out = _stale_judge("micro-ROS UART section", cand, _JCFG)
     assert out is True
     args, kwargs = oj.call_args
@@ -251,3 +252,68 @@ def test_collect_range_two_dot_range(repo):
     docs = collect_range(repo, cfg, f"{base}..HEAD")
     assert [d.path for d in docs] == ["docs/a.md"]
     assert "v2" in docs[0].text
+
+
+def test_finding_carries_candidate_excerpt():
+    from carta.hook.stale_scan import run_stale_scan, ChangedDoc
+
+    doc = ChangedDoc(path="docs/a.md", text="## Title\n\nOld approach uses polling.")
+    search_fn = lambda q: [{
+        "source": "docs/b.md",
+        "score": 0.9,
+        "excerpt": "The polling approach was replaced by push events.",
+    }]
+    judge_fn = lambda section_text, candidate: True
+
+    result = run_stale_scan(
+        repo_root=None, cfg={}, changed_docs=[doc],
+        search_fn=search_fn, judge_fn=judge_fn,
+    )
+    assert len(result.findings) == 1
+    assert result.findings[0].candidate_excerpt == "The polling approach was replaced by push events."
+
+
+def test_judge_none_counts_as_error_not_finding():
+    """A judge that returns None (timeout/error) must be counted, not silently
+    treated as 'not stale' — otherwise a non-responding judge looks like a clean bill."""
+    from carta.hook.stale_scan import run_stale_scan, ChangedDoc
+
+    doc = ChangedDoc(path="docs/a.md", text="## Title\n\nOld approach uses polling.")
+    search_fn = lambda q: [{"source": "docs/b.md", "score": 0.9, "excerpt": "replaced by push."}]
+    judge_fn = lambda section_text, candidate: None  # simulate timeout
+
+    result = run_stale_scan(
+        repo_root=None, cfg={}, changed_docs=[doc],
+        search_fn=search_fn, judge_fn=judge_fn,
+    )
+    assert result.findings == []
+    assert result.judge_calls == 1
+    assert result.judge_errors == 1
+
+
+def test_stale_judge_true_only_on_conflict(monkeypatch):
+    from carta.hook import stale_scan
+
+    cfg = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {}}}
+    cand = {"source": "docs/a.md", "excerpt": "X was removed and replaced by Y."}
+
+    monkeypatch.setattr(stale_scan, "ollama_json",
+                        lambda *a, **k: {"section_claim": "uses X", "doc_clause": "X removed", "conflict": True})
+    assert stale_scan._stale_judge("we use X", cand, cfg) is True
+
+    monkeypatch.setattr(stale_scan, "ollama_json",
+                        lambda *a, **k: {"section_claim": "uses X", "doc_clause": "X discussed", "conflict": False})
+    assert stale_scan._stale_judge("we use X", cand, cfg) is False
+
+
+def test_stale_judge_none_on_bad_or_missing_output(monkeypatch):
+    from carta.hook import stale_scan
+
+    cfg = {"embed": {"ollama_url": "http://x"}, "hooks": {"stale_scan": {}}}
+    cand = {"source": "docs/a.md", "excerpt": "..."}
+
+    monkeypatch.setattr(stale_scan, "ollama_json", lambda *a, **k: None)
+    assert stale_scan._stale_judge("s", cand, cfg) is None
+
+    monkeypatch.setattr(stale_scan, "ollama_json", lambda *a, **k: {"section_claim": "x"})  # no 'conflict'
+    assert stale_scan._stale_judge("s", cand, cfg) is None

@@ -1,0 +1,268 @@
+- id: fp-et-embed-project-overview
+  label: false_positive
+  source: docs/audits/2026-06-09-comprehensive-system-audit.md
+  section_text: '## Project Overview
+
+
+    ET-embed is the embedded firmware and tooling for the Elementrailer project. The system uses:
+
+    - **Teensy 4.1** (NXP i.MX RT1062, 600 MHz) for real-time CAN bus management and sensor integration
+
+    - **Jetson Orin Nano 8GB** for high-level ROS2 orchestration and telemetry
+
+    - **Two CAN buses** (MVP): CAN_A @ 500 kbps Intel/LE (GoldGun MCU), CAN_B @ 500 kbps Motorola/BE (CTS
+    BMS, EVCC, GoldGun OBC, Safety MCU)'
+  candidate_excerpt: '### 2.1 Compute topology and buses
+
+
+    Three compute nodes plus supplier ECUs:
+
+
+    - **Teensy 4.1 (i.MX RT1062) — the VCU.** Firmware at `firmware/vcu-testbench/` (native west, Zephyr
+    pinned v4.0.0; renamed 2026-05-30 from `can-ads1263-loadcell-monitor/`, whose stale copy still exists
+    and has diverged). This is the only node with actuation authority.
+
+    - **Jetson Orin Nano 8GB — supervision and telemetry.** ROS2 Humble workspace (`ros2_ws/`): serial
+    bridge node, CAN decoder, state estimator, policy engi'
+- id: fp-petsense-firmware-platformio-phase-1-not-yet-sca
+  label: false_positive
+  source: docs/plans/2026-03-08-repo-reorganization.md
+  section_text: '### Firmware (PlatformIO — Phase 1, not yet scaffolded)
+
+
+    ```bash
+
+    cd firmware/petsense-app
+
+    pio run                   # build
+
+    pio run --target upload   # flash to device
+
+    pio test                  # run unit tests
+
+    ```'
+  candidate_excerpt: '### Firmware (PlatformIO — Phase 1, not yet scaffolded)
+
+
+    ```bash
+
+    cd firmware/petsense-app
+
+    pio run                   # build
+
+    pio run --target upload   # flash to device
+
+    pio test                  # run unit tests
+
+    ```'
+- id: fp-petsense-easyeda2kicad-cli-complementary-to-the-
+  label: false_positive
+  source: docs/sddv4/bom-tracker.md
+  section_text: "### `easyeda2kicad` (CLI, complementary to the MCP)\nAlready installed at `/Library/Frameworks/Python.framework/Versions/3.12/bin/easyeda2kicad`\
+    \ (v1.0.1).\nUse for per-part fetches from LCSC: symbol + footprint + 3D STEP/WRL in one command.\
+    \ Faster than the MCP for one-off parts. Example:\n```bash\ncd hardware/SDD_v4\neasyeda2kicad --lcsc_id\
+    \ C2981446 C89334 --full \\\n  --output lib/SDD_v4.kicad_sym --use-cache --overwrite\n```\n**Does\
+    \ NOT convert EasyEDA Pro projects to KiCad** — only individual parts. v4 schematic/layout is from\
+    \ scratch."
+  candidate_excerpt: '# SDDv4 — BOM Tracker
+
+
+    **Living document.** Records the decision behind every BOM line, not just
+
+    the part number. When a part changes, append a row to the changelog at the
+
+    bottom rather than overwriting silently.
+
+
+    The exported BOM CSV per revision lives at
+
+    [`../../hardware/SDD_v4/bom/`](../../hardware/SDD_v4/bom/). This file is
+
+    the *decision record* that shapes that CSV.
+
+
+    **Cost target:** $1.50 total system BOM at 5 k qty (see
+
+    [`cost-model.md`](cost-model.md)).
+
+
+    **KiCad parts library:** 12 parts'
+- id: fp-petsense-kicad-plugins-installed-2026-05-26
+  label: false_positive
+  source: docs/SDD_v3_Design_Document.pdf
+  section_text: '### KiCad plugins installed (2026-05-26)
+
+    - **[Freerouting](https://github.com/freerouting/freerouting)** — autorouter; export `.dsn` → run
+    Freerouting → import `.ses`
+
+    - **[RF-tools-KiCAD](https://github.com/easyw/RF-tools-KiCAD)** — RF design helpers (coplanar waveguide,
+    microstrip Z₀ calcs, antenna geometry). Use for the chip-antenna match-network layout.
+
+    - **[KiKit](https://github.com/yaqwsx/KiKit)** — panelization (production-only; not needed until v4
+    fab freeze)
+
+    - **[kicad-parts-placer-pcm](https://github.com/TheJigsApp/kicad-parts-placer-pcm)** — automated component
+    placement from CSV (handy for the repetitive 0603 passive grid)
+
+    - **[kicad-action-tools](https://github.com/easyw/kicad-ac'
+  candidate_excerpt: 'SDD v3 — Confidential Page 14 March 13, 2026 8. PCB Layout Guidance The following
+    guidance is intended for the KiCad PCB layout engineer. The flex PCB is divided into two functional
+    zones: the component zone and the sensing zone.9 PCB Layout Overview (100mm x 25mm flex PCB): <---
+    25mm ---> <------------ 50-60mm ------------> <-- 15mm --> +--------------+----------------------------------+-----------+
+    | | | | | COMPONENT | INTERDIGITATED COMB | ANTENNA | | ZONE | ELECTRODES | ZONE | | | | | | [MC'
+- id: fp-doc-audit-cc-runtime
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Runtime
+
+    - Python 3.10 or later (specified in `pyproject.toml`)
+
+    - pip / setuptools (modern Python packaging)
+
+    - Lockfile: Not detected (uses direct `pyproject.toml` dependencies)'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx
+    upgrade carta-cc' may report 'already latest' while the GitHub Release and pypi.org JSON already show
+    the new version. Use 'pipx install --force carta-cc==X.Y.Z' to pin the explicit version instead of
+    waiting.
+- id: fp-doc-audit-cc-key-dependencies
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Key Dependencies
+
+    - qdrant-client 1.7+ - Vector database client for Qdrant integration (`carta/embed/embed.py`, `carta/embed/pipeline.py`)
+
+    - PyMUPDF 1.23+ (pymupdf) - PDF text extraction
+
+    - requests 2.31+ - HTTP client library
+
+    - PyYAML 6.0+ - YAML parsing for config and frontmatter'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx
+    upgrade carta-cc' may report 'already latest' while the GitHub Release and pypi.org JSON already show
+    the new version. Use 'pipx install --force carta-cc==X.Y.Z' to pin the explicit version instead of
+    waiting.
+- id: fp-doc-audit-cc-platform-requirements
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Platform Requirements
+
+    - Python 3.10+ (command: `python3 --version`)
+
+    - Git (for project detection in bootstrap)
+
+    - Docker (strongly recommended for running Qdrant and Ollama containers)
+
+    - **Qdrant** - Vector database service (Docker: `docker run -p 6333:6333 qdrant/qdrant`)
+
+    - **Ollama** - Local LLM embedding service (https://ollama.ai)
+
+    - Docker environment or system with Python 3.10+
+
+    - Network access to Qdrant API (default port 6333)
+
+    - Network access to Ollama API (default port 11434)
+
+    - No cloud services required - all runs locally'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx
+    upgrade carta-cc' may report 'already latest' while the GitHub Release and pypi.org JSON already show
+    the new version. Use 'pipx install --force carta-cc==X.Y.Z' to pin the explicit version instead of
+    waiting.
+- id: fp-doc-audit-cc-code-style
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Code Style
+
+    - Python 3.10+ syntax (modern type hints, walrus operator acceptable)
+
+    - Line length: not strictly enforced but tends toward ~100 chars
+
+    - Spaces: 4-space indentation (PEP 8 standard)
+
+    - Imports: organized in sections (stdlib, third-party, local)
+
+    - No explicit linter configured (no .pylintrc, ruff.toml, or black config)
+
+    - Code follows PEP 8 conventions organically
+
+    - Type hints are used but not strictly validated with mypy'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx
+    upgrade carta-cc' may report 'already latest' while the GitHub Release and pypi.org JSON already show
+    the new version. Use 'pipx install --force carta-cc==X.Y.Z' to pin the explicit version instead of
+    waiting.
+- id: fp-doc-audit-cc-cli-carta-command-or-python-m-carta
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '### CLI — `carta <command>` (or `python -m carta <command>`)
+
+
+    | Command | Purpose |
+
+    |---------|---------|
+
+    | `init` | Bootstrap Carta in a repo (config, collections, skills, hook) |
+
+    | `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
+
+    | `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass);
+    `--repair` re-embeds damaged points |
+
+    | `search` | Hybrid (BM25 + dense, RRF) semantic search |
+
+    | `focus` | Deep retrieval scoped to **one file**: page-anchored passages, an outline (omit query),
+    and table/figure pages as images. Two-step partner to `search` (locate → go deep) |
+
+    | `audit` | Embed-pipeline **data integrity** check → JSON |
+
+    | `d'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx
+    upgrade carta-cc' may report 'already latest' while the GitHub Release and pypi.org JSON already show
+    the new version. Use 'pipx install --force carta-cc==X.Y.Z' to pin the explicit version instead of
+    waiting.
+- id: tp-etembed-fsm
+  label: true_positive
+  source: docs/audits/2026-06-09-comprehensive-system-audit.md
+  section_text: '### State Machine (FSM) — two-layer model
+
+
+    The Teensy firmware implements a **two-layer FSM** (canonical reference: `docs/firmware/FSM_GAIN_SCHEDULER.md`).
+    The flat `IDLE → READY → ASSISTING / CHARGING → ERROR` model described in older docs and in the patent
+    (`docs/reference/patents/non-provisional-update-plan.md` §2.9) is historical — the patent draft predates
+    the two-layer split. The firmware as built today is:
+
+
+    **Top-level operational state** (`TncFsmState` in `firmware/vcu-testbench/src/fsm.h`):
+
+
+    `INIT → STANDBY → ACTIVE → FAULT`
+
+
+    Transitions: INIT → STANDBY on Zephyr boot; STANDBY → ACTIVE on bridge + CAN handshake; ACTIVE → FAULT
+    on `can_bus_off` or `ads1263_dead`; FAULT → STANDBY on r'
+  candidate_excerpt: The top-level FSM (INIT->STANDBY->ACTIVE->FAULT, fsm_top_level_update() at main.c:801-821)
+    enters ACTIVE on the CAN handshake alone (CLAUDE.md's 'bridge + CAN handshake' is wrong) and exits
+    only on controller BUS_OFF or boot-time ADS1263 failure. There is no message-staleness timeout and
+    no watchdog.
+- id: tp-etembed-bridge
+  label: true_positive
+  source: docs/audits/2026-06-09-comprehensive-system-audit.md
+  section_text: '## Serial Bridge Architecture
+
+
+    The `comms/` library implements a COBS+JSON serial bridge over LPUART8 (Teensy pins 20/21 ↔ Jetson
+    `/dev/ttyTHS1` @ 921600 baud). The `microros/` directory is retained for reference but is **not active**.
+
+
+    Key design notes:
+
+    - UART RX is interrupt-driven (`uart_irq_callback_set` + `uart_fifo_read`) — avoids byte loss during
+    CAN blocking waits
+
+    - Inbound frames are COBS-decoded and dispatched in the comms thread (Zephyr priority 7, below CAN
+    handler at 5)
+
+    - Params from the Jetson are queued via `k_msgq` (`g_params_queue`) and consumed in the main loop
+    — no mutex needed on the handoff path
+
+    - `serial_bridge_link_active()` returns true after a valid handshake; gate C'
+  candidate_excerpt: 'Firmware RX: UART ISR -> 1024-byte ring -> comms thread -> frame_parse -> bridge_handle_frame;
+    params reach main() via k_msgq (g_scheduler_queue / g_cell_update_queue — CLAUDE.md''s g_params_queue
+    no longer exists). TX is an ISR-drained 2048-byte ring.'

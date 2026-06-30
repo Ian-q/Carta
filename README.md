@@ -205,6 +205,7 @@ last_reviewed: 2026-03-20
 | Check embedded-data integrity (orphaned sidecars, damaged/duplicate points) | `carta audit` | JSON report |
 | Diagnose the environment (Qdrant/Ollama/models) | `carta doctor` (+ `--fix`) | stdout |
 | Measure retrieval quality | `carta eval` | scores |
+| Reconcile CLAUDE.md against the docs (detect superseded sections, draft corrections) | `carta claude-md check` (report JSON) · `carta claude-md record` (stamp sync sidecar) · `/claude-md-sync` skill | JSON findings |
 
 ---
 
