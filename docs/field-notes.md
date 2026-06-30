@@ -92,12 +92,9 @@ carta embed --visual      # needed for the VISUAL count mismatches — requires 
 
 - **Judge latency on a 64K-`num_ctx` host** — [#86]. The judge logic is correct; the host's
   Ollama is the bottleneck. `judge_errors` makes it visible, never a silent false "in sync".
-- **`carta status` always shows "0 done"** — [#88]. Status counts the phantom `"done"` status,
-  but embed writes `"embedded"`. Cosmetic; counts land in "other".
 - **Slug collisions** — [#89]. `slug_from_filename` drops the extension and ignores the
   directory, so `foo.md`/`foo.pdf` and `dir1/foo.md`/`dir2/foo.md` collide. Not fixed by
   `--repair`.
 
 [#86]: https://github.com/Ian-q/Carta/issues/86
-[#88]: https://github.com/Ian-q/Carta/issues/88
 [#89]: https://github.com/Ian-q/Carta/issues/89
