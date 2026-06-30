@@ -1820,11 +1820,38 @@ def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> l
              "doc_type": ""} for _sort, page, heading in rows]
 
 
+def _embed_query_or_raise(query: str, cfg: dict, collections: list[str]) -> list[float] | None:
+    """Embed the text query ONCE, before any per-collection loop.
+
+    Returns the query vector, or None when there are no text collections to search
+    (visual-only). A failure raises an actionable RuntimeError rather than being
+    swallowed by the per-collection handler as a missing collection — otherwise a
+    dead/misconfigured Ollama backend is reported as "no results / nothing
+    embedded", sending the user to re-embed a healthy corpus (#79).
+    """
+    if not any(not c.endswith("_visual") for c in collections):
+        return None
+    ollama_url = cfg["embed"]["ollama_url"]
+    model = cfg["embed"]["ollama_model"]
+    try:
+        return get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not embed the query — is Ollama running at {ollama_url} and the "
+            f"'{model}' model pulled? Run: carta doctor\n(Detail: {e})"
+        ) from e
+
+
 def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                 cfg: dict, repo_root: Path, source: str, limit: int) -> list[dict]:
     """File-scoped deep retrieval: filtered per-collection queries, RRF fused, NO dedup,
-    NO visual cap, NO graph expansion; visual hits get a rendered page image."""
+    NO visual cap, NO graph expansion; visual hits get a rendered page image.
+
+    Raises RuntimeError if the text query cannot be embedded (Ollama down/misconfigured)
+    so the failure is visible rather than silently degrading to an empty result set (#79).
+    """
     per_collection: list[list[dict]] = []
+    text_query_vec = _embed_query_or_raise(query, cfg, collections)
     for coll_name in collections:
         coll_results: list[dict] = []
         try:
@@ -1858,10 +1885,7 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                 except Exception:
                     pass  # visual lane is auxiliary — skip on any ColPali/query error, keep text results
             else:
-                ollama_url = cfg["embed"]["ollama_url"]
-                model = cfg["embed"]["ollama_model"]
-                query_vec = get_embedding(query, ollama_url=ollama_url, model=model,
-                                          prefix="search_query: ")
+                query_vec = text_query_vec  # embedded once up-front (#79)
                 hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
                 is_hybrid = collection_is_hybrid(client, coll_name)
                 if hybrid_cfg.get("enabled", False) and is_hybrid:
@@ -2098,6 +2122,12 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     except Exception as e:
         raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
     
+    # Embed the text query ONCE, before the per-collection loop. A failure here is a
+    # real embedding-backend outage (Ollama down, wrong/missing model, empty vector),
+    # not a per-collection miss — surface it instead of letting the loop's handler
+    # mis-classify it and return [] ("nothing embedded", #79).
+    text_query_vec = _embed_query_or_raise(query, cfg, collections)
+
     # Search each collection independently, then fuse across them by rank (RRF)
     # so incomparable score scales (text cosine/RRF vs visual ColPali MaxSim)
     # can't crowd each other out.
@@ -2159,10 +2189,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                     # Skip visual search on error
                     pass
             else:
-                # Text collection search using standard embeddings
-                ollama_url = cfg["embed"]["ollama_url"]
-                model = cfg["embed"]["ollama_model"]
-                query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+                # Text collection search using the query vector embedded once up-front (#79).
+                query_vec = text_query_vec
 
                 hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
                 is_hybrid = collection_is_hybrid(client, coll_name)

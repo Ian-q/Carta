@@ -93,12 +93,21 @@ def get_embedding(
             timeout=60,
         )
         if resp.status_code == 200:
+            emb = resp.json().get("embedding")
+            if not isinstance(emb, list) or not emb:
+                # 200 with no usable vector (empty list / missing key) — fail loudly
+                # rather than returning a zero/None vector that downstream search
+                # silently swallows as "no results / nothing embedded" (#79).
+                raise RuntimeError(
+                    f"Ollama returned an empty/invalid embedding for model {model!r} — "
+                    f"is the model pulled and the backend healthy? Run: carta doctor"
+                )
             if attempt > 0:
                 print(
                     f"  (truncated to {len(attempt_text.split())} words after {attempt} attempt(s))",
                     flush=True,
                 )
-            return resp.json()["embedding"]
+            return emb
         body = resp.text
         if resp.status_code == 500 and _CONTEXT_OVERFLOW in body:
             words = attempt_text.split()
