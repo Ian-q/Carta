@@ -143,9 +143,10 @@ DEFAULTS = {
             "enabled": True,
             "block_on_stale": False,
             "candidate_threshold": 0.65,
-            "judge_timeout_s": 5,
-            "ollama_model": "qwen3.5:0.8b",
+            "judge_timeout_s": 60,
+            "ollama_model": "qwen3.5:9b",
             "max_judge_calls": 30,
+            "claude_md_nudge": True,
         },
     },
     "cross_project_recall": {

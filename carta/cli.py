@@ -839,6 +839,13 @@ def cmd_status(args):
 
 
 def _print_stale_result(result, scfg):
+    if getattr(result, "judge_errors", 0):
+        print(
+            f"  ⚠  {result.judge_errors} judge call(s) timed out/failed — results may be "
+            f"INCOMPLETE (a non-responding judge reads as 'not stale'). Raise "
+            f"hooks.stale_scan.judge_timeout_s or check the Ollama judge model.",
+            file=sys.stderr,
+        )
     if not result.findings:
         return
     print(f"carta stale-scan: scanned {result.scanned} doc(s)...", file=sys.stderr)
@@ -856,6 +863,63 @@ def _print_stale_result(result, scfg):
         print(f"  ({result.skipped_overflow} more section(s) not checked — max_judge_calls cap)", file=sys.stderr)
     if not scfg.get("block_on_stale", False):
         print("  (warn-only; set hooks.stale_scan.block_on_stale: true to fail)", file=sys.stderr)
+
+
+def _maybe_claude_md_nudge(result, scfg, repo_root):
+    """One-line reminder that changed docs may have left CLAUDE.md stale. Cheap:
+    no judge calls — fires only when docs were actually scanned. Fail-open."""
+    try:
+        if not scfg.get("claude_md_nudge", True):
+            return
+        if getattr(result, "scanned", 0) and (repo_root / "CLAUDE.md").exists():
+            print(
+                f"  ↪ {result.scanned} doc(s) changed — CLAUDE.md may need a sync; "
+                f"run /claude-md-sync (or `carta claude-md check`).",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+
+
+def cmd_claude_md(args):
+    import json
+    from datetime import datetime, timezone
+    from carta.config import load_config
+    from carta.hook import claude_md
+
+    try:
+        cfg_path = find_config()
+    except FileNotFoundError:
+        print(json.dumps({"scanned": False, "reason": "not a Carta repo", "findings": []}))
+        sys.exit(0)
+    cfg = load_config(cfg_path)
+    repo_root = cfg_path.parent.parent
+    action = getattr(args, "claude_md_action", None) or "check"
+
+    if action == "record":
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            claude_md.record_sync(repo_root, now_iso)
+        except Exception as e:
+            print(json.dumps({"recorded": False, "reason": f"record error (fail-open): {e}"}))
+            sys.exit(0)
+        print(json.dumps({"recorded": True, "last_synced": now_iso}))
+        sys.exit(0)
+
+    try:
+        out = claude_md.scan_claude_md(repo_root, cfg)
+    except Exception as e:
+        print(json.dumps({"scanned": False, "reason": f"scan error (fail-open): {e}", "findings": []}))
+        sys.exit(0)
+    if out.get("judge_errors"):
+        print(
+            f"WARNING: {out['judge_errors']} judge call(s) timed out/failed — findings may be "
+            f"INCOMPLETE (a non-responding judge reads as 'not superseded'). Raise "
+            f"hooks.stale_scan.judge_timeout_s or check the Ollama judge model.",
+            file=sys.stderr,
+        )
+    print(json.dumps(out, indent=2))
+    sys.exit(0)
 
 
 def cmd_hook(args):
@@ -921,6 +985,7 @@ def cmd_hook(args):
             print(f"carta stale-scan: scan error (fail-open): {e}", file=sys.stderr)
             sys.exit(0)
         _print_stale_result(result, scfg)
+        _maybe_claude_md_nudge(result, scfg, repo_root)
         fail = getattr(args, "fail_on_stale", False) or scfg.get("block_on_stale", False)
         if result.findings and fail:
             sys.exit(1)
@@ -1085,6 +1150,12 @@ def main():
         "--json", action="store_true", help="Output status as JSON",
     )
 
+    claude_md_p = sub.add_parser("claude-md", help="Sync CLAUDE.md against the docs graph")
+    cm_sub = claude_md_p.add_subparsers(dest="claude_md_action")
+    cm_sub.add_parser("check", help="Report CLAUDE.md sections the docs have superseded (JSON)")
+    cm_sub.add_parser("record", help="Re-hash sections and stamp last_synced after a sync")
+    claude_md_p.set_defaults(func=cmd_claude_md)
+
     hook_p = sub.add_parser("hook", help="Manage Carta git hooks (stale-reference scan)")
     hook_sub = hook_p.add_subparsers(dest="hook_action")
     hook_install = hook_sub.add_parser("install", help="Install/remove the managed git hook")
@@ -1120,6 +1191,7 @@ def main():
         "import": cmd_import,
         "status": cmd_status,
         "hook": cmd_hook,
+        "claude-md": cmd_claude_md,
     }
 
     if args.command not in dispatch:
