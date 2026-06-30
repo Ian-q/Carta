@@ -508,6 +508,10 @@ Purges and force re-embeds all files flagged by the integrity checks, and fixes 
 in place. The summary reports: repaired / purged / flagged `extraction_failed` / queued-for-visual /
 failed.
 
+> **Agents:** see [`docs/field-notes.md`](docs/field-notes.md) for hard-won operating notes —
+> running an unreleased build against another repo, the supersession-judge latency / `judge_errors`
+> gotcha, the eval-corpus validation loop, and the `doctor → embed --repair` flow.
+
 ---
 
 ## Status-line progress widget
