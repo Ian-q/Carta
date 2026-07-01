@@ -362,6 +362,29 @@ class TestRunImport:
         client.delete_collection.assert_called_once_with(collection_name="myproj_doc")
         assert up.call_count == 1
 
+    def test_import_stamps_terminal_embed_status(self, tmp_path):
+        """After a successful import, .carta/embed-status.json records a finished run
+        so `carta status` no longer reports the imported project as 'embed never run' (#80).
+
+        Import restores vectors + sidecars but never ran the embed pipeline, so without
+        this stamp _gather_embed sees no status file and reports state 'never'.
+        """
+        import json as _json
+        bundle = _write_bundle(tmp_path / "b.tar.gz", collection_points={"myproj_doc": 5})
+        target_carta = tmp_path / "dest" / ".carta"
+        target_carta.mkdir(parents=True)
+        client = _import_mock_client()
+
+        with patch("carta.share.QdrantClient", return_value=client), \
+             patch("carta.share.requests.get", side_effect=_fake_get_version), \
+             patch("carta.share._upload_snapshot"):
+            share.run_import(bundle, target_carta, verbose=False)
+
+        status_path = target_carta / "embed-status.json"
+        assert status_path.exists(), "import must write a terminal embed-status.json"
+        data = _json.loads(status_path.read_text())
+        assert data["phase"] == "done"
+
     def test_project_rename_rewrites_target_collections(self, tmp_path):
         bundle = _write_bundle(tmp_path / "b.tar.gz", collection_points={"myproj_doc": 5})
         target_carta = tmp_path / ".carta"; target_carta.mkdir()
