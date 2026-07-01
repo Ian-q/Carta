@@ -762,7 +762,7 @@ def cmd_import(args):
         carta_dir = Path.cwd() / ".carta"
         qdrant_url = None
     try:
-        run_import(
+        summary = run_import(
             args.bundle,
             carta_dir,
             qdrant_url=qdrant_url,
@@ -773,6 +773,14 @@ def cmd_import(args):
     except (RuntimeError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Register the imported project so `carta status` lists it system-wide without
+    # first cd-ing into it (#80). Best-effort — registration must never fail import.
+    try:
+        from carta.registry import register_project
+        register_project(carta_dir.parent, summary["project"], summary.get("qdrant_url"))
+    except Exception:
+        pass
 
 
 def cmd_status(args):

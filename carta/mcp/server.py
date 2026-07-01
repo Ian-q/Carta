@@ -74,7 +74,6 @@ def _format_search_result(r: dict) -> dict:
 # Tool handlers
 # ---------------------------------------------------------------------------
 
-@mcp_server.tool()
 def carta_search(
     query: str,
     top_k: int = 5,
@@ -106,7 +105,7 @@ def carta_search(
     try:
         # Get collections to search based on scope
         collections = get_search_collections(cfg, scope)
-        
+
         # Search across all collections and merge results
         all_results = []
         for coll_name in collections:
@@ -125,14 +124,22 @@ def carta_search(
                     for r in results:
                         r["type"] = "text"
                     all_results.extend(results)
+            except QueryEmbeddingError:
+                # The query itself could not be embedded (Ollama outage). This is not a
+                # per-collection miss — it's identical for every text collection — so
+                # surface it instead of swallowing it into empty results, which would be
+                # reported to the agent as "no results / nothing embedded" (#79).
+                raise
             except RuntimeError:
-                # Skip collections that don't exist or fail
+                # A single collection is missing or its Qdrant query failed — skip it.
                 pass
-        
+
         # Sort by score descending and take top_k
         all_results.sort(key=lambda x: x["score"], reverse=True)
         results = all_results[:top_k]
-        
+
+    except QueryEmbeddingError as e:
+        return {"error": "embedding_unavailable", "detail": str(e)}
     except ValueError as e:
         # Invalid scope parameter
         return {"error": "invalid_request", "detail": str(e)}
@@ -142,6 +149,12 @@ def carta_search(
     
     # Format results for return (page/section anchors + visual image passthrough)
     return [_format_search_result(r) for r in results]
+
+
+# Registered via add_tool() rather than the @mcp_server.tool() decorator so carta_search
+# stays a plain, callable function (the test suite mocks fastmcp, so the decorator would
+# replace it with a MagicMock). Same rationale as carta_focus below.
+mcp_server.add_tool(carta_search)
 
 
 def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | dict:
@@ -202,27 +215,46 @@ def carta_focus(source: str, query: str = "", top_k: int = 15) -> list[dict] | d
 mcp_server.add_tool(carta_focus)
 
 
+class QueryEmbeddingError(RuntimeError):
+    """The search query itself could not be embedded (Ollama down/misconfigured/empty
+    vector). Distinct from a per-collection Qdrant miss so carta_search can surface it
+    as an error instead of swallowing it into empty results (#79)."""
+
+
 def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: int) -> list[dict]:
     """Search a single collection for chunks semantically similar to query.
-    
+
     Args:
         query: Natural language search query.
         cfg: Carta config dict.
         collection_name: Name of the Qdrant collection to search.
         top_n: Maximum number of results.
-    
+
     Returns:
         List of dicts: {"score": float, "source": str, "excerpt": str,
         "page": int|None, "section_heading": str}
+
+    Raises:
+        QueryEmbeddingError: the query could not be embedded (embedding-backend outage).
+        RuntimeError: the Qdrant query for this collection failed.
     """
     from qdrant_client import QdrantClient
     from carta.embed.embed import get_embedding
-    
+
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"]["ollama_model"]
-    
+
+    # Embed first: a failure here is a backend outage, not a collection miss. Raise a
+    # typed error so carta_search reports it rather than skipping the collection (#79).
+    try:
+        query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+    except Exception as e:
+        raise QueryEmbeddingError(
+            f"Could not embed the query — is Ollama running at {ollama_url} and the "
+            f"'{model}' model pulled? Run: carta doctor\n(Detail: {e})"
+        ) from e
+
     client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
-    query_vec = get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
     
     try:
         response = client.query_points(

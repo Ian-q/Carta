@@ -667,6 +667,33 @@ class TestRunSearch:
         assert results[0]["text_source"] == "ocr_visual"
         assert results[0]["page"] == 3   # resolved from page_num
 
+    def test_raises_when_query_embedding_fails(self):
+        """A query-embedding failure (Ollama down / wrong model) must raise an
+        actionable error — NOT be swallowed as 'no results / nothing embedded' (#79).
+
+        The corpus is fully populated; only the query-embed hop is broken. The old
+        behaviour mis-classified the Ollama error string ('...404...') as a missing
+        collection and returned [], sending the user to re-embed a healthy corpus.
+        """
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        cfg = {
+            "project_name": "test-project", "qdrant_url": "http://localhost:6333",
+            "embed": {"ollama_url": "http://localhost:11434",
+                      "ollama_model": "nomic-embed-text", "colpali_enabled": False},
+            "search": {"top_n": 5}, "modules": {"doc_search": True},
+        }
+        mock_client = MagicMock()  # Qdrant is healthy; the embed hop is what fails.
+
+        with patch("carta.embed.pipeline.QdrantClient", return_value=mock_client), \
+             patch("carta.embed.pipeline.get_embedding",
+                   side_effect=RuntimeError("Ollama embedding failed (404): model 'x' not found")), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            with pytest.raises(RuntimeError, match="Could not embed the query"):
+                run_search("TPS55340 boost converter", cfg)
+
 
 class TestVisionProgressWiring:
     """Verify _vision_callback is passed and _vision_events are handled correctly."""
@@ -1535,6 +1562,25 @@ class TestRunFocus:
             results = run_focus("docs/board.pdf", self.BASE_CFG, query="32mhz")
         assert results[0]["text_source"] == "ocr_visual"
         assert results[0]["page"] == 3
+
+    def test_deep_raises_when_query_embedding_fails(self):
+        """Focus deep mode must surface a query-embedding failure, not swallow it (#79).
+
+        Unlike the visual lane (which is auxiliary and degrades to text), a failed
+        TEXT query embed means no text retrieval is possible — it must be reported.
+        """
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_focus
+        client = MagicMock()
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding",
+                   side_effect=RuntimeError("Ollama embedding failed (500): backend down")), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.embed.pipeline._ensure_file_path_index"), \
+             patch("carta.search.scoped.get_search_collections", return_value=["test-project_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            with pytest.raises(RuntimeError, match="Could not embed the query"):
+                run_focus("docs/imu.pdf", self.BASE_CFG, query="sensitivity")
 
 
 class TestTextSource:
