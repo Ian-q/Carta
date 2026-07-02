@@ -1250,6 +1250,12 @@ def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
                 healed += 1
             continue
         for ext in _SUPPORTED_EXTENSIONS:
+            # Extension-preserving types are handled above; adopting one here
+            # would mint a non-canonical (extension-stripped) sidecar that
+            # discover_pending_files would still embed alongside the canonical
+            # stub auto-induction creates — double-indexing one source.
+            if ext in SPREADSHEET_SUFFIXES:
+                continue
             candidate = repo_root / parent_dirs / f"{stem}{ext}"
             if candidate.exists():
                 data["current_path"] = str(parent_dirs / f"{stem}{ext}")
