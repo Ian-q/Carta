@@ -90,6 +90,27 @@ class TestSpreadsheetDispatch:
         assert updates["status"] == "pending"  # re-pickable once installed
         assert "openpyxl is not installed" in capsys.readouterr().err
 
+    def test_missing_openpyxl_single_file_stays_repickable(self, tmp_path):
+        import yaml
+        from carta.embed.pipeline import run_embed_file
+        docs = _mk_docs(tmp_path)
+        wb = docs / "wb.xlsx"
+        wb.write_bytes(b"PK\x03\x04")
+        cfg_path = tmp_path / ".carta" / "config.yaml"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        with patch("carta.embed.pipeline.find_config", return_value=cfg_path), \
+             patch("carta.embed.pipeline.QdrantClient"), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch.dict(sys.modules, {"openpyxl": None}):
+            result = run_embed_file(wb, CFG)
+        assert result["status"] == "skipped"
+        sc = tmp_path / ".carta" / "sidecars" / "docs" / "wb.xlsx.embed-meta.yaml"
+        data = yaml.safe_load(sc.read_text())
+        assert data["status"] == "pending"
+        assert data.get("file_mtime") is None       # no fast-path stamp
+        assert data.get("file_hash") is None        # no false "already embedded" claim
+        assert not data.get("version_history")      # no phantom indexed_at entry
+
 
 class TestSpreadsheetDiscovery:
     def test_iter_inductable_includes_spreadsheets_excludes_carta(self, tmp_path):
