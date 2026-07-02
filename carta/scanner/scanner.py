@@ -411,7 +411,7 @@ except Exception:
     get_embedding = None  # type: ignore[assignment]
     collection_name = None  # type: ignore[assignment]
 
-from carta.embed.induct import sidecar_path as get_sidecar_path
+from carta.embed.induct import sidecar_path as get_sidecar_path, _sidecar_rel
 
 
 def suggest_related_for_doc(
@@ -571,7 +571,7 @@ def _iter_sidecar_files(repo_root: Path, cfg: dict):
         if current_path:
             if is_excluded(repo_root / current_path, cfg, repo_root):
                 continue
-            expected_rel = Path(current_path).with_suffix(".embed-meta.yaml")
+            expected_rel = _sidecar_rel(Path(current_path))
             try:
                 actual_rel = p.relative_to(sidecars_root)
             except ValueError:
