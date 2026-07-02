@@ -32,7 +32,7 @@ from carta.embed.embed import (
     UPSERT_CLIENT_TIMEOUT_S,
 )
 from carta.embed.sparse import embed_sparse_query
-from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars
+from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars, SPREADSHEET_SUFFIXES
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_points
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
@@ -1206,6 +1206,15 @@ def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
         rel_from_sidecars = sc_path.relative_to(sidecars_root)
         stem = sc_path.name.replace(".embed-meta.yaml", "")
         parent_dirs = rel_from_sidecars.parent
+        # Extension-preserving sidecars (data.csv.embed-meta.yaml) already carry
+        # the full source filename in the stem — resolve directly.
+        if Path(stem).suffix.lower() in SPREADSHEET_SUFFIXES:
+            candidate = repo_root / parent_dirs / stem
+            if candidate.exists():
+                data["current_path"] = str(parent_dirs / stem)
+                _update_sidecar(sc_path, data)
+                healed += 1
+            continue
         for ext in _SUPPORTED_EXTENSIONS:
             candidate = repo_root / parent_dirs / f"{stem}{ext}"
             if candidate.exists():

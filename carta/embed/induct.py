@@ -22,10 +22,25 @@ _PATH_TYPE_MAP = {
 }
 
 
+# Spreadsheet source types. Their sidecar filename PRESERVES the source extension
+# (data.csv -> data.csv.embed-meta.yaml): the legacy with_suffix() mapping strips
+# it, so same-stem files (data.csv + data.md) would silently share one sidecar and
+# auto-induction would skip the second. Legacy types (.md/.pdf) keep the historical
+# mapping so existing sidecar state never migrates. Eventual unification: issue #89.
+SPREADSHEET_SUFFIXES = frozenset({".csv", ".xlsx"})
+
+
+def _sidecar_rel(rel: Path) -> Path:
+    """Repo-relative source path -> repo-relative sidecar path (under sidecars root)."""
+    if rel.suffix.lower() in SPREADSHEET_SUFFIXES:
+        return rel.parent / (rel.name + ".embed-meta.yaml")
+    return rel.with_suffix(".embed-meta.yaml")
+
+
 def sidecar_path(file_path: Path, repo_root: Path) -> Path:
     """Return the canonical .carta/sidecars/ path for a source file's sidecar."""
     rel = file_path.relative_to(repo_root)
-    return repo_root / ".carta" / "sidecars" / rel.with_suffix(".embed-meta.yaml")
+    return repo_root / ".carta" / "sidecars" / _sidecar_rel(rel)
 
 
 def slug_from_filename(filename: str) -> str:
@@ -83,7 +98,13 @@ def generate_sidecar_stub(
     rel_path = file_path.relative_to(repo_root)
     doc_type = resolve_doc_type(file_path, rel_path)
     slug = slug_from_filename(file_path.name)
-    file_type = "markdown" if file_path.suffix == ".md" else "pdf"
+    suffix = file_path.suffix.lower()
+    if suffix == ".md":
+        file_type = "markdown"
+    elif suffix in SPREADSHEET_SUFFIXES:
+        file_type = "spreadsheet"
+    else:
+        file_type = "pdf"
 
     stub = {
         "slug": slug,
@@ -164,7 +185,7 @@ def iter_canonical_sidecars(repo_root: Path) -> Iterator[tuple[Path, dict]]:
         current_path = data.get("current_path")
         if not current_path:
             continue
-        expected_rel = Path(current_path).with_suffix(".embed-meta.yaml")
+        expected_rel = _sidecar_rel(Path(current_path))
         try:
             actual_rel = sc_path.relative_to(sidecars_root)
         except ValueError:
