@@ -1120,3 +1120,16 @@ def test_iter_sidecar_files_respects_extension_preserving_spreadsheet_sidecars(t
 
     # Must yield BOTH sidecars
     assert yielded_names == ["data.csv.embed-meta.yaml", "note.embed-meta.yaml"]
+
+
+class TestSpreadsheetInduction:
+    def test_spreadsheets_flagged_for_induction(self, tmp_path):
+        from carta.scanner.scanner import check_embed_induction_needed
+        ref = tmp_path / "docs" / "reference"
+        ref.mkdir(parents=True)
+        (ref / "data.xlsx").write_bytes(b"PK\x03\x04")
+        (ref / "data.csv").write_text("a,b\n1,2\n")
+        issues = check_embed_induction_needed(tmp_path, {})
+        docs = {i["doc"] for i in issues}
+        assert "docs/reference/data.xlsx" in docs
+        assert "docs/reference/data.csv" in docs

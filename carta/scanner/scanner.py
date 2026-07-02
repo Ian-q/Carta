@@ -638,7 +638,8 @@ def check_sidecar_broken_related(
 # Embed file type checks (config-driven scan dirs)
 # ---------------------------------------------------------------------------
 
-_EMBED_EXTENSIONS = frozenset([".pdf", ".m4a", ".mp3", ".wav", ".aac"])
+_EMBED_EXTENSIONS = frozenset(
+    [".pdf", ".m4a", ".mp3", ".wav", ".aac", ".csv", ".xlsx"])
 
 
 def _get_embed_scan_dirs(cfg: dict) -> list:
