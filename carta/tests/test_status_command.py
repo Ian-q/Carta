@@ -21,8 +21,8 @@ def _sidecar(sidecars_dir, stem, st):
 def test_corpus_counts_by_status(tmp_path):
     root = _project(tmp_path)
     sc = root / ".carta" / "sidecars"
-    _sidecar(sc, "a", "done")
-    _sidecar(sc, "b", "done")
+    _sidecar(sc, "a", "embedded")   # the status the embed pipeline actually writes
+    _sidecar(sc, "b", "embedded")
     _sidecar(sc, "c", "pending")
     _sidecar(sc, "d", "stale")
     _sidecar(sc, "e", "extraction_failed")

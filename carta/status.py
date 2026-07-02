@@ -17,7 +17,10 @@ from carta.statusline import (
     _RESET, _DIM, _CYAN, _GREEN, _RED,
 )
 
-_CORPUS_STATUSES = ("done", "pending", "stale", "extraction_failed")
+# The embed pipeline writes "embedded" on success (carta/embed/pipeline.py); "done"
+# is accepted for legacy/forward compatibility. Both roll up to the "done" count.
+_DONE_STATUSES = ("embedded", "done")
+_CORPUS_STATUSES = ("pending", "stale", "extraction_failed")
 
 
 def _read_json(path: Path):
@@ -94,7 +97,9 @@ def _gather_corpus(repo_root: Path) -> dict:
             continue
         counts["total"] += 1
         st = data.get("status")
-        if st in _CORPUS_STATUSES:
+        if st in _DONE_STATUSES:
+            counts["done"] += 1
+        elif st in _CORPUS_STATUSES:
             counts[st] += 1
         else:
             counts["other"] += 1

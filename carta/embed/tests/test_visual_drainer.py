@@ -28,6 +28,7 @@ def test_drainer_checkpoints_each_page(monkeypatch, tmp_path):
                         raising=False)
     monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
     summary = pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {"visual_timeout_s": 0}})
     assert summary["pages_embedded"] == 2
@@ -45,6 +46,7 @@ def test_drainer_writes_status_file(monkeypatch, tmp_path):
                         lambda *a, **k: True, raising=False)
     monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
     (tmp_path / ".carta").mkdir()  # StatusWriter writes into an existing .carta/
 
@@ -188,6 +190,38 @@ def test_pass2_point_ids_disjoint_from_pass1():
     )
 
 
+def test_inline_colpali_sweeps_orphans(monkeypatch, tmp_path):
+    """_embed_visual_pages_colpali sweeps the file's orphans after upserting its pages."""
+    import numpy as np
+    from carta.embed import pipeline
+
+    class _FakeEmbedder:
+        def __init__(self, **kw):
+            pass
+        def embed_pdf_pages(self, file_path, page_nums=None):
+            return [{"page_num": 1, "vectors": np.zeros((4, 128), dtype=np.float32), "png_bytes": b"x"}]
+        def save_page_cache(self, file_path, page_num, png_bytes):
+            return tmp_path / ".carta" / "visual_cache" / "x" / "page_0001.png"
+
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.ColPaliEmbedder", lambda **kw: _FakeEmbedder(), raising=False)
+    monkeypatch.setattr(pipeline, "upsert_visual_pages", lambda pages, cfg, client=None: len(pages))
+
+    swept = []
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans",
+                        lambda client, cfg, rel_path, keep: swept.append((rel_path, list(keep))))
+
+    pdf = tmp_path / "docs" / "x.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"%PDF-1.4")
+
+    pipeline._embed_visual_pages_colpali(
+        pdf, {"slug": "x"}, {"project_name": "test", "embed": {}}, MagicMock(), tmp_path,
+    )
+
+    assert swept == [("docs/x.pdf", [1])]
+
+
 def test_drainer_filters_out_of_scope_pages():
     """The --visual drain must honor colpali_scoped_paths: out-of-scope sources
     (e.g. patents, not in [datasheets, manuals, suppliers]) that were queued as
@@ -209,3 +243,65 @@ def test_drainer_no_scope_keeps_all_pages():
     """Empty colpali_scoped_paths means no restriction (backward compatible)."""
     queued = [("b.yaml", {"current_path": "docs/reference/patents/x.pdf", VISUAL_PENDING_KEY: [1]})]
     assert pipeline._filter_visual_pending_in_scope(queued, []) == queued
+
+
+def test_drainer_sweeps_orphans_after_clean_file(monkeypatch, tmp_path):
+    """After a file drains cleanly, its visual orphans are swept with keep = visual_done."""
+    sc = {"current_path": "docs/x.pdf", "slug": "x", VISUAL_PENDING_KEY: [1, 2], VISUAL_DONE_KEY: []}
+    monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc", sc)], raising=False)
+    monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page", lambda *a, **k: True, raising=False)
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    _mock_router_embedder(monkeypatch)
+
+    swept = []
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans",
+                        lambda client, cfg, rel_path, keep: swept.append((rel_path, list(keep))))
+
+    pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
+
+    assert swept == [("docs/x.pdf", [1, 2])]
+
+
+def test_drainer_skips_sweep_when_a_page_fails(monkeypatch, tmp_path):
+    """If any page of a file fails this run, the file's sweep is skipped."""
+    sc = {"current_path": "docs/x.pdf", "slug": "x", VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []}
+    monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc", sc)], raising=False)
+    monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
+
+    def boom(*a, **k):
+        raise RuntimeError("colpali failed")
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page", boom, raising=False)
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    _mock_router_embedder(monkeypatch)
+
+    swept = []
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: swept.append(a))
+
+    pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
+
+    assert swept == []
+
+
+def test_delete_visual_orphans_keeps_only_listed_pages(monkeypatch):
+    """_delete_visual_orphans sweeps {project}_visual for rel_path, keeping only
+    the stable IDs of the given page numbers."""
+    from unittest.mock import MagicMock
+    from carta.embed import pipeline
+    from carta.embed.embed import _visual_point_id
+
+    calls = []
+    monkeypatch.setattr(
+        pipeline, "delete_other_points",
+        lambda client, collection_name, rel_path, keep_ids: calls.append((collection_name, rel_path, keep_ids)),
+    )
+
+    pipeline._delete_visual_orphans(MagicMock(), {"project_name": "proj"}, "docs/x.pdf", [1, 2])
+
+    assert len(calls) == 1
+    coll, rel_path, keep_ids = calls[0]
+    assert coll == "proj_visual"
+    assert rel_path == "docs/x.pdf"
+    assert keep_ids == [_visual_point_id("docs/x.pdf", 1), _visual_point_id("docs/x.pdf", 2)]
