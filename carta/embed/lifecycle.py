@@ -16,9 +16,15 @@ from pathlib import Path
 
 from qdrant_client.models import FieldCondition, Filter, HasIdCondition, MatchValue, DatetimeRange
 
+# Binary formats hashed as raw bytes. CRLF→LF normalization on a binary container
+# (pdf, xlsx-zip) is semantically wrong: two distinct payloads differing only in
+# \r\n vs \n byte sequences would collide. Text formats keep LF-normalization so
+# Windows-checkout line-ending churn does not trigger re-embeds.
+_BINARY_SUFFIXES = frozenset({".pdf", ".xlsx"})
+
 
 def compute_file_hash(path: Path) -> str:
-    """Compute SHA256 hash of a file, with LF-normalization for markdown.
+    """Compute SHA256 hash of a file, with LF-normalization for text formats.
 
     Args:
         path: Path to the file to hash.
@@ -27,20 +33,14 @@ def compute_file_hash(path: Path) -> str:
         Lowercase hexadecimal SHA256 hash string (64 characters).
 
     Behavior:
-        - Markdown (.md) files: read_bytes(), normalize CRLF → LF, hash
-        - PDF (.pdf) files: read_bytes() raw, hash without normalization
-        - Other text files: treat as markdown (LF-normalized)
+        - Binary formats (.pdf, .xlsx): read_bytes() raw, hash without normalization
+        - Markdown, CSV, and other text files: read_bytes(), normalize CRLF → LF, hash
     """
     raw_bytes = path.read_bytes()
 
-    # Determine file type based on extension
-    suffix = path.suffix.lower()
-
-    if suffix == ".pdf":
-        # PDF: hash raw bytes without normalization
+    if path.suffix.lower() in _BINARY_SUFFIXES:
         hash_obj = hashlib.sha256(raw_bytes)
     else:
-        # Markdown and other text files: normalize CRLF → LF
         normalized = raw_bytes.replace(b"\r\n", b"\n")
         hash_obj = hashlib.sha256(normalized)
 
