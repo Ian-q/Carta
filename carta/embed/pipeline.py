@@ -1154,9 +1154,11 @@ def run_visual_embed(
     idx = 0
     try:
         for sc_path, sc in queued:
+            rel_path = sc.get("current_path") or ""
+            file_failed = False
             for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
                 idx += 1
-                status.file_start(idx, f"page {page} of {sc.get('current_path', '')}")
+                status.file_start(idx, f"page {page} of {rel_path}")
                 try:
                     _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
                     move_to_done(sc, page)
@@ -1167,6 +1169,7 @@ def run_visual_embed(
                     summary["pages_embedded"] += 1
                     status.file_done(embedded=1)
                 except Exception as e:
+                    file_failed = True
                     summary["pages_failed"] += 1
                     status.file_done(errors=1)
                     print(
@@ -1174,6 +1177,11 @@ def run_visual_embed(
                         f"(left pending)",
                         flush=True,
                     )
+            # Sweep the file's stale visual points only after a clean drain — never
+            # delete a page that's going to be retried (mirrors the text lane's
+            # "clean up only after complete success", pipeline.py:687).
+            if rel_path and not file_failed and sc.get(VISUAL_DONE_KEY):
+                _delete_visual_orphans(client, cfg, rel_path, list(sc[VISUAL_DONE_KEY]))
     except BaseException:
         status.finish("failed")
         raise
