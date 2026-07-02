@@ -439,7 +439,7 @@ def upsert_visual_pages(
                 if k not in ("vectors", "png_bytes")
             }
             payload["doc_type"] = page.get("doc_type", "visual_page")
-            # Mirror upsert_chunks (embed.py:255-261): stamp generation + lifecycle
+            # Mirror upsert_chunks's build_point: stamp generation + lifecycle
             # fields so visual points share the text lane's staleness/cleanup model.
             payload["doc_generation"] = page.get("doc_generation", 1)
             payload["stale_as_of"] = None

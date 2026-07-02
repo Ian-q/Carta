@@ -760,7 +760,7 @@ def _delete_visual_orphans(client, cfg: dict, rel_path: str, keep_page_nums: lis
 
     Deletes every ``{project}_visual`` point for ``rel_path`` except the stable
     IDs of ``keep_page_nums``. Mirrors the text lane's post-upsert
-    ``delete_other_points`` (pipeline.py:695): id-set-based, so it removes legacy
+    ``delete_other_points`` call: id-set-based, so it removes legacy
     slug-keyed points, pre-fix generation-less points, and pages the document no
     longer has — regardless of doc_generation. Best-effort (delete_other_points
     retries and never raises).
@@ -1181,7 +1181,7 @@ def run_visual_embed(
                     )
             # Sweep the file's stale visual points only after a clean drain — never
             # delete a page that's going to be retried (mirrors the text lane's
-            # "clean up only after complete success", pipeline.py:687).
+            # "clean up only after complete success" guard after upsert_chunks).
             if rel_path and not file_failed and sc.get(VISUAL_DONE_KEY):
                 _delete_visual_orphans(client, cfg, rel_path, list(sc[VISUAL_DONE_KEY]))
     except BaseException:
