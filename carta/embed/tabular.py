@@ -144,7 +144,10 @@ def _render_sheet(source_name: str, sheet_name: str, raw_rows: list[list]) -> tu
             bullets = []
             for row_num, r in enumerate(data, start=2):  # +1 header, 1-based
                 if i < len(r) and r[i]:
-                    if key_col is not None and key_col < len(r) and r[key_col]:
+                    # Numeric-looking key values never enter rendered text —
+                    # fall back to the designed row-number key.
+                    if (key_col is not None and key_col < len(r)
+                            and r[key_col] and not _is_numeric(r[key_col])):
                         key = r[key_col]
                     else:
                         key = f"row {row_num}"

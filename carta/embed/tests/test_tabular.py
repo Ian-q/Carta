@@ -100,6 +100,14 @@ class TestCsvExtraction:
         assert "A_Sig" in text and "B_Sig" in text and "C_Sig" in text
         assert "1, 2" not in text and "## Code\n1" not in text
 
+    def test_numeric_stray_key_falls_back_to_row_number(self, tmp_path):
+        p = _write(tmp_path, "straykey.csv",
+                   "Code,Notes\n1,gotcha applies here\nA_Sig,\nB_Sig,\n")
+        pages, _ = extract_spreadsheet_text(p)
+        text = pages[0]["text"]
+        assert "- row 2: gotcha applies here" in text
+        assert "- 1: gotcha applies here" not in text
+
     def test_hex_column_summarized_as_hex_range(self, tmp_path):
         p = _write(tmp_path, "h.csv", "ID,Name\n0x100,A_Sig\n0x7FF,B_Sig\n")
         pages, _ = extract_spreadsheet_text(p)
