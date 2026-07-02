@@ -400,6 +400,23 @@ def run_import(bundle_path, carta_dir: Path, *, qdrant_url=None, project=None,
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
+    # Stamp a terminal embed-status.json so `carta status` reflects the imported
+    # corpus instead of reporting the project as 'embed never run' (#80). Import
+    # restores vectors + sidecars but never runs the embed pipeline, so nothing
+    # else writes this file. Best-effort: never fail the import over a status write.
+    try:
+        from carta.embed.status import StatusWriter
+        sidecars_dir = carta_dir / "sidecars"
+        n_docs = (sum(1 for _ in sidecars_dir.rglob("*.embed-meta.yaml"))
+                  if sidecars_dir.is_dir() else 0)
+        sw = StatusWriter(carta_dir.parent, enabled=True)
+        sw.start(total=n_docs)
+        if n_docs:
+            sw.file_done(embedded=n_docs)
+        sw.finish("done")
+    except Exception:
+        pass
+
     summary = {
         "project": target_project,
         "restored": restored,

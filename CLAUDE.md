@@ -11,7 +11,7 @@ Carta is a semantic memory sidecar for Claude Code that gives agents automatic a
 - **Tech stack:** Python 3.10+, Qdrant client, Ollama HTTP API, MCP stdio server — no new infra
 - **Compatibility:** Embed pipeline fixes must not regress existing sidecar state or Qdrant collections
 - **Sequencing:** MCP server wraps the same embed pipeline — reliability fixes (batch upsert, timeout) are prerequisites before exposing `carta_embed` via MCP
-- **Local only:** Ollama judge must be a small model (≤2B params) to keep hook latency acceptable; hook blocks prompt submission
+- **Local only:** All judging runs on local Ollama. The **proactive-recall hook** blocks prompt submission, so its judge stays a small ≤2B model (default `qwen3.5:0.8b`) to keep latency acceptable. The **stale-scan / claude-md supersession judge** runs pre-push / on-demand (not on prompt submission), so it deliberately uses a larger, higher-precision model (default `qwen3.5:9b`) — #84 validated it rejects all known real-world false positives; its per-host latency is a separate tuning concern (#86).
 
 ## Technology Stack
 

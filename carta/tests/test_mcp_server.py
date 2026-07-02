@@ -267,3 +267,28 @@ class TestSearchAnchors:
             hits = server._run_search_collection("32mhz", cfg, "p_doc", 5)
         assert hits[0]["text_source"] == "ocr_visual"   # MCP path now classifies the tier
         assert hits[0]["page"] == 3                       # page resolved from page_num
+
+
+class TestCartaSearchEmbeddingOutage:
+    """carta_search (MCP) must not mask a query-embedding outage as empty results (#79).
+
+    The CLI run_search was fixed, but the MCP tool has its own collection loop with
+    `except RuntimeError: pass`, which previously swallowed an Ollama failure into an
+    empty success list — the exact bug on the surface agents use.
+    """
+
+    def test_returns_error_when_query_embedding_fails(self):
+        import carta.mcp.server as server
+        cfg = {"qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "http://x", "ollama_model": "m"}}
+        with patch.object(server, "_load_cfg", return_value=cfg), \
+             patch.object(server, "_repo_root_from_cfg", return_value=Path("/fake")), \
+             patch("carta.mcp.server.get_search_collections", return_value=["p_doc"]), \
+             patch("carta.embed.embed.get_embedding",
+                   side_effect=RuntimeError("Ollama embedding failed (500): CUDA error ...")):
+            result = server.carta_search("CAN bus miswire", top_k=5)
+
+        assert isinstance(result, dict), f"expected an error dict, got {type(result)}: {result!r}"
+        assert result.get("error"), "must report an error, not an empty success list"
+        detail = result.get("detail", "").lower()
+        assert "embed" in detail or "ollama" in detail

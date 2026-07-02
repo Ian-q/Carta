@@ -369,3 +369,26 @@ class TestEmptyChunkGuard:
         count = upsert_chunks(chunks, cfg, client=mock_client)
         assert count == 0
         mock_client.upsert.assert_not_called()
+
+
+class TestGetEmbeddingValidation:
+    """get_embedding must reject empty/invalid embedding payloads loudly (#79).
+
+    A 200 response with no usable vector (empty list or missing key) otherwise
+    flows downstream as a zero/None query vector and is later swallowed by the
+    search path as 'no results / nothing embedded'.
+    """
+
+    @patch("carta.embed.embed.requests.post")
+    def test_raises_on_empty_embedding_vector(self, mock_post):
+        from carta.embed.embed import get_embedding
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"embedding": []})
+        with pytest.raises(RuntimeError, match="empty|invalid"):
+            get_embedding("CAN bus")
+
+    @patch("carta.embed.embed.requests.post")
+    def test_raises_on_missing_embedding_key(self, mock_post):
+        from carta.embed.embed import get_embedding
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {})
+        with pytest.raises(RuntimeError, match="empty|invalid"):
+            get_embedding("CAN bus")

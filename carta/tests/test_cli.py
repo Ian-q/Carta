@@ -1110,3 +1110,27 @@ def test_hook_check_nudge_silent_when_disabled(tmp_path, capsys):
     _maybe_claude_md_nudge(result, {"claude_md_nudge": False}, tmp_path)
 
     assert "sync" not in capsys.readouterr().err
+
+
+def test_cmd_import_registers_project(tmp_path, monkeypatch):
+    """cmd_import must register the imported project so `carta status` lists it
+    system-wide without first cd-ing into it (#80)."""
+    import argparse
+    from unittest.mock import patch
+    from carta import cli
+
+    monkeypatch.chdir(tmp_path)  # fresh-machine path: carta_dir = ./.carta
+    fake_summary = {
+        "project": "myproj", "restored": [], "sidecars_written": 0,
+        "qdrant_url": "http://localhost:6333",
+    }
+    args = argparse.Namespace(bundle=str(tmp_path / "b.tar.gz"), project=None, force=False)
+
+    with patch("carta.cli.find_config", side_effect=FileNotFoundError), \
+         patch("carta.share.run_import", return_value=fake_summary), \
+         patch("carta.registry.register_project") as reg:
+        cli.cmd_import(args)
+
+    assert reg.called, "import must register the project"
+    assert Path(reg.call_args.args[0]) == tmp_path        # repo_root = carta_dir.parent
+    assert reg.call_args.args[1] == "myproj"              # project name from summary
