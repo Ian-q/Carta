@@ -83,6 +83,23 @@ class TestCsvExtraction:
         assert long in pages[0]["text"]        # full text kept (notes semantics)
         assert "## Extra" in pages[0]["text"]
 
+    def test_long_text_in_numeric_dominant_column_still_promoted_to_notes(self, tmp_path):
+        # Extra column values = [long, 7, 8, 9, 10] -> 4/5 = 80% numeric, which
+        # meets NUMERIC_THRESHOLD; the free-text promotion must still win so the
+        # long "gotcha" cell is not silently dropped.
+        long = "y" * 80
+        p = _write(tmp_path, "outlier.csv",
+                   f"ID,Extra\n1,{long}\n2,7\n3,8\n4,9\n5,10\n")
+        pages, _ = extract_spreadsheet_text(p)
+        assert long in pages[0]["text"]
+
+    def test_mixed_column_below_threshold_drops_numeric_strays(self, tmp_path):
+        p = _write(tmp_path, "mixed.csv", "Code\n1\n2\nA_Sig\nB_Sig\nC_Sig\n")
+        pages, _ = extract_spreadsheet_text(p)
+        text = pages[0]["text"]
+        assert "A_Sig" in text and "B_Sig" in text and "C_Sig" in text
+        assert "1, 2" not in text and "## Code\n1" not in text
+
     def test_hex_column_summarized_as_hex_range(self, tmp_path):
         p = _write(tmp_path, "h.csv", "ID,Name\n0x100,A_Sig\n0x7FF,B_Sig\n")
         pages, _ = extract_spreadsheet_text(p)
