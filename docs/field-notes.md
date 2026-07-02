@@ -98,3 +98,22 @@ carta embed --visual      # needed for the VISUAL count mismatches — requires 
 
 [#86]: https://github.com/Ian-q/Carta/issues/86
 [#89]: https://github.com/Ian-q/Carta/issues/89
+
+## Spreadsheets (.csv/.xlsx)
+
+- Carta embeds only the **text-bearing** content of spreadsheets: text-column
+  values (e.g. CAN frame names) and notes cells. Numeric columns contribute a
+  header + range summary only. Numeric-only workbooks get sidecar status
+  `no_text_content` — that is healthy, not an error.
+- Search hits cite the **workbook**; the rendering that was embedded is
+  inspectable at `.carta/companions/<path>.md` (regenerated on re-embed — do
+  not edit).
+- `.xlsx` needs `openpyxl` (`pipx inject carta-cc openpyxl`); without it the
+  file is skipped with a warning and retried once installed.
+- To attach a durable human gotcha to a file:
+  `carta remember "..." --type quirk --about docs/battery.xlsx`.
+- **BM25 identifier matching is whole-token, not sub-token.** Pinned in
+  `carta/embed/tests/test_sparse.py`: the fastembed `Qdrant/bm25` tokenizer
+  hashes underscore identifiers (`TMS_CoolantTemp`) whole rather than
+  splitting on `_`. Fragment queries like `TMS` do not lexically match
+  `TMS_CoolantTemp`; use the full identifier or rely on dense retrieval.
