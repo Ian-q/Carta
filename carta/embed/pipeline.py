@@ -879,6 +879,8 @@ def _embed_visual_pages_colpali(
         # Upsert to visual collection
         if visual_pages:
             upserted = upsert_visual_pages(visual_pages, cfg, client=client)
+            rel_path = str(file_path.relative_to(repo_root))
+            _delete_visual_orphans(client, cfg, rel_path, [p["page_num"] for p in visual_pages])
             if verbose:
                 print(f"    ColPali: embedded {upserted} visual page(s)", flush=True)
             return upserted

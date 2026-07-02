@@ -190,6 +190,38 @@ def test_pass2_point_ids_disjoint_from_pass1():
     )
 
 
+def test_inline_colpali_sweeps_orphans(monkeypatch, tmp_path):
+    """_embed_visual_pages_colpali sweeps the file's orphans after upserting its pages."""
+    import numpy as np
+    from carta.embed import pipeline
+
+    class _FakeEmbedder:
+        def __init__(self, **kw):
+            pass
+        def embed_pdf_pages(self, file_path, page_nums=None):
+            return [{"page_num": 1, "vectors": np.zeros((4, 128), dtype=np.float32), "png_bytes": b"x"}]
+        def save_page_cache(self, file_path, page_num, png_bytes):
+            return tmp_path / ".carta" / "visual_cache" / "x" / "page_0001.png"
+
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.ColPaliEmbedder", lambda **kw: _FakeEmbedder(), raising=False)
+    monkeypatch.setattr(pipeline, "upsert_visual_pages", lambda pages, cfg, client=None: len(pages))
+
+    swept = []
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans",
+                        lambda client, cfg, rel_path, keep: swept.append((rel_path, list(keep))))
+
+    pdf = tmp_path / "docs" / "x.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"%PDF-1.4")
+
+    pipeline._embed_visual_pages_colpali(
+        pdf, {"slug": "x"}, {"project_name": "test", "embed": {}}, MagicMock(), tmp_path,
+    )
+
+    assert swept == [("docs/x.pdf", [1])]
+
+
 def test_drainer_filters_out_of_scope_pages():
     """The --visual drain must honor colpali_scoped_paths: out-of-scope sources
     (e.g. patents, not in [datasheets, manuals, suppliers]) that were queued as
