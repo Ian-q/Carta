@@ -30,7 +30,7 @@ def test_corpus_counts_by_status(tmp_path):
     snap = status.gather_project_status(root, name="proj", qdrant_url="u")
     assert snap["corpus"] == {
         "total": 6, "done": 2, "pending": 1, "stale": 1,
-        "extraction_failed": 1, "other": 1,
+        "extraction_failed": 1, "no_text_content": 0, "other": 1,
     }
 
 
@@ -274,3 +274,22 @@ def test_home_path_respects_directory_boundary(monkeypatch):
     monkeypatch.setattr(status.Path, "home", lambda: pathlib.Path("/home/ian"))
     assert status._home_path("/home/ian/proj") == "~/proj"
     assert status._home_path("/home/ian-backup/proj") == "/home/ian-backup/proj"
+
+
+class TestNoTextContentBucket:
+    def test_no_text_content_counted_by_name_not_other(self, tmp_path):
+        from carta.status import _gather_corpus
+        sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        (sc_dir / "ids.csv.embed-meta.yaml").write_text(
+            "current_path: docs/ids.csv\nstatus: no_text_content\n")
+        counts = _gather_corpus(tmp_path)
+        assert counts["no_text_content"] == 1
+        assert counts["other"] == 0
+
+    def test_corpus_line_renders_no_text_bucket(self):
+        from carta.status import _corpus_line
+        co = {"total": 3, "done": 2, "pending": 0, "stale": 0,
+              "extraction_failed": 0, "no_text_content": 1, "other": 0}
+        line = _corpus_line(co, color=False)
+        assert "1 no-text" in line

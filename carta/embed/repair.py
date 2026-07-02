@@ -70,7 +70,8 @@ def run_repair(repo_root: Path, cfg: dict, verbose: bool = True) -> dict:
                 # healthy two-pass-visual PDF whose pages were queued for the
                 # --visual drainer (sidecar stays "embedded" in that case).
                 sc = read_sidecar(sidecar_path(src, repo_root)) or {}
-                if sc.get("status") == "extraction_failed":
+                # Both are terminal zero-chunk verdicts, not queued-visual PDFs.
+                if sc.get("status") in ("extraction_failed", "no_text_content"):
                     flagged += 1
                 else:
                     queued_visual += 1

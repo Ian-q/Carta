@@ -20,7 +20,7 @@ from carta.statusline import (
 # The embed pipeline writes "embedded" on success (carta/embed/pipeline.py); "done"
 # is accepted for legacy/forward compatibility. Both roll up to the "done" count.
 _DONE_STATUSES = ("embedded", "done")
-_CORPUS_STATUSES = ("pending", "stale", "extraction_failed")
+_CORPUS_STATUSES = ("pending", "stale", "extraction_failed", "no_text_content")
 
 
 def _read_json(path: Path):
@@ -87,7 +87,7 @@ def _gather_embed(repo_root: Path, now: float) -> dict:
 
 def _gather_corpus(repo_root: Path) -> dict:
     counts = {"total": 0, "done": 0, "pending": 0, "stale": 0,
-              "extraction_failed": 0, "other": 0}
+              "extraction_failed": 0, "no_text_content": 0, "other": 0}
     sidecars = Path(repo_root) / ".carta" / "sidecars"
     if not sidecars.is_dir():
         return counts
@@ -203,6 +203,8 @@ def _corpus_line(co: dict, color: bool) -> str:
         parts.append(f"{co['stale']} stale")
     if co["extraction_failed"]:
         parts.append(f"{co['extraction_failed']} extraction-failed")
+    if co.get("no_text_content"):
+        parts.append(f"{co['no_text_content']} no-text")
     if co["other"]:
         parts.append(f"{co['other']} other")
     return "docs    " + " · ".join(parts)
