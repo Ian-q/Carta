@@ -46,9 +46,10 @@ def _is_numeric(value: str) -> bool:
 def _classify_columns(headers: list[str], rows: list[list[str]]) -> list[str]:
     """Classify each column as 'numeric' | 'text' | 'notes'.
 
-    Notes wins by header name; otherwise predominantly-numeric columns are
-    numeric; a text column containing any long free-text cell is promoted to
-    notes (full text preserved); everything else is text (distinct values kept).
+    Notes wins by header name; next, any long free-text cell promotes the
+    column to notes (full text preserved) regardless of how numeric the rest
+    is; otherwise predominantly-numeric columns are numeric; everything else
+    is text (distinct non-numeric values kept).
     """
     kinds: list[str] = []
     sample = rows[:SAMPLE_ROWS]
@@ -60,11 +61,15 @@ def _classify_columns(headers: list[str], rows: list[list[str]]) -> list[str]:
         if not values:
             kinds.append("numeric")  # nothing text-bearing in an empty column
             continue
+        # A long free-text cell promotes the whole column to notes REGARDLESS of
+        # how numeric the rest is — the spec's "x marks the spot" gotcha cells
+        # often sit in otherwise-numeric columns.
+        if any(len(v) >= FREE_TEXT_MIN_LEN for v in values):
+            kinds.append("notes")
+            continue
         numeric = sum(1 for v in values if _is_numeric(v))
         if numeric / len(values) >= NUMERIC_THRESHOLD:
             kinds.append("numeric")
-        elif any(len(v) >= FREE_TEXT_MIN_LEN for v in values):
-            kinds.append("notes")
         else:
             kinds.append("text")
     return kinds
@@ -128,7 +133,9 @@ def _render_sheet(source_name: str, sheet_name: str, raw_rows: list[list]) -> tu
         if kind == "text":
             seen: dict[str, None] = {}  # insertion-ordered distinct values
             for r in data:
-                if i < len(r) and r[i]:
+                # Numeric-looking strays in a mixed (below-threshold) column are
+                # still numeric cell values — they never enter rendered text.
+                if i < len(r) and r[i] and not _is_numeric(r[i]):
                     seen.setdefault(r[i])
             if seen:
                 has_text = True
