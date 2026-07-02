@@ -26,6 +26,7 @@ from carta.embed.embed import (
     upsert_visual_pages,
     collection_is_hybrid,
     _point_id_versioned,
+    _visual_point_id,
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
     UPSERT_CLIENT_TIMEOUT_S,
@@ -752,6 +753,21 @@ def _build_vision_metadata(img_descs: list[dict]) -> dict:
         },
         "page_details": page_details,
     }
+
+
+def _delete_visual_orphans(client, cfg: dict, rel_path: str, keep_page_nums: list[int]) -> None:
+    """Sweep stale visual points for one file.
+
+    Deletes every ``{project}_visual`` point for ``rel_path`` except the stable
+    IDs of ``keep_page_nums``. Mirrors the text lane's post-upsert
+    ``delete_other_points`` (pipeline.py:695): id-set-based, so it removes legacy
+    slug-keyed points, pre-fix generation-less points, and pages the document no
+    longer has — regardless of doc_generation. Best-effort (delete_other_points
+    retries and never raises).
+    """
+    coll = f"{cfg['project_name']}_visual"
+    keep_ids = [_visual_point_id(rel_path, p) for p in keep_page_nums]
+    delete_other_points(client, coll, rel_path=rel_path, keep_ids=keep_ids)
 
 
 def _embed_visual_pages_colpali(

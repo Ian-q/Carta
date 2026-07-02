@@ -209,3 +209,25 @@ def test_drainer_no_scope_keeps_all_pages():
     """Empty colpali_scoped_paths means no restriction (backward compatible)."""
     queued = [("b.yaml", {"current_path": "docs/reference/patents/x.pdf", VISUAL_PENDING_KEY: [1]})]
     assert pipeline._filter_visual_pending_in_scope(queued, []) == queued
+
+
+def test_delete_visual_orphans_keeps_only_listed_pages(monkeypatch):
+    """_delete_visual_orphans sweeps {project}_visual for rel_path, keeping only
+    the stable IDs of the given page numbers."""
+    from unittest.mock import MagicMock
+    from carta.embed import pipeline
+    from carta.embed.embed import _visual_point_id
+
+    calls = []
+    monkeypatch.setattr(
+        pipeline, "delete_other_points",
+        lambda client, collection_name, rel_path, keep_ids: calls.append((collection_name, rel_path, keep_ids)),
+    )
+
+    pipeline._delete_visual_orphans(MagicMock(), {"project_name": "proj"}, "docs/x.pdf", [1, 2])
+
+    assert len(calls) == 1
+    coll, rel_path, keep_ids = calls[0]
+    assert coll == "proj_visual"
+    assert rel_path == "docs/x.pdf"
+    assert keep_ids == [_visual_point_id("docs/x.pdf", 1), _visual_point_id("docs/x.pdf", 2)]
