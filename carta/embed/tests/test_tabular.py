@@ -141,3 +141,44 @@ class TestCompanionHelpers:
         out = write_companion(tmp_path, Path("docs/b.csv"), "content")
         assert out is None
         assert "could not write companion" in capsys.readouterr().err
+
+
+class TestXlsxExtraction:
+    def _workbook(self, tmp_path):
+        openpyxl = pytest.importorskip("openpyxl")
+        wb = openpyxl.Workbook()
+        ws1 = wb.active
+        ws1.title = "CAN_Signals"
+        ws1.append(["MsgID", "Signal", "Notes"])
+        ws1.append(["0x100", "BMS_PackVoltage", None])
+        ws1.append(["0x2B0", "TMS_CoolantTemp", "only valid when pump enabled"])
+        ws2 = wb.create_sheet("Calibration")
+        ws2.append(["Param", "Value"])
+        ws2.append(["GainFactor", 42])
+        p = tmp_path / "battery.xlsx"
+        wb.save(p)
+        return p
+
+    def test_one_page_per_sheet_with_sheet_headings(self, tmp_path):
+        p = self._workbook(tmp_path)
+        pages, meta = extract_spreadsheet_text(p)
+        assert [pg["page"] for pg in pages] == [1, 2]
+        assert pages[0]["headings"] == ["CAN_Signals"]
+        assert pages[1]["headings"] == ["Calibration"]
+        assert meta["sheet_names"] == ["CAN_Signals", "Calibration"]
+
+    def test_xlsx_text_and_notes_extracted(self, tmp_path):
+        p = self._workbook(tmp_path)
+        pages, _ = extract_spreadsheet_text(p)
+        assert "TMS_CoolantTemp" in pages[0]["text"]
+        assert "only valid when pump enabled" in pages[0]["text"]
+
+    def test_missing_openpyxl_raises_actionable_error(self, tmp_path):
+        import sys
+        from unittest.mock import patch
+        from carta.embed.tabular import OpenpyxlMissing
+        p = tmp_path / "wb.xlsx"
+        p.write_bytes(b"PK\x03\x04")
+        with patch.dict(sys.modules, {"openpyxl": None}):
+            with pytest.raises(OpenpyxlMissing, match="openpyxl is not installed"):
+                extract_spreadsheet_text(p)
