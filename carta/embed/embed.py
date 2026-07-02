@@ -439,8 +439,22 @@ def upsert_visual_pages(
                 if k not in ("vectors", "png_bytes")
             }
             payload["doc_type"] = page.get("doc_type", "visual_page")
+            # Mirror upsert_chunks (embed.py:255-261): stamp generation + lifecycle
+            # fields so visual points share the text lane's staleness/cleanup model.
+            payload["doc_generation"] = page.get("doc_generation", 1)
+            payload["stale_as_of"] = None
+            payload["superseded_at"] = None
+            payload["orphaned_at"] = None
 
-            id_key = page.get("file_path") or page["slug"]
+            id_key = page.get("file_path")
+            if not id_key:
+                # Slug-keyed IDs collide across same-stem files; make a regression loud.
+                print(
+                    f"Warning: visual page {page.get('slug', '?')}[p{page.get('page_num', '?')}] "
+                    f"has no file_path — falling back to slug-keyed point ID",
+                    file=sys.stderr, flush=True,
+                )
+                id_key = page["slug"]
             point_id = _visual_point_id(id_key, page["page_num"])
 
             point = PointStruct(

@@ -1347,6 +1347,93 @@ def test_upsert_visual_pages_skips_bad_vectors(mock_qdrant_cls):
     assert count == 0
 
 
+@patch("carta.embed.embed.QdrantClient")
+def test_upsert_visual_pages_stamps_generation_and_lifecycle(mock_qdrant_cls):
+    """Visual payloads carry doc_generation + lifecycle fields, mirroring upsert_chunks."""
+    from carta.embed.embed import upsert_visual_pages
+    import numpy as np
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    pages = [{
+        "slug": "datasheet", "file_path": "docs/datasheet.pdf", "page_num": 1,
+        "vectors": np.zeros((8, 128), dtype=np.float32),
+        "png_path": ".carta/visual_cache/datasheet/page_0001.png",
+        "doc_type": "visual_page", "doc_generation": 3,
+    }]
+    cfg = {**MINIMAL_CFG, "project_name": "test"}
+
+    upsert_visual_pages(pages, cfg, client=mock_client)
+
+    payload = mock_client.upsert.call_args.kwargs["points"][0].payload
+    assert payload["doc_generation"] == 3
+    assert payload["stale_as_of"] is None
+    assert payload["superseded_at"] is None
+    assert payload["orphaned_at"] is None
+
+
+@patch("carta.embed.embed.QdrantClient")
+def test_upsert_visual_pages_defaults_generation_to_one(mock_qdrant_cls):
+    """A page without doc_generation defaults to generation 1."""
+    from carta.embed.embed import upsert_visual_pages
+    import numpy as np
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    pages = [{
+        "slug": "d", "file_path": "docs/d.pdf", "page_num": 1,
+        "vectors": np.zeros((8, 128), dtype=np.float32),
+        "png_path": "x.png", "doc_type": "visual_page",
+    }]
+    upsert_visual_pages(pages, {**MINIMAL_CFG, "project_name": "test"}, client=mock_client)
+    assert mock_client.upsert.call_args.kwargs["points"][0].payload["doc_generation"] == 1
+
+
+@patch("carta.embed.embed.QdrantClient")
+def test_upsert_visual_pages_id_uses_file_path(mock_qdrant_cls):
+    """Point ID derives from file_path via _visual_point_id."""
+    from carta.embed.embed import upsert_visual_pages, _visual_point_id
+    import numpy as np
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    pages = [{
+        "slug": "d", "file_path": "docs/d.pdf", "page_num": 2,
+        "vectors": np.zeros((8, 128), dtype=np.float32),
+        "png_path": "x.png", "doc_type": "visual_page",
+    }]
+    upsert_visual_pages(pages, {**MINIMAL_CFG, "project_name": "test"}, client=mock_client)
+    point = mock_client.upsert.call_args.kwargs["points"][0]
+    assert point.id == _visual_point_id("docs/d.pdf", 2)
+
+
+@patch("carta.embed.embed.QdrantClient")
+def test_upsert_visual_pages_warns_on_slug_fallback(mock_qdrant_cls, capsys):
+    """A page missing file_path warns to stderr and falls back to a slug-keyed ID."""
+    from carta.embed.embed import upsert_visual_pages, _visual_point_id
+    import numpy as np
+
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = True
+    mock_qdrant_cls.return_value = mock_client
+
+    pages = [{
+        "slug": "d", "page_num": 1,  # no file_path
+        "vectors": np.zeros((8, 128), dtype=np.float32),
+        "png_path": "x.png", "doc_type": "visual_page",
+    }]
+    upsert_visual_pages(pages, {**MINIMAL_CFG, "project_name": "test"}, client=mock_client)
+    point = mock_client.upsert.call_args.kwargs["points"][0]
+    assert point.id == _visual_point_id("d", 1)
+    assert "no file_path" in capsys.readouterr().err
+
+
 def test_visual_point_id_deterministic():
     """_visual_point_id should produce deterministic UUIDs."""
     from carta.embed.embed import _visual_point_id
