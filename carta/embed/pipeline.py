@@ -26,6 +26,7 @@ from carta.embed.embed import (
     upsert_visual_pages,
     collection_is_hybrid,
     _point_id_versioned,
+    _visual_point_id,
     DENSE_VECTOR_NAME,
     SPARSE_VECTOR_NAME,
     UPSERT_CLIENT_TIMEOUT_S,
@@ -754,6 +755,21 @@ def _build_vision_metadata(img_descs: list[dict]) -> dict:
     }
 
 
+def _delete_visual_orphans(client, cfg: dict, rel_path: str, keep_page_nums: list[int]) -> None:
+    """Sweep stale visual points for one file.
+
+    Deletes every ``{project}_visual`` point for ``rel_path`` except the stable
+    IDs of ``keep_page_nums``. Mirrors the text lane's post-upsert
+    ``delete_other_points`` call: id-set-based, so it removes legacy
+    slug-keyed points, pre-fix generation-less points, and pages the document no
+    longer has — regardless of doc_generation. Best-effort (delete_other_points
+    retries and never raises).
+    """
+    coll = f"{cfg['project_name']}_visual"
+    keep_ids = [_visual_point_id(rel_path, p) for p in keep_page_nums]
+    delete_other_points(client, coll, rel_path=rel_path, keep_ids=keep_ids)
+
+
 def _embed_visual_pages_colpali(
     file_path: Path,
     file_info: dict,
@@ -863,6 +879,8 @@ def _embed_visual_pages_colpali(
         # Upsert to visual collection
         if visual_pages:
             upserted = upsert_visual_pages(visual_pages, cfg, client=client)
+            rel_path = str(file_path.relative_to(repo_root))
+            _delete_visual_orphans(client, cfg, rel_path, [p["page_num"] for p in visual_pages])
             if verbose:
                 print(f"    ColPali: embedded {upserted} visual page(s)", flush=True)
             return upserted
@@ -1138,9 +1156,11 @@ def run_visual_embed(
     idx = 0
     try:
         for sc_path, sc in queued:
+            rel_path = sc.get("current_path") or ""
+            file_failed = False
             for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
                 idx += 1
-                status.file_start(idx, f"page {page} of {sc.get('current_path', '')}")
+                status.file_start(idx, f"page {page} of {rel_path}")
                 try:
                     _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
                     move_to_done(sc, page)
@@ -1151,6 +1171,7 @@ def run_visual_embed(
                     summary["pages_embedded"] += 1
                     status.file_done(embedded=1)
                 except Exception as e:
+                    file_failed = True
                     summary["pages_failed"] += 1
                     status.file_done(errors=1)
                     print(
@@ -1158,6 +1179,11 @@ def run_visual_embed(
                         f"(left pending)",
                         flush=True,
                     )
+            # Sweep the file's stale visual points only after a clean drain — never
+            # delete a page that's going to be retried (mirrors the text lane's
+            # "clean up only after complete success" guard after upsert_chunks).
+            if rel_path and not file_failed and sc.get(VISUAL_DONE_KEY):
+                _delete_visual_orphans(client, cfg, rel_path, list(sc[VISUAL_DONE_KEY]))
     except BaseException:
         status.finish("failed")
         raise
