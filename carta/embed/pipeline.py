@@ -1403,6 +1403,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
     Returns:
         {"embedded": int, "skipped": int, "extraction_failed": int,
+         "no_text_content": int,
          "failed": list[str], "partial": list[str],
          "errors": list[str], "timed_out": list[str]}
 
@@ -1412,6 +1413,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     as "embedded".
     """
     summary: dict = {"embedded": 0, "skipped": 0, "extraction_failed": 0,
+                     "no_text_content": 0,
                      "failed": [], "partial": [], "errors": [], "timed_out": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
@@ -1599,8 +1601,8 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                     summary["partial"].append(file_path.name)
                     perf_status = "partial"
                     status.file_done(errors=1)
-                elif st == "extraction_failed":
-                    summary["extraction_failed"] += 1
+                elif st in ("extraction_failed", "no_text_content"):
+                    summary[st] += 1
                     perf_status = "ok"
                     status.file_done(embedded=1, chunks=count)
                 else:

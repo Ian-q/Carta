@@ -258,6 +258,13 @@ def cmd_embed(args):
             f"nothing embedded for them.",
             file=sys.stderr,
         )
+    no_text = summary.get("no_text_content", 0)
+    if no_text:
+        print(
+            f"\nNote: {no_text} spreadsheet file(s) contained no text-bearing cells "
+            f"(numeric-only data is deliberately not indexed) — flagged no_text_content.",
+            file=sys.stderr,
+        )
     timed_out = summary.get("timed_out", [])
     if timed_out:
         current = cfg.get("embed", {}).get("file_timeout_s", 600)
