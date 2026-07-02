@@ -143,6 +143,22 @@ def test_remember_no_config_maps_to_service_unavailable():
     assert out["error"] == "service_unavailable"
 
 
+class TestRememberAbout:
+    def test_about_param_plumbs_to_capture_note(self, tmp_path):
+        from unittest.mock import patch
+        from carta.mcp import server as mcp_server_mod
+        with patch.object(mcp_server_mod, "_load_cfg",
+                          return_value={"project_name": "p", "qdrant_url": "u"}), \
+             patch.object(mcp_server_mod, "_repo_root_from_cfg", return_value=tmp_path), \
+             patch("carta.memory.capture.capture_note",
+                   return_value={"path": "docs/notes/x.md", "collection": "p_notes",
+                                 "chunks": 1}) as cap:
+            out = mcp_server_mod._remember(
+                "gotcha", note_type="quirk", about="docs/battery.xlsx")
+        assert out["status"] == "ok"
+        assert cap.call_args.kwargs["about"] == "docs/battery.xlsx"
+
+
 class TestCartaFocus:
     def test_formats_results_and_passes_through_image(self):
         from unittest.mock import patch
