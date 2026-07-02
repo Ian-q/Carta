@@ -147,3 +147,71 @@ class TestIterCanonicalSidecars:
 
     def test_empty_when_no_sidecars_dir(self, tmp_path):
         assert list(iter_canonical_sidecars(tmp_path)) == []
+
+
+class TestSidecarNaming:
+    """Extension-preserving sidecar names for spreadsheet types (spec: sidecar collision)."""
+
+    def test_md_mapping_unchanged(self, tmp_path):
+        f = tmp_path / "docs" / "data.md"
+        from carta.embed.induct import sidecar_path
+        assert sidecar_path(f, tmp_path) == (
+            tmp_path / ".carta" / "sidecars" / "docs" / "data.embed-meta.yaml")
+
+    def test_pdf_mapping_unchanged(self, tmp_path):
+        f = tmp_path / "docs" / "data.pdf"
+        from carta.embed.induct import sidecar_path
+        assert sidecar_path(f, tmp_path) == (
+            tmp_path / ".carta" / "sidecars" / "docs" / "data.embed-meta.yaml")
+
+    def test_csv_preserves_extension(self, tmp_path):
+        f = tmp_path / "docs" / "data.csv"
+        from carta.embed.induct import sidecar_path
+        assert sidecar_path(f, tmp_path) == (
+            tmp_path / ".carta" / "sidecars" / "docs" / "data.csv.embed-meta.yaml")
+
+    def test_xlsx_preserves_extension_case_kept(self, tmp_path):
+        f = tmp_path / "docs" / "Data.XLSX"
+        from carta.embed.induct import sidecar_path
+        # suffix *check* is case-insensitive; the filename itself is preserved as-is
+        assert sidecar_path(f, tmp_path) == (
+            tmp_path / ".carta" / "sidecars" / "docs" / "Data.XLSX.embed-meta.yaml")
+
+    def test_same_stem_different_type_no_collision(self, tmp_path):
+        from carta.embed.induct import sidecar_path
+        md = sidecar_path(tmp_path / "docs" / "data.md", tmp_path)
+        cs = sidecar_path(tmp_path / "docs" / "data.csv", tmp_path)
+        assert md != cs
+
+    def test_iter_canonical_accepts_extension_preserving_sidecar(self, tmp_path):
+        from carta.embed.induct import sidecar_path, write_sidecar
+        src = tmp_path / "docs" / "data.csv"
+        src.parent.mkdir(parents=True)
+        src.write_text("a,b\n1,2\n")
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333"}
+        stub = generate_sidecar_stub(src, tmp_path, cfg)
+        write_sidecar(src, stub, tmp_path)
+        found = [data["current_path"] for _, data in iter_canonical_sidecars(tmp_path)]
+        assert "docs/data.csv" in found
+
+
+class TestSpreadsheetFileType:
+    def _stub(self, tmp_path, name):
+        f = tmp_path / "docs" / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x")
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333"}
+        return generate_sidecar_stub(f, tmp_path, cfg)
+
+    def test_csv_and_xlsx_are_spreadsheet(self, tmp_path):
+        assert self._stub(tmp_path, "a.csv")["file_type"] == "spreadsheet"
+        assert self._stub(tmp_path, "b.xlsx")["file_type"] == "spreadsheet"
+        assert self._stub(tmp_path, "c.XLSX")["file_type"] == "spreadsheet"
+
+    def test_md_uppercase_is_markdown(self, tmp_path):
+        # latent case bug fixed while touching this line
+        assert self._stub(tmp_path, "d.MD")["file_type"] == "markdown"
+        assert self._stub(tmp_path, "e.md")["file_type"] == "markdown"
+
+    def test_pdf_unchanged(self, tmp_path):
+        assert self._stub(tmp_path, "f.pdf")["file_type"] == "pdf"
