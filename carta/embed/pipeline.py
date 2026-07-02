@@ -1416,6 +1416,13 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     count, sidecar_updates = _embed_one_file(
         file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose, progress
     )
+    # A "pending" return means extraction was skipped (missing optional
+    # dependency): stamp NO lifecycle fields — a hash/mtime stamp here would
+    # let the mtime fast-path treat the file as already embedded and never
+    # re-pick it on this surface once the dependency is installed.
+    if sidecar_updates.get("status") == "pending":
+        _update_sidecar(sc_path, {"status": "pending"})
+        return {"status": "skipped", "reason": "extraction skipped — optional dependency missing"}
     # Merge lifecycle updates with embedding updates.
     # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
     # or "extraction_failed") — apply lifecycle fields first, then let embed results win.
