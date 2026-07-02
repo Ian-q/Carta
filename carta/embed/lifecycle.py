@@ -1,7 +1,7 @@
 """Pure-stdlib hash and mtime primitives + Qdrant lifecycle functions for embed tracking.
 
 This module provides the decision-making core of the embed pipeline:
-- Hash computation with LF-normalization for markdown, raw bytes for PDF
+- Hash computation: raw bytes for binary formats (.pdf/.xlsx), LF-normalization for text
 - mtime fast-path to skip rehashing when file unchanged
 - Qdrant lifecycle ops: mark stale, cleanup orphans, protect doc types, alert on staleness
 
