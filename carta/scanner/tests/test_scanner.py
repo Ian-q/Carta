@@ -1097,3 +1097,39 @@ def test_iter_sidecar_files_skips_noncanonical_nested_copies(tmp_path):
     cfg = _minimal_cfg(tmp_path)
     yielded = [p.name for p in _iter_sidecar_files(tmp_path, cfg)]
     assert yielded == ["foo.embed-meta.yaml"]
+
+
+def test_iter_sidecar_files_respects_extension_preserving_spreadsheet_sidecars(tmp_path):
+    """Spreadsheet sidecars (.csv, .xlsx) use extension-preserving naming:
+    docs/data.csv -> .carta/sidecars/docs/data.csv.embed-meta.yaml.
+
+    _iter_sidecar_files must correctly compute the expected sidecar path
+    using the same logic as _sidecar_rel in carta.embed.induct.
+    """
+    # Canonical sidecar for a CSV spreadsheet (extension-preserving)
+    _write_sidecar(tmp_path, "docs/data.csv.embed-meta.yaml", "docs/data.csv")
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docs" / "data.csv").write_text("a,b,c\n1,2,3\n")
+
+    # Control: markdown file with traditional sidecar
+    _write_sidecar(tmp_path, "docs/note.embed-meta.yaml", "docs/note.md")
+    (tmp_path / "docs" / "note.md").write_text("# Note\n")
+
+    cfg = _minimal_cfg(tmp_path)
+    yielded_names = sorted([p.name for p in _iter_sidecar_files(tmp_path, cfg)])
+
+    # Must yield BOTH sidecars
+    assert yielded_names == ["data.csv.embed-meta.yaml", "note.embed-meta.yaml"]
+
+
+class TestSpreadsheetInduction:
+    def test_spreadsheets_flagged_for_induction(self, tmp_path):
+        from carta.scanner.scanner import check_embed_induction_needed
+        ref = tmp_path / "docs" / "reference"
+        ref.mkdir(parents=True)
+        (ref / "data.xlsx").write_bytes(b"PK\x03\x04")
+        (ref / "data.csv").write_text("a,b\n1,2\n")
+        issues = check_embed_induction_needed(tmp_path, {})
+        docs = {i["doc"] for i in issues}
+        assert "docs/reference/data.xlsx" in docs
+        assert "docs/reference/data.csv" in docs

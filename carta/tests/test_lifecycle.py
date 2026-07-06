@@ -94,6 +94,45 @@ class TestComputeFileHash:
             assert len(hash_val) == 64
             assert all(c in "0123456789abcdef" for c in hash_val)
 
+    def test_xlsx_raw_bytes_not_normalized(self):
+        """.xlsx is a binary zip — two payloads differing only in CRLF vs LF bytes
+        must hash differently (no normalization)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            a = Path(tmpdir) / "a.xlsx"
+            b = Path(tmpdir) / "b.xlsx"
+            a.write_bytes(b"PK\x03\x04payload\r\nmore")
+            b.write_bytes(b"PK\x03\x04payload\nmore")
+            assert compute_file_hash(a) != compute_file_hash(b)
+
+    def test_xlsx_uppercase_suffix_also_raw(self):
+        """Suffix dispatch is case-insensitive: .XLSX hashes raw too."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            a = Path(tmpdir) / "a.XLSX"
+            b = Path(tmpdir) / "b.XLSX"
+            a.write_bytes(b"PK\x03\x04x\r\n")
+            b.write_bytes(b"PK\x03\x04x\n")
+            assert compute_file_hash(a) != compute_file_hash(b)
+
+    def test_csv_lf_normalized_like_text(self):
+        """.csv is text — CRLF and LF variants of the same content hash identically
+        (Windows-checkout line-ending churn must not trigger re-embeds)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            crlf = Path(tmpdir) / "crlf.csv"
+            lf = Path(tmpdir) / "lf.csv"
+            crlf.write_bytes(b"h1,h2\r\n1,2\r\n")
+            lf.write_bytes(b"h1,h2\n1,2\n")
+            assert compute_file_hash(crlf) == compute_file_hash(lf)
+
+    def test_md_digest_pinned_across_refactor(self):
+        """The binary-suffix refactor must not change any existing markdown digest
+        (sidecar hash compatibility — zero-regression constraint)."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "doc.md"
+            f.write_bytes(b"# T\r\nbody")
+            expected = hashlib.sha256(b"# T\nbody").hexdigest()
+            assert compute_file_hash(f) == expected
+
 
 class TestNeedsRehash:
     """Test needs_rehash mtime fast-path logic."""
