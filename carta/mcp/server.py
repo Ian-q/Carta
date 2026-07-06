@@ -531,7 +531,7 @@ def carta_scan() -> dict:
 
 
 def _remember(text: str, *, note_type: str = "helpful-note", title: str = "",
-              tags: list[str] | None = None) -> dict:
+              tags: list[str] | None = None, about: str | None = None) -> dict:
     """Plain-function core for carta_remember (kept undecorated for testability)."""
     try:
         cfg = _load_cfg()
@@ -541,7 +541,7 @@ def _remember(text: str, *, note_type: str = "helpful-note", title: str = "",
     try:
         from carta.memory.capture import capture_note
         result = capture_note(cfg, repo_root, text, note_type=note_type,
-                              title=title, tags=tags)
+                              title=title, tags=tags, about=about)
         return {"status": "ok", **result}
     except ValueError as e:
         return {"error": "invalid_request", "detail": str(e)}
@@ -556,6 +556,7 @@ def carta_remember(
     note_type: str = "helpful-note",
     title: str = "",
     tags: list[str] | None = None,
+    about: str | None = None,
 ) -> dict:
     """Save a curated project note as a repo markdown file and embed it for search.
 
@@ -565,10 +566,13 @@ def carta_remember(
     knowledge. The note lands in docs/quirks/ or docs/notes/ (git-shareable) and is
     immediately retrievable via carta_search and proactive recall.
 
+    Pass about=<repo-relative path> to associate the note with a specific file
+    (e.g. the spreadsheet a gotcha applies to); it is recorded in frontmatter.
+
     Returns:
         {"status": "ok", "path", "collection", "chunks"} or {"error", "detail"}.
     """
-    return _remember(text, note_type=note_type, title=title, tags=tags)
+    return _remember(text, note_type=note_type, title=title, tags=tags, about=about)
 
 
 def main() -> None:

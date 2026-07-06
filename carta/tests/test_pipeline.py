@@ -1608,3 +1608,51 @@ class TestTextSource:
         from carta.embed.pipeline import _text_source
         assert _text_source({"doc_type": "image_description",
                              "model_used": "glm-ocr", "content_type": "flattened"}) == "ocr_table"
+
+
+class TestHealExtensionPreservingSidecars:
+    def test_heal_resolves_csv_sidecar_missing_current_path(self, tmp_path):
+        from carta.embed.pipeline import _heal_sidecar_current_paths
+        src = tmp_path / "docs" / "data.csv"
+        src.parent.mkdir(parents=True)
+        src.write_text("a,b\n1,2\n")
+        sc = tmp_path / ".carta" / "sidecars" / "docs" / "data.csv.embed-meta.yaml"
+        sc.parent.mkdir(parents=True)
+        sc.write_text("slug: data\nstatus: pending\n")  # no current_path
+        healed = _heal_sidecar_current_paths(tmp_path)
+        assert healed == 1
+        assert yaml.safe_load(sc.read_text())["current_path"] == "docs/data.csv"
+
+    def test_heal_does_not_adopt_spreadsheet_under_legacy_name(self, tmp_path):
+        from carta.embed.pipeline import _heal_sidecar_current_paths
+        src = tmp_path / "docs" / "data.csv"
+        src.parent.mkdir(parents=True)
+        src.write_text("a,b\n1,2\n")
+        sc = tmp_path / ".carta" / "sidecars" / "docs" / "data.embed-meta.yaml"
+        sc.parent.mkdir(parents=True)
+        sc.write_text("slug: data\nstatus: pending\n")  # legacy name, no current_path
+        healed = _heal_sidecar_current_paths(tmp_path)
+        assert healed == 0
+        assert "current_path" not in yaml.safe_load(sc.read_text())
+
+
+class TestRunEmbedNoTextContentCounting:
+    def test_no_text_content_counted_in_summary(self, tmp_path):
+        from unittest.mock import patch
+        from carta.embed.pipeline import run_embed
+        src = tmp_path / "docs" / "ids.csv"
+        src.parent.mkdir(parents=True)
+        src.write_text("MsgID\n0x100\n")
+        sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        (sc_dir / "ids.csv.embed-meta.yaml").write_text(
+            "current_path: docs/ids.csv\nstatus: pending\nslug: ids\ndoc_type: unknown\n")
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333", "embed": {}}
+        with patch("carta.embed.pipeline.QdrantClient"), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline._embed_one_file",
+                   return_value=(0, {"status": "no_text_content"})):
+            summary = run_embed(tmp_path, cfg)
+        assert summary["no_text_content"] == 1
+        assert summary["embedded"] == 0
+        assert summary["extraction_failed"] == 0

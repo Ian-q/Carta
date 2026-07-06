@@ -145,13 +145,13 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 |---------|---------|
 | `init` | Bootstrap Carta in a repo (config, collections, skills, hook) |
 | `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
-| `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair` re-embeds damaged points |
+| `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair` re-embeds damaged points. `.xlsx`/`.csv` sources embed text-bearing cells only (frame names + notes; numerics stay out), mirrored to `.carta/companions/` |
 | `search` | Hybrid (BM25 + dense, RRF) semantic search |
 | `focus` | Deep retrieval scoped to **one file**: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `search` (locate → go deep) |
 | `audit` | Embed-pipeline **data integrity** check → JSON |
 | `doctor` | Diagnose environment (Qdrant/Ollama/models); `--fix` auto-installs |
 | `eval` | Score retrieval quality against an eval set |
-| `remember` | Capture a curated note (quirk / bug-note / helpful-note) |
+| `remember` | Capture a curated note (quirk / bug-note / helpful-note); `--about <file>` associates it with a source file |
 | `status` | System-wide status across registered projects (`~/.carta/registry.json`) |
 | `statusline` | Status-line widget output (embed progress) |
 | `hook` | Install/run the stale-reference git hook (`hook install`, `hook check`; pre-push default) |
@@ -186,6 +186,10 @@ agent drafts → human approves → `carta claude-md record`); metadata lives ou
 
 Embedding state lives at `.carta/sidecars/<source-path-relative-to-repo>.embed-meta.yaml`
 — mirrors the source tree, **not** colocated beside the file (`carta/embed/induct.py::sidecar_path`).
+
+Spreadsheet sources (`.csv`/`.xlsx`) use extension-preserving sidecar names
+(`data.csv.embed-meta.yaml`) so same-stem files never collide; `.md`/`.pdf`
+keep the legacy extension-stripped names.
 
 ### Module map (`carta/`)
 

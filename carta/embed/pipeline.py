@@ -32,7 +32,10 @@ from carta.embed.embed import (
     UPSERT_CLIENT_TIMEOUT_S,
 )
 from carta.embed.sparse import embed_sparse_query
-from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars
+from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars, SPREADSHEET_SUFFIXES
+from carta.embed.tabular import (
+    extract_spreadsheet_text, write_companion, companion_rel_path, OpenpyxlMissing,
+)
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_points
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
 from carta.embed.colpali import is_colpali_available
@@ -71,7 +74,7 @@ def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str =
     return updates
 
 
-_SUPPORTED_EXTENSIONS = [".pdf", ".md"]
+_SUPPORTED_EXTENSIONS = [".pdf", ".md", ".csv", ".xlsx"]
 _SUPPORTED_EXTENSIONS_SET = frozenset(_SUPPORTED_EXTENSIONS)
 
 
@@ -85,6 +88,8 @@ def _iter_inductable_files(docs_root: Path) -> Iterator[Path]:
     auto-inducted — embeddable only via an explicit ``carta embed <file>``.
     """
     for p in docs_root.rglob("*"):
+        if ".carta" in p.parts:
+            continue  # derived artifacts (companions, sidecars) are never sources
         if p.is_file() and p.suffix.lower() in _SUPPORTED_EXTENSIONS_SET:
             yield p
 
@@ -345,9 +350,25 @@ def _embed_one_file(
     # For PDFs with two_pass_visual enabled, classify pages in the SAME fitz pass as
     # text extraction — avoid opening the PDF twice.
     _page_classes_from_extraction: list | None = None  # populated for PDFs when two_pass_visual is on
-    if file_path.suffix == ".md":
+    suffix = file_path.suffix.lower()
+    tabular_meta: dict = {}
+    if suffix == ".md":
         pages, frontmatter_meta = extract_markdown_text(file_path)
-    elif file_path.suffix == ".pdf" and cfg.get("embed", {}).get("two_pass_visual", True):
+    elif suffix in SPREADSHEET_SUFFIXES:
+        try:
+            pages, tabular_meta = extract_spreadsheet_text(file_path)
+        except OpenpyxlMissing as e:
+            print(f"Warning: {e}", file=sys.stderr, flush=True)
+            # Leave the sidecar re-pickable: the file is retried once openpyxl
+            # is installed. No mtime/hash fields are stamped.
+            return 0, {"status": "pending"}
+        frontmatter_meta = {}
+        # Companion note: transparency artifact, fail-open (not load-bearing).
+        write_companion(
+            repo_root, file_path.relative_to(repo_root),
+            tabular_meta.get("companion_markdown", ""),
+        )
+    elif suffix == ".pdf" and cfg.get("embed", {}).get("two_pass_visual", True):
         try:
             analyzer = PageAnalyzer(cfg)
             pages, _page_classes_from_extraction = extract_pdf_text_and_classify(file_path, analyzer)
@@ -393,6 +414,10 @@ def _embed_one_file(
     }
     if frontmatter_meta:
         metadata["frontmatter"] = frontmatter_meta
+    if suffix in SPREADSHEET_SUFFIXES:
+        metadata["derived"] = "spreadsheet"
+        metadata["companion_path"] = str(
+            companion_rel_path(file_path.relative_to(repo_root)))
 
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     # expected_text counts only non-empty chunks — upsert_chunks drops empty ones
@@ -403,14 +428,23 @@ def _embed_one_file(
 
     # Zero usable text: for non-PDF files there's no image-chunk rescue path, so
     # flag immediately. PDFs may still produce content via the vision path below.
-    if expected_text == 0 and file_path.suffix != ".pdf":
-        print(
-            f"Warning: {file_path.name}: 0 extractable characters — "
-            f"skipped (empty or unreadable file)",
-            flush=True,
-        )
+    if expected_text == 0 and suffix != ".pdf":
+        if suffix in SPREADSHEET_SUFFIXES:
+            zero_status = "no_text_content"
+            print(
+                f"Note: {file_path.name}: no text-bearing cells — nothing embedded "
+                f"(numeric-only data is deliberately not indexed)",
+                flush=True,
+            )
+        else:
+            zero_status = "extraction_failed"
+            print(
+                f"Warning: {file_path.name}: 0 extractable characters — "
+                f"skipped (empty or unreadable file)",
+                flush=True,
+            )
         return 0, {
-            "status": "extraction_failed",
+            "status": zero_status,
             "indexed_at": datetime.now(timezone.utc).isoformat(),
             "chunk_count": 0,
             "image_count": 0,
@@ -1206,7 +1240,22 @@ def _heal_sidecar_current_paths(repo_root: Path, verbose: bool = False) -> int:
         rel_from_sidecars = sc_path.relative_to(sidecars_root)
         stem = sc_path.name.replace(".embed-meta.yaml", "")
         parent_dirs = rel_from_sidecars.parent
+        # Extension-preserving sidecars (data.csv.embed-meta.yaml) already carry
+        # the full source filename in the stem — resolve directly.
+        if Path(stem).suffix.lower() in SPREADSHEET_SUFFIXES:
+            candidate = repo_root / parent_dirs / stem
+            if candidate.exists():
+                data["current_path"] = str(parent_dirs / stem)
+                _update_sidecar(sc_path, data)
+                healed += 1
+            continue
         for ext in _SUPPORTED_EXTENSIONS:
+            # Extension-preserving types are handled above; adopting one here
+            # would mint a non-canonical (extension-stripped) sidecar that
+            # discover_pending_files would still embed alongside the canonical
+            # stub auto-induction creates — double-indexing one source.
+            if ext in SPREADSHEET_SUFFIXES:
+                continue
             candidate = repo_root / parent_dirs / f"{stem}{ext}"
             if candidate.exists():
                 data["current_path"] = str(parent_dirs / f"{stem}{ext}")
@@ -1373,6 +1422,13 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     count, sidecar_updates = _embed_one_file(
         file_path, file_info, cfg, client, repo_root, max_tokens, overlap_fraction, verbose, progress
     )
+    # A "pending" return means extraction was skipped (missing optional
+    # dependency): stamp NO lifecycle fields — a hash/mtime stamp here would
+    # let the mtime fast-path treat the file as already embedded and never
+    # re-pick it on this surface once the dependency is installed.
+    if sidecar_updates.get("status") == "pending":
+        _update_sidecar(sc_path, {"status": "pending"})
+        return {"status": "skipped", "reason": "extraction skipped — optional dependency missing"}
     # Merge lifecycle updates with embedding updates.
     # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
     # or "extraction_failed") — apply lifecycle fields first, then let embed results win.
@@ -1394,6 +1450,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 
     Returns:
         {"embedded": int, "skipped": int, "extraction_failed": int,
+         "no_text_content": int,
          "failed": list[str], "partial": list[str],
          "errors": list[str], "timed_out": list[str]}
 
@@ -1403,6 +1460,7 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     as "embedded".
     """
     summary: dict = {"embedded": 0, "skipped": 0, "extraction_failed": 0,
+                     "no_text_content": 0,
                      "failed": [], "partial": [], "errors": [], "timed_out": []}
 
     # Migrate any co-located sidecars from old format to .carta/sidecars/
@@ -1590,10 +1648,16 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
                     summary["partial"].append(file_path.name)
                     perf_status = "partial"
                     status.file_done(errors=1)
-                elif st == "extraction_failed":
-                    summary["extraction_failed"] += 1
+                elif st in ("extraction_failed", "no_text_content"):
+                    summary[st] += 1
                     perf_status = "ok"
                     status.file_done(embedded=1, chunks=count)
+                elif st == "pending":
+                    # spreadsheet skipped for a missing optional dependency —
+                    # stays re-pickable, count as skipped
+                    summary["skipped"] += 1
+                    perf_status = "skip"
+                    status.file_done(skipped=1)
                 else:
                     summary["embedded"] += 1
                     perf_status = "ok"

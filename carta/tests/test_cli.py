@@ -288,6 +288,7 @@ class TestCmdRemember:
         kw.setdefault("type", "quirk")
         kw.setdefault("title", "")
         kw.setdefault("tags", "")
+        kw.setdefault("about", "")
         return argparse.Namespace(**kw)
 
     def _run(self, args, capture_result=None, capture_error=None):

@@ -83,3 +83,32 @@ class TestCaptureNote:
                    return_value={"status": "ok", "chunks": 1}):
             out = capture_note(cfg, tmp_path, "fact", note_type="quirk")
         assert out["path"].startswith("docs/carta/quirks/")
+
+
+class TestAboutAssociation:
+    def test_about_recorded_in_frontmatter(self, tmp_path):
+        target = tmp_path / "docs" / "battery.xlsx"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"PK")
+        out, _ = _capture(tmp_path, about="docs/battery.xlsx")
+        fm = yaml.safe_load((tmp_path / out["path"]).read_text().split("---")[1])
+        assert fm["about"] == "docs/battery.xlsx"
+
+    def test_about_absolute_path_normalized_to_repo_relative(self, tmp_path):
+        target = tmp_path / "docs" / "battery.xlsx"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"PK")
+        out, _ = _capture(tmp_path, about=str(target))
+        fm = yaml.safe_load((tmp_path / out["path"]).read_text().split("---")[1])
+        assert fm["about"] == "docs/battery.xlsx"
+
+    def test_about_missing_target_warns_but_captures(self, tmp_path, capsys):
+        out, _ = _capture(tmp_path, about="docs/nonexistent.xlsx")
+        assert "does not exist" in capsys.readouterr().err
+        fm = yaml.safe_load((tmp_path / out["path"]).read_text().split("---")[1])
+        assert fm["about"] == "docs/nonexistent.xlsx"
+
+    def test_no_about_no_frontmatter_key(self, tmp_path):
+        out, _ = _capture(tmp_path)
+        fm = yaml.safe_load((tmp_path / out["path"]).read_text().split("---")[1])
+        assert "about" not in fm

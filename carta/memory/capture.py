@@ -8,6 +8,7 @@ docs/superpowers/specs/2026-06-10-note-capture-design.md.
 from __future__ import annotations
 
 import re
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -31,7 +32,8 @@ def _note_dir(cfg: dict, note_type: str) -> str:
 
 def capture_note(cfg: dict, repo_root: Path, text: str, *,
                  note_type: str, title: str = "",
-                 tags: list[str] | None = None) -> dict:
+                 tags: list[str] | None = None,
+                 about: str | None = None) -> dict:
     """Write a note file with frontmatter and embed it via the standard pipeline.
 
     Args:
@@ -41,6 +43,9 @@ def capture_note(cfg: dict, repo_root: Path, text: str, *,
         note_type: one of NOTE_DOC_TYPES.
         title: optional title; drives the filename slug and frontmatter title.
         tags: optional list of tags for the frontmatter.
+        about: optional path of the file this note is about; recorded in the
+            frontmatter as a repo-relative path. Warns (does not fail) if the
+            target does not exist.
 
     Returns:
         {"path": <repo-relative str>, "collection": <name>, "chunks": <int>}
@@ -74,6 +79,19 @@ def capture_note(cfg: dict, repo_root: Path, text: str, *,
     }
     if tags:
         frontmatter["tags"] = list(tags)
+
+    if about:
+        about_p = Path(about)
+        if about_p.is_absolute():
+            try:
+                about_p = about_p.relative_to(repo_root)
+            except ValueError:
+                pass  # outside the repo — record as given
+        about_rel = about_p.as_posix()
+        if not (Path(repo_root) / about_rel).exists():
+            print(f"Warning: --about target does not exist: {about_rel} "
+                  f"(note captured anyway)", file=sys.stderr)
+        frontmatter["about"] = about_rel
 
     content = (
         "---\n"

@@ -258,6 +258,13 @@ def cmd_embed(args):
             f"nothing embedded for them.",
             file=sys.stderr,
         )
+    no_text = summary.get("no_text_content", 0)
+    if no_text:
+        print(
+            f"\nNote: {no_text} spreadsheet file(s) contained no text-bearing cells "
+            f"(numeric-only data is deliberately not indexed) — flagged no_text_content.",
+            file=sys.stderr,
+        )
     timed_out = summary.get("timed_out", [])
     if timed_out:
         current = cfg.get("embed", {}).get("file_timeout_s", 600)
@@ -721,7 +728,8 @@ def cmd_remember(args):
     tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()] or None
     try:
         result = capture_note(cfg, repo_root, args.text, note_type=args.type,
-                              title=args.title, tags=tags)
+                              title=args.title, tags=tags,
+                              about=(args.about or None))
     except (ValueError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1100,6 +1108,9 @@ def main():
     )
     remember_p.add_argument("--title", default="", help="Optional title (drives the filename slug)")
     remember_p.add_argument("--tags", default="", help="Comma-separated tags")
+    remember_p.add_argument(
+        "--about", default="",
+        help="Path of the file this note is about (recorded in frontmatter)")
 
     update_p = sub.add_parser("update", help="Update carta to the latest version")
     update_p.add_argument("--check", action="store_true", help="Show available version without upgrading")
