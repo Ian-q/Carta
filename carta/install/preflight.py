@@ -667,22 +667,22 @@ class PreflightChecker:
 
     def _check_ports_available(self) -> PreflightCheck:
         """Check if required ports are available."""
+        # health_path is what the expected service answers on. A port held by its
+        # own service is not a conflict — only a port held by something else is.
         ports = [
-            (6333, "Qdrant"),
-            (11434, "Ollama"),
+            (6333, "Qdrant", "/healthz"),
+            (11434, "Ollama", "/"),
         ]
 
         conflicts = []
-        for port, service in ports:
+        for port, service, health_path in ports:
             if self._is_port_in_use(port):
-                # Check if it's the expected service
-                if service == "Qdrant":
-                    try:
-                        response = requests.get(f"http://localhost:{port}/healthz", timeout=1)
-                        if response.status_code == 200:
-                            continue  # Qdrant is running on this port, that's fine
-                    except:
-                        pass
+                try:
+                    response = requests.get(f"http://localhost:{port}{health_path}", timeout=1)
+                    if response.status_code == 200:
+                        continue  # The expected service owns this port, that's fine
+                except Exception:
+                    pass
                 conflicts.append((port, service))
 
         if not conflicts:

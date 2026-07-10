@@ -248,8 +248,36 @@ class AutoInstaller:
             print(f"  ❌ Error starting Qdrant: {e}")
             return False
 
+    def _container_exit_code(self, name: str = "qdrant") -> Optional[int]:
+        """Exit code of a stopped container, or None while it is still running.
+
+        Returns None too when the state cannot be determined, so callers keep
+        waiting rather than aborting a healthy start on a transient docker error.
+        """
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+            running, _, exit_code = result.stdout.strip().partition(" ")
+            if running == "false":
+                return int(exit_code)
+        except Exception:
+            pass
+        return None
+
     def _wait_for_qdrant(self, timeout: int = 30, interval: float = 1.0) -> bool:
-        """Wait for Qdrant to be ready."""
+        """Wait for Qdrant to be ready.
+
+        A container that panics at boot (corrupt WAL, version mismatch) exits
+        almost immediately. Polling only /healthz cannot distinguish that from a
+        slow start, so also watch the container's exit code and abort on death —
+        no auto-fix can recover a container that refuses to stay up.
+        """
         print(f"  ⏳ Waiting for Qdrant to be ready (timeout: {timeout}s)...")
 
         start_time = time.time()
@@ -263,6 +291,16 @@ class AutoInstaller:
                 pass
             except Exception:
                 pass
+
+            exit_code = self._container_exit_code()
+            if exit_code is not None:
+                print(f"  ❌ Qdrant container exited (code {exit_code}) instead of becoming ready")
+                if exit_code == 101:
+                    print("     Exit 101 is a Rust panic — commonly a corrupt WAL.")
+                    print("     Inspect the failing collection, then move it aside and re-embed:")
+                    print("       docker logs qdrant 2>&1 | grep -B2 'Recovering shard'")
+                print("     Check logs with: docker logs qdrant")
+                return False
 
             time.sleep(interval)
 
