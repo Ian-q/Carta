@@ -38,11 +38,14 @@ class TestDockerRunningTip:
 
 class TestQdrantSuggestion:
     def test_suggestion_includes_volume_flag(self):
+        # Storage must be persisted somewhere; TestQdrantSuggestionUsesNamedVolume
+        # pins *where* (a named volume, never a host bind mount).
         checker = PreflightChecker(interactive=False)
         with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
             result = checker._check_qdrant_running()
         assert result.status == "fail"
-        assert "-v ~/.carta/qdrant_storage:/qdrant/storage" in result.suggestion
+        assert "-v" in result.suggestion
+        assert ":/qdrant/storage" in result.suggestion
 
     def test_suggestion_includes_detached_flag(self):
         checker = PreflightChecker(interactive=False)
@@ -257,3 +260,59 @@ class TestClaudeSkillsAccessible:
         checker = PreflightChecker(interactive=False, project_root=project)
         check = checker._check_claude_skills_accessible()
         assert check.status == "pass"
+
+
+class TestPortsAvailableOllamaLiveness:
+    """A healthy Ollama on 11434 is the *expected* occupant of that port, not a
+    conflict. The check previously probed only Qdrant's port for liveness, so it
+    warned on every run where Ollama was up — the same state `ollama_running`
+    requires."""
+
+    def _checker(self) -> PreflightChecker:
+        return PreflightChecker(interactive=False)
+
+    def test_pass_when_ollama_healthy_on_its_port(self):
+        checker = self._checker()
+
+        def fake_get(url, **kwargs):
+            return type("R", (), {"status_code": 200})()
+
+        with patch.object(checker, "_is_port_in_use", return_value=True), \
+             patch("carta.install.preflight.requests.get", side_effect=fake_get):
+            check = checker._check_ports_available()
+
+        assert check.status == "pass", check.message
+
+    def test_warn_when_ollama_port_held_by_something_else(self):
+        checker = self._checker()
+
+        def fake_get(url, **kwargs):
+            if "6333" in url:
+                return type("R", (), {"status_code": 200})()
+            raise requests.ConnectionError("nothing listening")
+
+        with patch.object(checker, "_is_port_in_use", return_value=True), \
+             patch("carta.install.preflight.requests.get", side_effect=fake_get):
+            check = checker._check_ports_available()
+
+        assert check.status == "warn"
+        assert "11434" in check.message
+        assert "6333" not in check.message
+
+
+class TestQdrantSuggestionUsesNamedVolume:
+    """The suggested `docker run` must not recommend a host bind mount: on Docker
+    Desktop that mount does not honor fsync and repeatedly tore Qdrant's WAL."""
+
+    def test_suggestion_uses_named_volume_not_bind_mount(self):
+        checker = PreflightChecker(interactive=False)
+        with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
+            result = checker._check_qdrant_running()
+        assert "-v qdrant_storage:/qdrant/storage" in result.suggestion
+        assert "~/.carta/qdrant_storage" not in result.suggestion
+
+    def test_suggestion_sets_restart_policy(self):
+        checker = PreflightChecker(interactive=False)
+        with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
+            result = checker._check_qdrant_running()
+        assert "--restart unless-stopped" in result.suggestion
