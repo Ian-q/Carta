@@ -35,6 +35,17 @@ import requests
 
 _DEFAULT_PROJECT_ROOT = Path.cwd()
 
+# Qdrant storage lives in a named Docker volume, never a host bind mount. On
+# Docker Desktop a bind mount is served by the VM's file-sharing layer, which does
+# not honour fsync — Qdrant's WAL needs it, and torn WAL entries panic it at boot.
+# A named volume sits on the VM's own filesystem, where fsync is honoured.
+QDRANT_VOLUME = "qdrant_storage"
+QDRANT_IMAGE = "qdrant/qdrant"
+QDRANT_RUN_SUGGESTION = (
+    f"Start with: docker run -d -p 6333:6333 -v {QDRANT_VOLUME}:/qdrant/storage "
+    f"--restart unless-stopped --name qdrant {QDRANT_IMAGE}"
+)
+
 
 @dataclass
 class PreflightCheck:
@@ -584,7 +595,7 @@ class PreflightChecker:
                     message=f"Qdrant not running at {url}",
                     category="infrastructure",
                     fixable=True,
-                    suggestion="Start with: docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
+                    suggestion=QDRANT_RUN_SUGGESTION,
                 )
         except requests.ConnectionError:
             return PreflightCheck(
@@ -593,7 +604,7 @@ class PreflightChecker:
                 message=f"Qdrant not running at {url}",
                 category="infrastructure",
                 fixable=True,
-                suggestion="Start with: docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
+                suggestion=QDRANT_RUN_SUGGESTION,
             )
         except Exception as e:
             return PreflightCheck(
@@ -602,7 +613,7 @@ class PreflightChecker:
                 message=f"Cannot reach Qdrant at {url}: {e}",
                 category="infrastructure",
                 fixable=True,
-                suggestion="Start with: docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant",
+                suggestion=QDRANT_RUN_SUGGESTION,
             )
 
     def _check_ollama_installed(self) -> PreflightCheck:
@@ -667,22 +678,22 @@ class PreflightChecker:
 
     def _check_ports_available(self) -> PreflightCheck:
         """Check if required ports are available."""
+        # health_path is what the expected service answers on. A port held by its
+        # own service is not a conflict — only a port held by something else is.
         ports = [
-            (6333, "Qdrant"),
-            (11434, "Ollama"),
+            (6333, "Qdrant", "/healthz"),
+            (11434, "Ollama", "/"),
         ]
 
         conflicts = []
-        for port, service in ports:
+        for port, service, health_path in ports:
             if self._is_port_in_use(port):
-                # Check if it's the expected service
-                if service == "Qdrant":
-                    try:
-                        response = requests.get(f"http://localhost:{port}/healthz", timeout=1)
-                        if response.status_code == 200:
-                            continue  # Qdrant is running on this port, that's fine
-                    except:
-                        pass
+                try:
+                    response = requests.get(f"http://localhost:{port}{health_path}", timeout=1)
+                    if response.status_code == 200:
+                        continue  # The expected service owns this port, that's fine
+                except Exception:
+                    pass
                 conflicts.append((port, service))
 
         if not conflicts:
