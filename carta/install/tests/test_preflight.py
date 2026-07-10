@@ -38,11 +38,14 @@ class TestDockerRunningTip:
 
 class TestQdrantSuggestion:
     def test_suggestion_includes_volume_flag(self):
+        # Storage must be persisted somewhere; TestQdrantSuggestionUsesNamedVolume
+        # pins *where* (a named volume, never a host bind mount).
         checker = PreflightChecker(interactive=False)
         with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
             result = checker._check_qdrant_running()
         assert result.status == "fail"
-        assert "-v ~/.carta/qdrant_storage:/qdrant/storage" in result.suggestion
+        assert "-v" in result.suggestion
+        assert ":/qdrant/storage" in result.suggestion
 
     def test_suggestion_includes_detached_flag(self):
         checker = PreflightChecker(interactive=False)
@@ -295,3 +298,21 @@ class TestPortsAvailableOllamaLiveness:
         assert check.status == "warn"
         assert "11434" in check.message
         assert "6333" not in check.message
+
+
+class TestQdrantSuggestionUsesNamedVolume:
+    """The suggested `docker run` must not recommend a host bind mount: on Docker
+    Desktop that mount does not honor fsync and repeatedly tore Qdrant's WAL."""
+
+    def test_suggestion_uses_named_volume_not_bind_mount(self):
+        checker = PreflightChecker(interactive=False)
+        with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
+            result = checker._check_qdrant_running()
+        assert "-v qdrant_storage:/qdrant/storage" in result.suggestion
+        assert "~/.carta/qdrant_storage" not in result.suggestion
+
+    def test_suggestion_sets_restart_policy(self):
+        checker = PreflightChecker(interactive=False)
+        with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
+            result = checker._check_qdrant_running()
+        assert "--restart unless-stopped" in result.suggestion
