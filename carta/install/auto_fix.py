@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Optional
 
 import requests
 
+from carta.install.preflight import QDRANT_IMAGE, QDRANT_VOLUME
+
 if TYPE_CHECKING:
     from carta.install.preflight import PreflightCheck, PreflightResult
 
@@ -211,18 +213,40 @@ class AutoInstaller:
             return False
 
     def _start_qdrant_container(self) -> bool:
-        """Start a new Qdrant container."""
+        """Start a new Qdrant container backed by a named volume.
+
+        Storage must be a named volume, not a host bind mount: Docker Desktop
+        serves bind mounts through a VM file-sharing layer that does not honour
+        fsync, which repeatedly tore Qdrant's WAL and panicked it at boot. Without
+        any -v at all — the previous behaviour — storage lived in the container's
+        writable layer and a `docker rm` silently destroyed every collection.
+        """
+        mount = f"{QDRANT_VOLUME}:/qdrant/storage"
+        argv = [
+            "docker", "run", "-d",
+            "-p", "6333:6333",
+            "-v", mount,
+            "--restart", "unless-stopped",
+            "--name", "qdrant",
+            QDRANT_IMAGE,
+        ]
+
         try:
             print("  🐳 Starting Qdrant container...")
-            print("     docker run -d -p 6333:6333 --name qdrant qdrant/qdrant:latest")
+            print(f"     {' '.join(argv)}")
+
+            volume = subprocess.run(
+                ["docker", "volume", "create", QDRANT_VOLUME],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if volume.returncode != 0:
+                print(f"  ❌ Could not create volume {QDRANT_VOLUME}: {volume.stderr.strip()}")
+                return False
 
             result = subprocess.run(
-                [
-                    "docker", "run", "-d",
-                    "-p", "6333:6333",
-                    "--name", "qdrant",
-                    "qdrant/qdrant:latest",
-                ],
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=60,

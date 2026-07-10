@@ -76,3 +76,48 @@ class TestWaitForQdrantDetectsCrashedContainer:
              patch("carta.install.auto_fix.subprocess.run", side_effect=fake_inspect), \
              patch("carta.install.auto_fix.time.sleep"):
             assert installer._wait_for_qdrant(timeout=30) is True
+
+
+class TestStartQdrantContainerPersistence:
+    """The fresh-container path passed no -v at all, so a doctor-created Qdrant
+    kept its storage in the container's writable layer — every `docker rm` (or a
+    recreate) silently destroyed every collection. It must mount a named volume,
+    which is also the fix for the recurring WAL corruption: a Docker Desktop host
+    bind mount does not honor fsync, a named volume lives on the VM's ext4."""
+
+    def _run_and_capture_argv(self) -> list[list[str]]:
+        installer = AutoInstaller(interactive=False)
+        argv: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            argv.append(cmd)
+            return type("R", (), {"returncode": 0, "stdout": "abc123def456", "stderr": ""})()
+
+        with patch("carta.install.auto_fix.subprocess.run", side_effect=fake_run), \
+             patch.object(AutoInstaller, "_wait_for_qdrant", return_value=True):
+            assert installer._start_qdrant_container() is True
+        return argv
+
+    def test_mounts_named_volume_for_storage(self):
+        docker_run = [c for c in self._run_and_capture_argv() if c[:2] == ["docker", "run"]][0]
+        assert "-v" in docker_run
+        mount = docker_run[docker_run.index("-v") + 1]
+        assert mount == "qdrant_storage:/qdrant/storage"
+
+    def test_does_not_use_a_host_bind_mount(self):
+        docker_run = [c for c in self._run_and_capture_argv() if c[:2] == ["docker", "run"]][0]
+        mount = docker_run[docker_run.index("-v") + 1]
+        # A leading path (~ or /) means a host bind mount, which loses fsync durability.
+        assert not mount.startswith(("~", "/"))
+
+    def test_creates_the_volume_before_running(self):
+        argv = self._run_and_capture_argv()
+        cmds = [" ".join(c) for c in argv]
+        assert any(c.startswith("docker volume create qdrant_storage") for c in cmds), cmds
+        assert cmds.index(next(c for c in cmds if "volume create" in c)) < \
+               cmds.index(next(c for c in cmds if c.startswith("docker run")))
+
+    def test_sets_restart_policy_so_it_survives_reboot(self):
+        docker_run = [c for c in self._run_and_capture_argv() if c[:2] == ["docker", "run"]][0]
+        assert "--restart" in docker_run
+        assert docker_run[docker_run.index("--restart") + 1] == "unless-stopped"
