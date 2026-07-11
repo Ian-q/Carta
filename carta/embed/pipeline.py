@@ -1062,7 +1062,17 @@ def _visual_embed_one_page(
                     "content_type": chunk.get("content_type", "visual"),
                     "source": "visual_drainer",
                 })
-        upsert_chunks(image_chunks, cfg, client=client)
+        # Honour the docstring contract: a short upsert (Qdrant/Ollama hiccup)
+        # must raise so the page stays in visual_pending, never be silently
+        # marked done with its OCR text lost. upsert_chunks legitimately drops
+        # empty-text chunks, so compare against the non-empty expected count.
+        expected_text = sum(1 for c in image_chunks if (c.get("text") or "").strip())
+        stored_text = upsert_chunks(image_chunks, cfg, client=client)
+        if stored_text < expected_text:
+            raise RuntimeError(
+                f"OCR upsert incomplete for page {page} of {current_path}: "
+                f"stored {stored_text}/{expected_text} chunk(s) — leaving page pending"
+            )
         if verbose:
             print(
                 f"    visual: page {page} OCR → {len(image_chunks)} chunk(s)",
@@ -1094,7 +1104,14 @@ def _visual_embed_one_page(
             "extraction_model": model_name,
             "source": "visual_drainer",
         }]
-        upsert_visual_pages(visual_pages, cfg, client=client)
+        # ColPali vectors are the expensive, irreplaceable artifact of this pass;
+        # a short upsert must raise so the page is retried, not marked done empty.
+        stored_visual = upsert_visual_pages(visual_pages, cfg, client=client)
+        if stored_visual < len(visual_pages):
+            raise RuntimeError(
+                f"ColPali upsert incomplete for page {page} of {current_path}: "
+                f"stored {stored_visual}/{len(visual_pages)} page(s) — leaving page pending"
+            )
         if verbose:
             print(f"    visual: page {page} ColPali → upserted", flush=True)
 

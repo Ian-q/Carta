@@ -238,11 +238,15 @@ class TestChunkOutputFormat:
 # ---------------------------------------------------------------------------
 
 class TestCallOllamaVision:
-    def _mock_stream(self, lines: list[bytes]):
-        """Return a mock requests.Response that streams the given NDJSON lines."""
+    def _mock_stream(self, lines: list[bytes], status_code: int = 200):
+        """Return a mock requests.Response usable as a context manager
+        (the code now does `with requests.post(...) as resp:` to release the
+        streamed connection)."""
         mock_resp = MagicMock()
-        mock_resp.status_code = 200
+        mock_resp.status_code = status_code
         mock_resp.iter_lines.return_value = iter(lines)
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
         return mock_resp
 
     def test_accumulates_streamed_tokens_into_response(self):
@@ -274,7 +278,7 @@ class TestCallOllamaVision:
     def test_raises_on_non_200(self):
         router = SmartRouter(_cfg())
         with patch("carta.vision.router.requests") as mock_requests:
-            mock_requests.post.return_value = MagicMock(status_code=503, text="unavailable")
+            mock_requests.post.return_value = self._mock_stream([], status_code=503)
             with pytest.raises(RuntimeError, match="503"):
                 router._call_ollama_vision(b"fakepng", model="llava", prompt="describe")
 
@@ -849,3 +853,38 @@ class TestVisionCallTimeout:
         with patch.object(router, "_call_ollama_vision", return_value="text") as mock_call:
             router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
         assert mock_call.call_args[1]["timeout"] == 300
+
+
+class TestResourceCleanup:
+    """Long visual drains leak resources unless streamed responses and PDF
+    handles are always released — even on early break / mid-page error."""
+
+    def test_call_ollama_vision_closes_streamed_response(self):
+        router = SmartRouter(_cfg())
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.iter_lines.return_value = [b'{"response":"hi","done":true}']
+        # requests.post(...) must be used as a context manager so urllib3 gets
+        # the (undrained, early-broken) connection back.
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=resp)
+        cm.__exit__ = MagicMock(return_value=False)
+        with patch("carta.vision.router.requests.post", return_value=cm) as post:
+            out = router._call_ollama_vision(b"PNG", "glm-ocr", "prompt")
+        assert out == "hi"
+        assert post.call_args.kwargs.get("stream") is True
+        cm.__exit__.assert_called_once()  # response released even on early break
+
+    def test_extract_pdf_closes_doc_when_a_page_raises(self):
+        router = SmartRouter(_cfg())
+        fake_doc = MagicMock()
+        fake_doc.__len__ = MagicMock(return_value=1)
+        fake_doc.__iter__ = MagicMock(return_value=iter([MagicMock()]))
+        # analyzer.analyze raising mid-extraction must not leak the PDF handle.
+        router.analyzer = MagicMock()
+        router.analyzer.analyze.side_effect = RuntimeError("bad page")
+        with patch("carta.vision.router.fitz") as fake_fitz:
+            fake_fitz.open.return_value = fake_doc
+            with pytest.raises(RuntimeError):
+                router.extract_pdf(Path("/x/y.pdf"))
+        fake_doc.close.assert_called_once()

@@ -1541,3 +1541,27 @@ def test_write_perf_log_entry_none_path_is_noop(tmp_path):
     # Must not raise and must not create files
     _write_perf_log_entry(None, {"file": "x"})
     assert list(tmp_path.iterdir()) == []
+
+
+def test_flush_backs_off_between_upsert_retries(monkeypatch):
+    """The batch-upsert retry loop must sleep between attempts so a transient
+    Qdrant blip (still-restarting, brief reset) can actually recover."""
+    from unittest.mock import MagicMock
+    from carta.embed import embed as embed_mod
+
+    monkeypatch.setattr(embed_mod, "get_embedding", lambda *a, **k: [0.1] * 768)
+    monkeypatch.setattr(embed_mod, "ensure_collection", lambda *a, **k: None)
+    monkeypatch.setattr(embed_mod, "collection_is_hybrid", lambda *a, **k: False)
+
+    client = MagicMock()
+    client.upsert.side_effect = [RuntimeError("transient 503"), None]
+    sleeps = []
+    monkeypatch.setattr(embed_mod.time, "sleep", lambda s: sleeps.append(s))
+
+    cfg = {**MINIMAL_CFG, "project_name": "test", "embed": {**MINIMAL_CFG["embed"], "embedding_workers": 1}}
+    n = embed_mod.upsert_chunks(
+        [{"slug": "x", "text": "hello world", "chunk_index": 0, "file_path": "docs/x.md"}],
+        cfg, client=client,
+    )
+    assert n == 1                       # succeeded on the retry
+    assert sleeps, "expected a backoff sleep between upsert retries"

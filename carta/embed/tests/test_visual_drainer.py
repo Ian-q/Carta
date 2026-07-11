@@ -305,3 +305,85 @@ def test_delete_visual_orphans_keeps_only_listed_pages(monkeypatch):
     assert coll == "proj_visual"
     assert rel_path == "docs/x.pdf"
     assert keep_ids == [_visual_point_id("docs/x.pdf", 1), _visual_point_id("docs/x.pdf", 2)]
+
+
+# ---------------------------------------------------------------------------
+# Drain-safety: a silently-short upsert must NOT let the page be marked done.
+# _visual_embed_one_page's docstring promises "Raises on any failure so the
+# caller leaves the page in visual_pending", but it discarded both upsert
+# return values and returned True unconditionally — so a Qdrant/Ollama hiccup
+# mid-drain lost the page's OCR text and/or ColPali vectors permanently.
+# ---------------------------------------------------------------------------
+
+def _drain_one_page(monkeypatch, tmp_path, *, upsert_chunks_ret, upsert_visual_ret,
+                    with_visual_page=True):
+    from carta.embed import pipeline
+    from carta.embed.pipeline import _visual_embed_one_page
+
+    def fake_upsert_chunks(chunks, cfg, client=None):
+        # Honour the real filter: empties are legitimately not upserted.
+        n_nonempty = sum(1 for c in chunks if (c.get("text") or "").strip())
+        return upsert_chunks_ret if upsert_chunks_ret is not None else n_nonempty
+    monkeypatch.setattr(pipeline, "upsert_chunks", fake_upsert_chunks)
+
+    def fake_upsert_visual(pages, cfg, client=None):
+        return upsert_visual_ret if upsert_visual_ret is not None else len(pages)
+    monkeypatch.setattr("carta.embed.pipeline.upsert_visual_pages", fake_upsert_visual)
+
+    fake_router = MagicMock()
+    fake_router.analyzer.analyze.return_value = MagicMock()
+    fake_router._route.return_value = [
+        {"text": "ocr text here", "image_index": 0, "model_used": "glm-ocr", "content_type": "visual"}
+    ]
+
+    fake_embedder = MagicMock()
+    if with_visual_page:
+        fake_embedder.embed_pdf_pages.return_value = [{"png_bytes": b"PNG", "vectors": [[0.1] * 128]}]
+        fake_embedder.save_page_cache.return_value = tmp_path / "docs" / "x.png"
+    else:
+        fake_embedder.embed_pdf_pages.return_value = []
+
+    fake_page = MagicMock()
+    fake_doc = MagicMock()
+    fake_doc.__len__ = MagicMock(return_value=5)
+    fake_doc.__getitem__ = MagicMock(return_value=fake_page)
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    import sys
+    sys.modules["fitz"] = fake_fitz
+
+    cfg = {"project_name": "test", "qdrant_url": "x", "embed": {"chunking": {"max_tokens": 400}}}
+    pdf_file = tmp_path / "docs" / "x.pdf"
+    pdf_file.parent.mkdir(parents=True, exist_ok=True)
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+    sidecar = {"current_path": str(pdf_file.relative_to(tmp_path)), "slug": "x", "generation": 3,
+               VISUAL_PENDING_KEY: [2], VISUAL_DONE_KEY: []}
+    try:
+        return _visual_embed_one_page(sidecar, 2, cfg, MagicMock(), tmp_path,
+                                      fake_router, fake_embedder)
+    finally:
+        sys.modules.pop("fitz", None)
+
+
+def test_ocr_upsert_shortfall_raises(monkeypatch, tmp_path):
+    """If the OCR text upsert stores fewer chunks than were produced (e.g. Qdrant
+    down → upsert_chunks returns 0), the page must NOT be reported done."""
+    import pytest
+    with pytest.raises(RuntimeError):
+        _drain_one_page(monkeypatch, tmp_path, upsert_chunks_ret=0, upsert_visual_ret=None,
+                        with_visual_page=False)
+
+
+def test_colpali_upsert_shortfall_raises(monkeypatch, tmp_path):
+    """If the ColPali visual upsert stores fewer pages than expected (Qdrant hiccup
+    → upsert_visual_pages returns 0), the page must NOT be reported done."""
+    import pytest
+    with pytest.raises(RuntimeError):
+        _drain_one_page(monkeypatch, tmp_path, upsert_chunks_ret=None, upsert_visual_ret=0,
+                        with_visual_page=True)
+
+
+def test_full_success_returns_true(monkeypatch, tmp_path):
+    """When both upserts store everything expected, the page is done (True)."""
+    assert _drain_one_page(monkeypatch, tmp_path, upsert_chunks_ret=None, upsert_visual_ret=None,
+                           with_visual_page=True) is True
