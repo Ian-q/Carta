@@ -316,3 +316,30 @@ class TestQdrantSuggestionUsesNamedVolume:
         with patch("carta.install.preflight.requests.get", side_effect=requests.ConnectionError()):
             result = checker._check_qdrant_running()
         assert "--restart unless-stopped" in result.suggestion
+
+
+class TestQdrantImagePinnedToSafeVersion:
+    """QDRANT_IMAGE must be pinned to a version >= 1.17.1. Qdrant 1.17.0 shipped a
+    WAL-reader regression (serde untagged-enum breaks CBOR round-tripping, PR
+    qdrant/qdrant#8455) that panics on cold-boot WAL replay of freshly-written
+    collections. An untagged `qdrant/qdrant` (:latest) let `doctor --fix` /
+    bootstrap provision the broken build. Fixed in 1.17.1."""
+
+    def _version_tuple(self, image: str):
+        from carta.install import preflight
+        assert ":" in image, f"QDRANT_IMAGE must be version-pinned, got {image!r}"
+        tag = image.rsplit(":", 1)[1].lstrip("v")
+        return tuple(int(p) for p in tag.split("."))
+
+    def test_image_is_version_pinned(self):
+        from carta.install.preflight import QDRANT_IMAGE
+        assert ":" in QDRANT_IMAGE and not QDRANT_IMAGE.endswith(":latest"), QDRANT_IMAGE
+
+    def test_pin_is_at_least_1_17_1(self):
+        from carta.install.preflight import QDRANT_IMAGE
+        assert self._version_tuple(QDRANT_IMAGE) >= (1, 17, 1), QDRANT_IMAGE
+
+    def test_run_suggestion_uses_pinned_image(self):
+        from carta.install.preflight import QDRANT_IMAGE, QDRANT_RUN_SUGGESTION
+        assert QDRANT_IMAGE in QDRANT_RUN_SUGGESTION
+        assert QDRANT_RUN_SUGGESTION.rstrip().endswith(QDRANT_IMAGE)

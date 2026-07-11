@@ -35,12 +35,18 @@ import requests
 
 _DEFAULT_PROJECT_ROOT = Path.cwd()
 
-# Qdrant storage lives in a named Docker volume, never a host bind mount. On
-# Docker Desktop a bind mount is served by the VM's file-sharing layer, which does
-# not honour fsync — Qdrant's WAL needs it, and torn WAL entries panic it at boot.
-# A named volume sits on the VM's own filesystem, where fsync is honoured.
+# Storage lives in a named Docker volume rather than the container's writable
+# layer, so a `docker rm`/recreate does not drop collections. (A host bind mount
+# would also persist, but couples storage to a host path; the named volume is the
+# simpler default.)
 QDRANT_VOLUME = "qdrant_storage"
-QDRANT_IMAGE = "qdrant/qdrant"
+
+# Pin the image, never `:latest`. Qdrant 1.17.0 shipped a WAL-reader regression
+# (serde untagged-enum breaks CBOR round-tripping) that panics on cold-boot WAL
+# replay of freshly-written collections; the on-disk data is fine but 1.17.0 can't
+# read it. Fixed in 1.17.1 (qdrant/qdrant#8455). An untagged image let
+# `doctor --fix` provision the broken build. Bump this pin deliberately.
+QDRANT_IMAGE = "qdrant/qdrant:v1.17.1"
 QDRANT_RUN_SUGGESTION = (
     f"Start with: docker run -d -p 6333:6333 -v {QDRANT_VOLUME}:/qdrant/storage "
     f"--restart unless-stopped --name qdrant {QDRANT_IMAGE}"
