@@ -11,6 +11,7 @@ carta.embed modules (no circular dependencies).
 
 import hashlib
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -173,6 +174,7 @@ def is_protected_doc_type(doc_type: str) -> bool:
 # filter), so a transient failure that goes un-retried leaves old chunks
 # permanently searchable until `carta embed --repair`.
 DELETE_MAX_ATTEMPTS = 3
+RETRY_BACKOFF_S = 0.25
 
 
 def delete_other_points(
@@ -197,6 +199,10 @@ def delete_other_points(
             return
         except Exception as e:  # transient 5xx / timeout / connection reset
             last_exc = e
+            # Space out retries — three attempts fired within microseconds don't
+            # outlast a server still restarting or a brief connection reset.
+            if _attempt < DELETE_MAX_ATTEMPTS - 1:
+                time.sleep(RETRY_BACKOFF_S * (_attempt + 1))
     print(
         f"Warning: stale-point cleanup FAILED for {rel_path} after "
         f"{DELETE_MAX_ATTEMPTS} attempts — old chunks may resurface in search "

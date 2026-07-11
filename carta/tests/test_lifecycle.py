@@ -380,3 +380,13 @@ class TestDeleteOtherPoints:
         client.delete.side_effect = flaky
         delete_other_points(client, "proj_doc", "x.md", keep_ids=["id-x"])  # no raise
         assert calls["n"] >= 2
+
+    def test_retry_backs_off_between_attempts(self):
+        """Retries must space out — three attempts fired within microseconds don't
+        survive a real transient blip (a server still restarting, a 200ms reset)."""
+        from unittest.mock import patch
+        client = MagicMock()
+        client.delete.side_effect = [RuntimeError("transient"), None]
+        with patch("carta.embed.lifecycle.time.sleep") as sleep:
+            delete_other_points(client, "proj_doc", "x.md", keep_ids=["id-x"])
+        assert sleep.called, "expected a backoff sleep between delete retries"
