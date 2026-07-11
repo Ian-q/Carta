@@ -192,90 +192,91 @@ class SmartRouter:
                 )
                 return []
 
-            total_pages = len(doc)
+            try:
+                total_pages = len(doc)
 
-            # Load resume state. completed[page_num] -> list of chunks already done.
-            completed = load_vision_checkpoint(
-                checkpoint_path, self.vision_model, self.ocr_model
-            )
-            checkpoint_lock = threading.Lock()
-
-            def persist_checkpoint():
-                """Snapshot ``completed`` to disk (caller holds checkpoint_lock)."""
-                save_vision_checkpoint(
-                    checkpoint_path,
-                    pdf_path,
-                    self.vision_model,
-                    self.ocr_model,
-                    [{"page_num": p, "chunks": completed[p]} for p in sorted(completed)],
+                # Load resume state. completed[page_num] -> list of chunks already done.
+                completed = load_vision_checkpoint(
+                    checkpoint_path, self.vision_model, self.ocr_model
                 )
+                checkpoint_lock = threading.Lock()
 
-            page_specs: list[tuple[int, Any, PageProfile]] = []
-            for page_num, page in enumerate(doc, start=1):
-                if cancel_event is not None and cancel_event.is_set():
-                    break
-                if page_num in completed:
-                    # Resumed page — skip fitz analysis too; we already have chunks.
-                    continue
-                with self._fitz_lock:
-                    profile = self.analyzer.analyze(page)
-                page_specs.append((page_num, page, profile))
+                def persist_checkpoint():
+                    """Snapshot ``completed`` to disk (caller holds checkpoint_lock)."""
+                    save_vision_checkpoint(
+                        checkpoint_path,
+                        pdf_path,
+                        self.vision_model,
+                        self.ocr_model,
+                        [{"page_num": p, "chunks": completed[p]} for p in sorted(completed)],
+                    )
 
-            if completed and progress_callback:
-                # Tell the caller about resumed pages so the perf log + UI reflect them.
-                for p in sorted(completed):
-                    chunks = completed[p]
-                    try:
-                        char_count = sum(len(c.get("text", "")) for c in chunks)
-                        model_used = chunks[0]["model_used"] if chunks else "skip"
-                        page_class = chunks[0].get("page_class", "pure_text") if chunks else "pure_text"
-                        progress_callback(p, total_pages, page_class, model_used, char_count)
-                    except Exception:
-                        pass
-
-            def route_one(spec):
-                page_num, page, profile = spec
-                if cancel_event is not None and cancel_event.is_set():
-                    return None
-                chunks = self._route(page, page_num, profile, doc)
-                return page_num, profile, chunks
-
-            def record_page(page_num, profile, chunks):
-                with checkpoint_lock:
-                    completed[page_num] = chunks
-                    persist_checkpoint()
-                if progress_callback:
-                    try:
-                        char_count = sum(len(c.get("text", "")) for c in chunks)
-                        model_used = chunks[0]["model_used"] if chunks else "skip"
-                        page_class = profile.page_class.name.lower()
-                        progress_callback(page_num, total_pages, page_class, model_used, char_count)
-                    except Exception:
-                        pass
-
-            if self.vision_workers <= 1 or len(page_specs) <= 1:
-                for spec in page_specs:
-                    result = route_one(spec)
-                    if result is None:
+                page_specs: list[tuple[int, Any, PageProfile]] = []
+                for page_num, page in enumerate(doc, start=1):
+                    if cancel_event is not None and cancel_event.is_set():
                         break
-                    p, profile, chunks = result
-                    record_page(p, profile, chunks)
-            else:
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=self.vision_workers,
-                    thread_name_prefix="carta-vision",
-                ) as ex:
-                    futures = [ex.submit(route_one, s) for s in page_specs]
-                    for fut in concurrent.futures.as_completed(futures):
-                        result = fut.result()
+                    if page_num in completed:
+                        # Resumed page — skip fitz analysis too; we already have chunks.
+                        continue
+                    with self._fitz_lock:
+                        profile = self.analyzer.analyze(page)
+                    page_specs.append((page_num, page, profile))
+
+                if completed and progress_callback:
+                    # Tell the caller about resumed pages so the perf log + UI reflect them.
+                    for p in sorted(completed):
+                        chunks = completed[p]
+                        try:
+                            char_count = sum(len(c.get("text", "")) for c in chunks)
+                            model_used = chunks[0]["model_used"] if chunks else "skip"
+                            page_class = chunks[0].get("page_class", "pure_text") if chunks else "pure_text"
+                            progress_callback(p, total_pages, page_class, model_used, char_count)
+                        except Exception:
+                            pass
+
+                def route_one(spec):
+                    page_num, page, profile = spec
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None
+                    chunks = self._route(page, page_num, profile, doc)
+                    return page_num, profile, chunks
+
+                def record_page(page_num, profile, chunks):
+                    with checkpoint_lock:
+                        completed[page_num] = chunks
+                        persist_checkpoint()
+                    if progress_callback:
+                        try:
+                            char_count = sum(len(c.get("text", "")) for c in chunks)
+                            model_used = chunks[0]["model_used"] if chunks else "skip"
+                            page_class = profile.page_class.name.lower()
+                            progress_callback(page_num, total_pages, page_class, model_used, char_count)
+                        except Exception:
+                            pass
+
+                if self.vision_workers <= 1 or len(page_specs) <= 1:
+                    for spec in page_specs:
+                        result = route_one(spec)
                         if result is None:
-                            continue
+                            break
                         p, profile, chunks = result
                         record_page(p, profile, chunks)
+                else:
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=self.vision_workers,
+                        thread_name_prefix="carta-vision",
+                    ) as ex:
+                        futures = [ex.submit(route_one, s) for s in page_specs]
+                        for fut in concurrent.futures.as_completed(futures):
+                            result = fut.result()
+                            if result is None:
+                                continue
+                            p, profile, chunks = result
+                            record_page(p, profile, chunks)
 
-            doc.close()
-
-            return [c for p in sorted(completed) for c in completed[p]]
+                return [c for p in sorted(completed) for c in completed[p]]
+            finally:
+                doc.close()
 
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
@@ -464,25 +465,29 @@ class SmartRouter:
         so dense tables that generate thousands of tokens don't hit the configured timeout wall.
         """
         b64 = base64.b64encode(image_png_bytes).decode("utf-8")
-        resp = requests.post(
+        # Context-manage the streamed response: iter_lines breaks early on the
+        # first done:true line, leaving the body undrained — without an explicit
+        # close urllib3 will not return the connection to the pool, leaking a
+        # socket per page over a long visual drain.
+        with requests.post(
             f"{self.ollama_url}/api/generate",
             json={"model": model, "prompt": prompt, "images": [b64], "stream": True},
             timeout=timeout,
             stream=True,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"Ollama returned {resp.status_code}: {resp.text[:200]}"
-            )
-        parts: list[str] = []
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            chunk = json.loads(line)
-            parts.append(chunk.get("response", ""))
-            if chunk.get("done"):
-                break
-        return "".join(parts).strip()
+        ) as resp:
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"Ollama returned {resp.status_code}: {resp.text[:200]}"
+                )
+            parts: list[str] = []
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                parts.append(chunk.get("response", ""))
+                if chunk.get("done"):
+                    break
+            return "".join(parts).strip()
 
 
 def extract_image_descriptions_intelligent(

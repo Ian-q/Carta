@@ -3,6 +3,7 @@
 import concurrent.futures
 import hashlib
 import sys
+import time
 import uuid
 
 import requests
@@ -52,6 +53,7 @@ VISUAL_BATCH_SIZE = 4
 UPSERT_CLIENT_TIMEOUT_S = 30
 # Retry a failed batch upsert this many times before giving up (transient 5xx/reset).
 UPSERT_MAX_ATTEMPTS = 3
+UPSERT_RETRY_BACKOFF_S = 0.25
 
 
 class EmbedDimError(RuntimeError):
@@ -305,6 +307,10 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
                 return len(batch)
             except Exception as e:  # transient 5xx / timeout / connection reset
                 last_exc = e
+                # Back off between attempts — retries fired within microseconds
+                # rarely outlast a brief reset or a server mid-restart.
+                if _attempt < UPSERT_MAX_ATTEMPTS - 1:
+                    time.sleep(UPSERT_RETRY_BACKOFF_S * (_attempt + 1))
         # All retries exhausted: the batch is lost. The caller's returned count
         # therefore falls short of the expected chunk count, which _embed_one_file
         # surfaces as a partial/failed (re-pickable) status — never silent success.

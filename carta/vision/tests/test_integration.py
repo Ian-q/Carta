@@ -57,6 +57,8 @@ class TestSmartRoutingIntegration:
                     b'{"response": "' + b'x' * 60 + b'", "done": false}',
                     b'{"response": "", "done": true}',
                 ])
+                mock_resp.__enter__.return_value = mock_resp
+                mock_resp.__exit__.return_value = False
                 mock_requests.post.return_value = mock_resp
                 result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
 
@@ -93,6 +95,8 @@ class TestSmartRoutingIntegration:
                     b'{"response": "' + b'x' * 60 + b'", "done": false}',
                     b'{"response": "", "done": true}',
                 ])
+                mock_resp.__enter__.return_value = mock_resp
+                mock_resp.__exit__.return_value = False
                 mock_requests.post.return_value = mock_resp
                 result = extract_image_descriptions_intelligent(Path("fake.pdf"), cfg)
 
