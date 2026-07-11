@@ -238,7 +238,7 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
             except Exception:
                 continue  # fail open for this section
             hits = [h for h in (hits or []) if h.get("source") != doc.path]
-            if not hits or hits[0].get("score", 0.0) < threshold:
+            if not hits or (hits[0].get("score") or 0.0) < threshold:
                 continue
             if result.judge_calls >= max_judge_calls:
                 result.skipped_overflow += 1
@@ -256,7 +256,7 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
                     section=chunk.get("section_heading", ""),
                     snippet=chunk["text"][:160],
                     candidate_path=hits[0].get("source", ""),
-                    candidate_score=hits[0].get("score", 0.0),
+                    candidate_score=hits[0].get("score") or 0.0,
                     candidate_excerpt=hits[0].get("excerpt", ""),
                 ))
     return result

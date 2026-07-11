@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import requests
 import yaml
 
 CARTA_RUNTIME_SRC = Path(__file__).parent.parent
@@ -267,45 +266,43 @@ def _detect_project_name(root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, cwd=str(root)
+            capture_output=True, text=True, cwd=str(root), timeout=5,
         )
         if result.returncode == 0:
             name = Path(result.stdout.strip()).name
             if name:
                 return name
-    except FileNotFoundError:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     name = root.name
     return name if name else "carta-project"
 
 
-def _check_qdrant(url: str) -> bool:
-    try:
-        r = requests.get(f"{url}/healthz", timeout=3)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-def _check_ollama(url: str) -> bool:
-    try:
-        r = requests.get(url, timeout=3)
-        return r.status_code == 200
-    except Exception:
-        print("  Warning: Ollama not reachable. Proactive recall will be skipped until Ollama is running.")
-        return False
-
-
 def _write_config(carta_dir: Path, project_name: str, qdrant_url: str, modules: dict) -> None:
     from carta.config import DEFAULTS, _deep_merge
     base = _deep_merge(DEFAULTS, {"modules": modules})
+
+    # Re-running `carta init` must not clobber a user's tuned config (bootstrap
+    # itself advises re-running on Qdrant errors). Overlay any existing config on
+    # top of the defaults so user tuning survives, then force the freshly-computed
+    # identity + modules so a re-run still reflects current detection.
+    cfg_path = carta_dir / "config.yaml"
+    if cfg_path.exists():
+        try:
+            existing = yaml.safe_load(cfg_path.read_text()) or {}
+            if isinstance(existing, dict):
+                base = _deep_merge(base, existing)
+        except (OSError, yaml.YAMLError):
+            pass  # unreadable/corrupt existing config — fall back to fresh defaults
+    base["modules"] = modules
+
     # Hoist identity fields to the top for readability
     ordered = {
         "project_name": project_name,
         "qdrant_url": qdrant_url,
         **{k: v for k, v in base.items() if k not in ("project_name", "qdrant_url")},
     }
-    (carta_dir / "config.yaml").write_text(yaml.dump(ordered, default_flow_style=False, sort_keys=False))
+    cfg_path.write_text(yaml.dump(ordered, default_flow_style=False, sort_keys=False))
 
 
 def _register_hooks(project_root: Path) -> None:

@@ -317,3 +317,13 @@ def test_stale_judge_none_on_bad_or_missing_output(monkeypatch):
 
     monkeypatch.setattr(stale_scan, "ollama_json", lambda *a, **k: {"section_claim": "x"})  # no 'conflict'
     assert stale_scan._stale_judge("s", cand, cfg) is None
+
+
+def test_hit_with_none_score_does_not_crash_the_scan():
+    """A hit whose score is explicitly None must be treated as 0.0 (below
+    threshold), not raise TypeError and unwind the whole fail-open scan."""
+    search = lambda q: [{"source": "docs/cobs.md", "score": None, "excerpt": "x"}]
+    judge = lambda section_text, candidate: True
+    result = run_stale_scan(Path("/repo"), _CFG, [_doc()], search_fn=search, judge_fn=judge)
+    assert result.scanned == 1
+    assert result.findings == []  # None score → below threshold → no judge, no finding

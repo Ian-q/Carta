@@ -343,3 +343,37 @@ class TestQdrantImagePinnedToSafeVersion:
         from carta.install.preflight import QDRANT_IMAGE, QDRANT_RUN_SUGGESTION
         assert QDRANT_IMAGE in QDRANT_RUN_SUGGESTION
         assert QDRANT_RUN_SUGGESTION.rstrip().endswith(QDRANT_IMAGE)
+
+
+class TestServiceUrlEnvOverrides:
+    """Preflight must honour CARTA_QDRANT_URL / CARTA_OLLAMA_URL — the same
+    overrides bootstrap writes into config — so a healthy remote/non-default
+    service is not falsely reported 'not running'."""
+
+    def test_qdrant_check_uses_env_url(self, monkeypatch):
+        monkeypatch.setenv("CARTA_QDRANT_URL", "http://qdrant.internal:9999")
+        checker = PreflightChecker(interactive=False)
+        seen = {}
+
+        def fake_get(url, **kw):
+            seen["url"] = url
+            return type("R", (), {"status_code": 200, "json": lambda self=None: {}})()
+
+        with patch("carta.install.preflight.requests.get", side_effect=fake_get):
+            check = checker._check_qdrant_running()
+        assert check.status == "pass"
+        assert seen["url"].startswith("http://qdrant.internal:9999")
+
+    def test_ollama_check_uses_env_url(self, monkeypatch):
+        monkeypatch.setenv("CARTA_OLLAMA_URL", "http://ollama.internal:9998")
+        checker = PreflightChecker(interactive=False)
+        seen = {}
+
+        def fake_get(url, **kw):
+            seen["url"] = url
+            return type("R", (), {"status_code": 200})()
+
+        with patch("carta.install.preflight.requests.get", side_effect=fake_get):
+            check = checker._check_ollama_running()
+        assert check.status == "pass"
+        assert seen["url"].startswith("http://ollama.internal:9998")

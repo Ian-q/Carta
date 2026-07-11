@@ -129,12 +129,6 @@ def filter_by_permission(
             return match.group(1) or "carta_global"
         return None
     
-    # Always include current project and global collections
-    current_project_collections = [
-        c for c in all_collections 
-        if get_project(c) == current_project or get_project(c) == "carta_global"
-    ]
-    
     if mode == "all":
         # Include all discovered Carta collections
         return all_collections

@@ -255,29 +255,32 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
         ) from e
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
-    
     try:
-        response = client.query_points(
-            collection_name=collection_name,
-            query=query_vec,
-            limit=top_n,
-            with_payload=True,
-        )
-    except Exception as e:
-        raise RuntimeError(f"Qdrant search failed for {collection_name}: {e}") from e
     
-    hits = []
-    for r in response.points:
-        payload = r.payload or {}
-        hits.append({
-            "score": r.score,
-            "source": payload.get("file_path", payload.get("slug", "")),
-            "excerpt": payload.get("text", ""),
-            "page": payload.get("page") or payload.get("page_num"),
-            "section_heading": payload.get("section_heading", ""),
-            "text_source": _text_source(payload),
-        })
-    return hits
+        try:
+            response = client.query_points(
+                collection_name=collection_name,
+                query=query_vec,
+                limit=top_n,
+                with_payload=True,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Qdrant search failed for {collection_name}: {e}") from e
+    
+        hits = []
+        for r in response.points:
+            payload = r.payload or {}
+            hits.append({
+                "score": r.score,
+                "source": payload.get("file_path", payload.get("slug", "")),
+                "excerpt": payload.get("text", ""),
+                "page": payload.get("page") or payload.get("page_num"),
+                "section_heading": payload.get("section_heading", ""),
+                "text_source": _text_source(payload),
+            })
+        return hits
+    finally:
+        client.close()
 
 
 def _run_search_visual_collection(
@@ -330,45 +333,48 @@ def _run_search_visual_collection(
 
         # Search the visual collection using late-interaction MaxSim
         client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
-        
         try:
-            response = client.query_points(
-                collection_name=collection_name,
-                query=query_vector_list,  # Multi-vector query for MaxSim
-                using="colpali",  # Specify the multi-vector field
-                limit=top_n,
-                with_payload=True,
-            )
-        except Exception as e:
-            _logger.warning("Qdrant visual search failed for %s: %s", collection_name, e)
-            return []
-
-        # Format results with image data
-        hits = []
-        for r in response.points:
-            payload = r.payload or {}
-            png_path_str = payload.get("png_path", "")
-            
-            # Load the image if path is available
-            image_b64 = ""
-            if png_path_str:
-                png_path = repo_root / png_path_str
-                if png_path.exists():
-                    image_b64 = _load_image_as_base64(png_path)
-            
-            hits.append({
-                "score": r.score,
-                "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
-                "excerpt": f"Visual match from page {payload.get('page_num', '?')}",
-                "type": "visual",
-                "image_b64": image_b64,
-                "page": payload.get("page_num"),
-                "section_heading": "",
-                "png_path": png_path_str,
-                "text_source": "visual",
-            })
         
-        return hits
+            try:
+                response = client.query_points(
+                    collection_name=collection_name,
+                    query=query_vector_list,  # Multi-vector query for MaxSim
+                    using="colpali",  # Specify the multi-vector field
+                    limit=top_n,
+                    with_payload=True,
+                )
+            except Exception as e:
+                _logger.warning("Qdrant visual search failed for %s: %s", collection_name, e)
+                return []
+
+            # Format results with image data
+            hits = []
+            for r in response.points:
+                payload = r.payload or {}
+                png_path_str = payload.get("png_path", "")
+            
+                # Load the image if path is available
+                image_b64 = ""
+                if png_path_str:
+                    png_path = repo_root / png_path_str
+                    if png_path.exists():
+                        image_b64 = _load_image_as_base64(png_path)
+            
+                hits.append({
+                    "score": r.score,
+                    "source": f"{payload.get('file_path', payload.get('slug', ''))} (page {payload.get('page_num', '?')})",
+                    "excerpt": f"Visual match from page {payload.get('page_num', '?')}",
+                    "type": "visual",
+                    "image_b64": image_b64,
+                    "page": payload.get("page_num"),
+                    "section_heading": "",
+                    "png_path": png_path_str,
+                    "text_source": "visual",
+                })
+        
+            return hits
+        finally:
+            client.close()
 
     except ColPaliError as e:
         _logger.warning("ColPali query encoding failed: %s", e)

@@ -75,3 +75,13 @@ def test_compute_metrics_empty_eval_set():
     assert m["n_queries"] == 0
     assert m["recall_at_k"] == 0.0
     assert m["mrr"] == 0.0
+
+
+def test_load_eval_set_rejects_query_missing_q(tmp_path):
+    """A row with valid expectations but no 'q' must fail with a clear ValueError,
+    not a raw KeyError."""
+    import yaml
+    p = tmp_path / "eval.yaml"
+    p.write_text(yaml.dump({"queries": [{"expect": ["docs/a.md"]}]}))
+    with pytest.raises(ValueError, match="no 'q'"):
+        load_eval_set(p)

@@ -352,3 +352,41 @@ def test_append_claude_md_skips_legacy_oneliner(tmp_path):
     content = (tmp_path / "CLAUDE.md").read_text()
     assert "<!-- carta:guidance:start -->" not in content        # not upgraded / not doubled
     assert content.count("Carta is active") == 1
+
+
+def test_write_config_preserves_user_customization_on_rerun(tmp_path):
+    """Re-running `carta init` must NOT clobber a user's tuned config — bootstrap
+    itself tells users to re-run on Qdrant errors. User tuning survives; modules
+    and identity refresh to the new run's values."""
+    from carta.install.bootstrap import _write_config
+    import yaml as _yaml
+    carta_dir = tmp_path / ".carta"
+    carta_dir.mkdir()
+
+    # First init (Qdrant was down → doc_embed False), then user tunes a value.
+    _write_config(carta_dir, "proj", "http://localhost:6333", {"doc_embed": False})
+    cfg = _yaml.safe_load((carta_dir / "config.yaml").read_text())
+    cfg["stale_threshold_days"] = 999
+    cfg.setdefault("embed", {})["chunking"] = {"max_tokens": 1234}
+    (carta_dir / "config.yaml").write_text(_yaml.dump(cfg))
+
+    # Re-run after fixing Qdrant (doc_embed now True).
+    _write_config(carta_dir, "proj", "http://localhost:6333", {"doc_embed": True})
+    out = _yaml.safe_load((carta_dir / "config.yaml").read_text())
+
+    assert out["stale_threshold_days"] == 999, "user tuning was clobbered"
+    assert out["embed"]["chunking"]["max_tokens"] == 1234, "user embed tuning was clobbered"
+    assert out["modules"]["doc_embed"] is True, "re-run must refresh modules"
+
+
+def test_detect_project_name_survives_hung_git(tmp_path, monkeypatch):
+    """A hung/slow git must not block `carta init` forever — fall back to dir name."""
+    import subprocess
+    from carta.install import bootstrap
+    (tmp_path / "myproj").mkdir()
+
+    def hung_git(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", hung_git)
+    assert bootstrap._detect_project_name(tmp_path / "myproj") == "myproj"
