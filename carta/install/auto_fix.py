@@ -66,7 +66,12 @@ class AutoInstaller:
             return default
 
         suffix = " [Y/n]: " if default else " [y/N]: "
-        response = input(message + suffix).strip().lower()
+        try:
+            response = input(message + suffix).strip().lower()
+        except (EOFError, OSError):
+            # Closed/piped stdin (e.g. non-interactive CI hitting this path):
+            # decline gracefully instead of aborting init with a traceback.
+            return default
 
         if default:
             return response not in ("n", "no", "false")

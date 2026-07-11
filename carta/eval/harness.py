@@ -39,7 +39,10 @@ def load_eval_set(path: Path) -> list[EvalQuery]:
                 f"eval query #{i + 1} ({row.get('q', '?')!r}) has no usable 'expect' "
                 f"entries after dropping blanks — it can never be scored meaningfully."
             )
-        out.append(EvalQuery(q=str(row["q"]), expect=expect))
+        q = str(row.get("q") or "").strip()
+        if not q:
+            raise ValueError(f"eval query #{i + 1} has no 'q' text")
+        out.append(EvalQuery(q=q, expect=expect))
     return out
 
 

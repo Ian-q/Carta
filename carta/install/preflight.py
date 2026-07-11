@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import socket
@@ -582,8 +583,14 @@ class PreflightChecker:
             return "Start Docker Desktop from the Start menu"
         return "Start Docker Desktop (macOS/Windows) or run 'sudo systemctl start docker' (Linux)"
 
-    def _check_qdrant_running(self, url: str = "http://localhost:6333") -> PreflightCheck:
-        """Check Qdrant is running."""
+    def _check_qdrant_running(self, url: str = None) -> PreflightCheck:
+        """Check Qdrant is running.
+
+        Honours CARTA_QDRANT_URL (the same override bootstrap writes into config),
+        so a healthy non-default/remote Qdrant is not falsely reported down.
+        """
+        if url is None:
+            url = os.environ.get("CARTA_QDRANT_URL", "http://localhost:6333")
         try:
             response = requests.get(f"{url}/healthz", timeout=3)
             if response.status_code == 200:
@@ -644,8 +651,14 @@ class PreflightChecker:
             suggestion="Install from: https://ollama.ai/download",
         )
 
-    def _check_ollama_running(self, url: str = "http://localhost:11434") -> PreflightCheck:
-        """Check Ollama server is running."""
+    def _check_ollama_running(self, url: str = None) -> PreflightCheck:
+        """Check Ollama server is running.
+
+        Honours CARTA_OLLAMA_URL so a non-default/remote Ollama is not falsely
+        reported down.
+        """
+        if url is None:
+            url = os.environ.get("CARTA_OLLAMA_URL", "http://localhost:11434")
         try:
             response = requests.get(url, timeout=3)
             if response.status_code == 200:

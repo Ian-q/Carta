@@ -166,7 +166,7 @@ class TestDetectOrphanedChunks:
             "sidecar_1": {"data": {"chunk_count": 2}, "path": Path(".carta/sidecars/docs/test.embed-meta.yaml")}
         }
 
-        issues = detect_orphaned_chunks(mock_client, cfg, sidecar_registry, {})
+        issues = detect_orphaned_chunks(mock_client, cfg, sidecar_registry, {}, Path("/repo"))
 
         assert issues == []
 
@@ -184,12 +184,24 @@ class TestDetectOrphanedChunks:
             "orphaned_sidecar": [{"id": 3, "payload": {"text": "orphaned content"}}]
         }
 
-        issues = detect_orphaned_chunks(mock_client, cfg, sidecar_registry, qdrant_index)
+        issues = detect_orphaned_chunks(mock_client, cfg, sidecar_registry, qdrant_index, Path("/repo"))
 
         assert len(issues) == 1
         assert issues[0]["category"] == "orphaned_chunks"
         assert issues[0]["sidecar_id"] == "orphaned_sidecar"
         assert len(issues[0]["chunk_ids"]) == 1
+
+    def test_chunks_with_live_source_are_not_orphaned(self):
+        """A missing sidecar whose source file still exists is a missing-sidecar
+        (recoverable), NOT an orphan — the two must be mutually exclusive."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "docs").mkdir()
+            (repo / "docs" / "live.md").write_text("x")
+            qdrant_index = {"orphan_id": [{"id": 1, "payload": {"file_path": "docs/live.md"}}]}
+            issues = detect_orphaned_chunks(Mock(), {"docs_root": "docs"}, {}, qdrant_index, repo)
+        assert issues == []  # source exists → not orphaned
 
 
 class TestDetectMissingSidecars:
@@ -207,16 +219,29 @@ class TestDetectMissingSidecars:
         assert issues == []
 
     def test_detects_missing_sidecars(self):
-        """Files with chunks but no sidecar are detected."""
-        sidecar_registry = {}
-        qdrant_index = {
-            "phantom_sidecar": [{"id": 1, "payload": {"file_path": "docs/orphaned.md"}}]
-        }
-
-        issues = detect_missing_sidecars(Path("/repo"), {}, sidecar_registry, qdrant_index)
+        """A file with chunks but no sidecar, whose source still exists, is a
+        recoverable missing-sidecar."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "docs").mkdir()
+            (repo / "docs" / "orphaned.md").write_text("x")
+            qdrant_index = {
+                "phantom_sidecar": [{"id": 1, "payload": {"file_path": "docs/orphaned.md"}}]
+            }
+            issues = detect_missing_sidecars(repo, {}, {}, qdrant_index)
 
         assert len(issues) == 1
         assert issues[0]["category"] == "missing_sidecars"
+
+    def test_missing_sidecar_not_reported_when_source_deleted(self):
+        """Chunks whose source file no longer exists are orphaned, not missing —
+        detect_missing_sidecars must not also report them (no double-count)."""
+        qdrant_index = {
+            "phantom_sidecar": [{"id": 1, "payload": {"file_path": "docs/deleted.md"}}]
+        }
+        issues = detect_missing_sidecars(Path("/nonexistent-repo"), {}, {}, qdrant_index)
+        assert issues == []
 
 
 class TestDetectStaleSidecars:
@@ -360,6 +385,21 @@ class TestDetectDisconnectedFiles:
             assert len(issues) == 1
             assert issues[0]["category"] == "disconnected_files"
             assert "orphaned.md" in issues[0]["file_path"]
+
+    def test_chunked_file_is_not_disconnected(self):
+        """A file with chunks in Qdrant (payload file_path is repo-relative) must
+        be recognised as covered — not falsely flagged 'no sidecar, no chunks'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            (repo_root / "docs").mkdir()
+            (repo_root / "docs" / "embedded.md").write_text("# Embedded")
+            sidecar_registry = {}  # sidecar lost, but chunks exist
+            qdrant_index = {"sid": [{"id": 1, "payload": {"file_path": "docs/embedded.md"}}]}
+            issues = detect_disconnected_files(
+                repo_root, {"docs_root": "docs", "excluded_paths": []},
+                sidecar_registry, qdrant_index,
+            )
+        assert issues == []  # chunk coverage (relative→absolute) matches the file
 
 
 class TestDetectQdrantSidecarMismatches:
