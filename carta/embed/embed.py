@@ -174,11 +174,6 @@ def collection_is_hybrid(client: QdrantClient, coll_name: str) -> bool:
         if getattr(e, "status_code", None) == 404:
             return False
         raise
-    except Exception:
-        # Some qdrant-client builds wrap 404 in a plain ValueError/RuntimeError;
-        # treat those as "not found" only when the message looks like a missing
-        # collection.  All other exceptions propagate.
-        raise
 
     vectors = info.config.params.vectors
     has_named_dense = isinstance(vectors, dict) and DENSE_VECTOR_NAME in vectors

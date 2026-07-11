@@ -108,7 +108,7 @@ def _build_qdrant_chunk_index(client: QdrantClient, collection_name: str) -> dic
     return index
 
 
-def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: dict, qdrant_index: dict) -> list[dict]:
+def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: dict, qdrant_index: dict, repo_root: Path) -> list[dict]:
     """Detect chunks in Qdrant with no matching sidecar on disk.
 
     Args:
@@ -123,29 +123,34 @@ def detect_orphaned_chunks(client: QdrantClient, cfg: dict, sidecar_registry: di
     issues = []
 
     for sidecar_id, chunks in qdrant_index.items():
-        if sidecar_id not in sidecar_registry:
-            # Orphaned: chunks exist but no sidecar
-            chunk_ids = [c["id"] for c in chunks]
+        if sidecar_id in sidecar_registry:
+            continue
+        # A missing sidecar whose SOURCE still exists on disk is recoverable by
+        # re-embedding — detect_missing_sidecars owns that case. "Orphaned" is
+        # reserved for chunks with no live source file (deleted source; purge).
+        src = chunks[0].get("payload", {}).get("file_path") if chunks else None
+        if src and (repo_root / src).exists():
+            continue
 
-            # Get first chunk's text for preview
-            first_text = ""
-            if chunks and chunks[0].get("payload", {}).get("text"):
-                first_text = chunks[0]["payload"]["text"][:100]
+        # Orphaned: chunks exist but no sidecar and no live source file
+        chunk_ids = [c["id"] for c in chunks]
+        first_text = ""
+        if chunks and chunks[0].get("payload", {}).get("text"):
+            first_text = chunks[0]["payload"]["text"][:100]
 
-            issue = {
-                "id": f"orphaned_{sidecar_id[:8]}",
-                "category": "orphaned_chunks",
-                "severity": "warning",
-                "sidecar_id": sidecar_id,
-                "chunk_ids": chunk_ids,
-                "chunk_count": len(chunks),
-                "first_chunk_text": first_text,
-                "metadata": {
-                    "doc_type": chunks[0].get("payload", {}).get("doc_type", "unknown") if chunks else "unknown",
-                    "collection": f"{cfg.get('project_name', 'unknown')}_doc"
-                }
+        issues.append({
+            "id": f"orphaned_{sidecar_id[:8]}",
+            "category": "orphaned_chunks",
+            "severity": "warning",
+            "sidecar_id": sidecar_id,
+            "chunk_ids": chunk_ids,
+            "chunk_count": len(chunks),
+            "first_chunk_text": first_text,
+            "metadata": {
+                "doc_type": chunks[0].get("payload", {}).get("doc_type", "unknown") if chunks else "unknown",
+                "collection": f"{cfg.get('project_name', 'unknown')}_doc"
             }
-            issues.append(issue)
+        })
 
     return issues
 
@@ -167,22 +172,26 @@ def detect_missing_sidecars(repo_root: Path, cfg: dict, sidecar_registry: dict, 
     issues = []
 
     for sidecar_id, chunks in qdrant_index.items():
-        if sidecar_id not in sidecar_registry and chunks:
-            # Find file_path from chunk payload if available
-            file_path = None
-            if chunks and chunks[0].get("payload", {}).get("file_path"):
-                file_path = chunks[0]["payload"]["file_path"]
+        if sidecar_id in sidecar_registry or not chunks:
+            continue
+        # Find file_path from chunk payload if available
+        file_path = None
+        if chunks and chunks[0].get("payload", {}).get("file_path"):
+            file_path = chunks[0]["payload"]["file_path"]
+        # Only a "missing sidecar" if the SOURCE still exists (re-embeddable).
+        # Chunks with no live source are orphaned — detect_orphaned_chunks owns them.
+        if not file_path or not (repo_root / file_path).exists():
+            continue
 
-            issue = {
-                "id": f"missing_sidecar_{sidecar_id[:8]}",
-                "category": "missing_sidecars",
-                "severity": "warning",
-                "sidecar_id": sidecar_id,
-                "file_path": file_path,
-                "chunk_count": len(chunks),
-                "expected_sidecar_path": f".carta/sidecars/{file_path}.embed-meta.yaml" if file_path else "unknown"
-            }
-            issues.append(issue)
+        issues.append({
+            "id": f"missing_sidecar_{sidecar_id[:8]}",
+            "category": "missing_sidecars",
+            "severity": "warning",
+            "sidecar_id": sidecar_id,
+            "file_path": file_path,
+            "chunk_count": len(chunks),
+            "expected_sidecar_path": f".carta/sidecars/{file_path}.embed-meta.yaml",
+        })
 
     return issues
 
@@ -313,7 +322,11 @@ def detect_disconnected_files(repo_root: Path, cfg: dict, sidecar_registry: dict
         for chunk in chunks:
             file_path_str = chunk.get("payload", {}).get("file_path")
             if file_path_str:
-                covered_files.add(Path(file_path_str))
+                # Chunk payload file_path is repo-relative; discoverable_files and
+                # sidecar coverage are absolute. Normalise to absolute so a file
+                # that has chunks is recognised as covered (else it is wrongly
+                # double-reported as disconnected "no sidecar, no chunks").
+                covered_files.add(repo_root / file_path_str)
 
     # Scan for all discoverable files (both .md and .pdf)
     discoverable_files = set()
@@ -468,7 +481,7 @@ def run_audit(cfg: dict, repo_root: Path, verbose: bool = False) -> dict:
 
     # Run all detection functions
     all_issues = []
-    all_issues.extend(detect_orphaned_chunks(client, cfg, sidecar_registry, qdrant_index))
+    all_issues.extend(detect_orphaned_chunks(client, cfg, sidecar_registry, qdrant_index, repo_root))
     all_issues.extend(detect_missing_sidecars(repo_root, cfg, sidecar_registry, qdrant_index))
     all_issues.extend(detect_stale_sidecars(repo_root, cfg, sidecar_registry))
     all_issues.extend(detect_hash_mismatches(repo_root, cfg, sidecar_registry))
