@@ -38,7 +38,11 @@ from carta.embed.tabular import (
 )
 from carta.embed.lifecycle import needs_rehash, compute_file_hash, mark_sidecar_stale, check_stale_alert, delete_other_points
 from carta.embed.visual_queue import add_pending_pages, move_to_done, VISUAL_PENDING_KEY, VISUAL_DONE_KEY, queue_summary, format_summary_line
-from carta.embed.colpali import is_colpali_available
+# NOTE: carta.embed.colpali is imported LAZILY, inside the functions that need it.
+# It pulls in torch + transformers (~2.4s), and carta-hook imports run_search from
+# this module on EVERY prompt — so a module-level import here costs that on every
+# prompt in every project, just to read a boolean. Guarded by
+# carta/embed/tests/test_import_cost.py.
 from carta.embed.status import StatusWriter
 from carta.vision.classifier import PageClass, PageAnalyzer
 
@@ -1143,6 +1147,8 @@ def run_visual_embed(
         When ColPali is unavailable the dict also contains ``"status": "visual_unavailable"``.
     """
     summary: dict = {"pages_embedded": 0, "pages_failed": 0, "files": 0}
+
+    from carta.embed.colpali import is_colpali_available
 
     if not is_colpali_available():
         print(
