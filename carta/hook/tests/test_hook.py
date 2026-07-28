@@ -577,3 +577,99 @@ def test_inject_labels_note_hits():
     data = json.loads(out.strip())
     assert "[quirk] docs/quirks/2026-06-11-psu.md" in data["context"]
     assert "Source: docs/CAN/TOPOLOGY.md" in data["context"]
+
+
+# ---------------------------------------------------------------------------
+# Bounded search budget (issue #106)
+# ---------------------------------------------------------------------------
+
+def test_hook_passes_search_timeout_to_run_search():
+    """The configured budget must reach run_search."""
+    captured = {}
+
+    def fake_run_search(query, cfg, **kwargs):
+        captured["timeout_s"] = kwargs.get("timeout_s")
+        return [_make_hit(0.90)]
+
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["search_timeout_s"] = 7
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=fake_run_search),
+    ):
+        _capture_main()
+
+    assert captured["timeout_s"] == 7
+
+
+def test_hook_search_timeout_defaults_to_3():
+    """Absent config key falls back to 3s, matching judge_timeout_s."""
+    captured = {}
+
+    def fake_run_search(query, cfg, **kwargs):
+        captured["timeout_s"] = kwargs.get("timeout_s")
+        return [_make_hit(0.90)]
+
+    cfg = _make_cfg()
+    cfg["proactive_recall"].pop("search_timeout_s", None)
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=fake_run_search),
+    ):
+        _capture_main()
+
+    assert captured["timeout_s"] == 3
+
+
+def test_hook_still_fails_open_when_search_raises():
+    """Fail-open is non-negotiable: a search error must still exit 0, silently."""
+    cfg = _make_cfg()
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=TimeoutError("backend down")),
+    ):
+        out = _capture_main()
+
+    assert out.strip() == "", "must not inject when the search failed"
+
+
+def test_search_timeout_default_registered_in_config():
+    """The key must exist in DEFAULTS so `carta init` writes it."""
+    from carta.config import DEFAULTS
+    assert DEFAULTS["proactive_recall"]["search_timeout_s"] == 3
+
+
+def test_hook_returns_within_budget_against_a_blocking_backend():
+    """The whole point: a backend that hangs must not hang the prompt.
+
+    Without the budget this blocks for the full 60s embed timeout. run_search is
+    patched to block, so this exercises the hook's contract end to end rather
+    than the deadline arithmetic already covered in test_search_timeout.py.
+    """
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["search_timeout_s"] = 1
+
+    def blocking_run_search(query, search_cfg, **kwargs):
+        budget = kwargs.get("timeout_s")
+        assert budget == 1, f"hook must pass its budget down, got {budget}"
+        time.sleep(budget)
+        raise TimeoutError("backend unreachable")
+
+    start = time.monotonic()
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=blocking_run_search),
+    ):
+        out = _capture_main()
+    elapsed = time.monotonic() - start
+
+    assert out.strip() == "", "must not inject when the backend is unreachable"
+    assert elapsed < 5, f"hook took {elapsed:.1f}s; budget was 1s"
