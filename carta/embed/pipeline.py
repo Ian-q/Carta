@@ -1927,7 +1927,8 @@ def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> l
              "doc_type": ""} for _sort, page, heading in rows]
 
 
-def _embed_query_or_raise(query: str, cfg: dict, collections: list[str]) -> list[float] | None:
+def _embed_query_or_raise(query: str, cfg: dict, collections: list[str],
+                          timeout: float | None = None) -> list[float] | None:
     """Embed the text query ONCE, before any per-collection loop.
 
     Returns the query vector, or None when there are no text collections to search
@@ -1935,13 +1936,21 @@ def _embed_query_or_raise(query: str, cfg: dict, collections: list[str]) -> list
     swallowed by the per-collection handler as a missing collection — otherwise a
     dead/misconfigured Ollama backend is reported as "no results / nothing
     embedded", sending the user to re-embed a healthy corpus (#79).
+
+    ``timeout`` is an optional per-request budget from a caller on a latency-critical
+    path (issue #106). When None the kwarg is omitted entirely rather than forwarded
+    as None — requests treats ``timeout=None`` as "wait forever", so passing it
+    through would silently REMOVE get_embedding's 60s ceiling instead of keeping it.
     """
     if not any(not c.endswith("_visual") for c in collections):
         return None
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"]["ollama_model"]
+    kwargs = {"ollama_url": ollama_url, "model": model, "prefix": "search_query: "}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     try:
-        return get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+        return get_embedding(query, **kwargs)
     except Exception as e:
         raise RuntimeError(
             f"Could not embed the query — is Ollama running at {ollama_url} and the "
