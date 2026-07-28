@@ -81,18 +81,24 @@ def get_embedding(
     ollama_url: str = "http://localhost:11434",
     model: str = "nomic-embed-text:latest",
     prefix: str = "search_document: ",
+    timeout: float = 60,
 ) -> list[float]:
     """Get embedding vector from Ollama API.
 
     If Ollama reports the input exceeds the model's context length, truncates
     the text by 25% per attempt and retries up to 3 times before raising.
+
+    ``timeout`` is the per-request budget. The 60s default suits the ingest path,
+    where a long document chunk against a cold model legitimately takes a while.
+    Callers on a latency-critical path — notably the proactive-recall hook, which
+    blocks prompt submission — pass something far smaller (issue #106).
     """
     attempt_text = text
     for attempt in range(4):
         resp = requests.post(
             f"{ollama_url}/api/embeddings",
             json={"model": model, "prompt": f"{prefix}{attempt_text}", "keep_alive": ollama_keep_alive()},
-            timeout=60,
+            timeout=timeout,
         )
         if resp.status_code == 200:
             emb = resp.json().get("embedding")
