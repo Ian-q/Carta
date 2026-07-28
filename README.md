@@ -263,6 +263,16 @@ eval`). The proactive-recall hook **never reranks** (and never loads ColPali) �
 every prompt and blocks submission, so it always uses the fast fused order; its gray-zone judge
 handles relevance filtering.
 
+**Search budget.** For the same reason, the hook runs under a wall-clock budget —
+`proactive_recall.search_timeout_s`, default 3 s — covering the query embed and the Qdrant
+queries together. If it expires the hook stays silent and the prompt proceeds immediately.
+
+This matters most with a **remote** Qdrant. A dead localhost backend refuses instantly, so the
+underlying 60 s embed timeout never binds; a dead remote peer drops packets with no RST, so
+without a budget every prompt would stall for the full timeout. Only the hook is bounded —
+`carta search`, MCP and `carta eval` keep their generous timeouts, since a slow search there is
+fine and a slow prompt is not.
+
 ### Graph-aware retrieval (opt-in)
 
 An optional pre-rerank stage walks the `related:` frontmatter graph (undirected, 1 hop) from the

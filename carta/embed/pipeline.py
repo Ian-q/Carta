@@ -1927,7 +1927,8 @@ def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> l
              "doc_type": ""} for _sort, page, heading in rows]
 
 
-def _embed_query_or_raise(query: str, cfg: dict, collections: list[str]) -> list[float] | None:
+def _embed_query_or_raise(query: str, cfg: dict, collections: list[str],
+                          timeout: float | None = None) -> list[float] | None:
     """Embed the text query ONCE, before any per-collection loop.
 
     Returns the query vector, or None when there are no text collections to search
@@ -1935,13 +1936,21 @@ def _embed_query_or_raise(query: str, cfg: dict, collections: list[str]) -> list
     swallowed by the per-collection handler as a missing collection — otherwise a
     dead/misconfigured Ollama backend is reported as "no results / nothing
     embedded", sending the user to re-embed a healthy corpus (#79).
+
+    ``timeout`` is an optional per-request budget from a caller on a latency-critical
+    path (issue #106). When None the kwarg is omitted entirely rather than forwarded
+    as None — requests treats ``timeout=None`` as "wait forever", so passing it
+    through would silently REMOVE get_embedding's 60s ceiling instead of keeping it.
     """
     if not any(not c.endswith("_visual") for c in collections):
         return None
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"]["ollama_model"]
+    kwargs = {"ollama_url": ollama_url, "model": model, "prefix": "search_query: "}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     try:
-        return get_embedding(query, ollama_url=ollama_url, model=model, prefix="search_query: ")
+        return get_embedding(query, **kwargs)
     except Exception as e:
         raise RuntimeError(
             f"Could not embed the query — is Ollama running at {ollama_url} and the "
@@ -2168,7 +2177,8 @@ def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[di
         return results
 
 
-def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None = None) -> list[dict]:
+def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None = None,
+               timeout_s: float | None = None) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
     Args:
@@ -2177,6 +2187,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
         verbose: unused, kept for interface consistency.
         stats: optional dict; when provided, run_search records "rerank_requested" and
             "rerank_applied" (rerank_score observed on hits before stripping).
+        timeout_s: optional WALL-CLOCK budget for the whole search (issue #106).
+            None — the default and what every caller but the hook passes — leaves
+            behaviour exactly as it was: a 60s query embed and a 10s Qdrant client,
+            with no deadline checks.
 
     Returns:
         List of dicts: {"score": float, "source": str, "excerpt": str}
@@ -2184,6 +2198,22 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     """
     from carta.search.scoped import get_search_collections
     from pathlib import Path
+
+    # Wall-clock budget (issue #106). A per-call timeout is NOT a bound: the same
+    # 3s applied to one embed and N collections is 3s x (1+N). The proactive-recall
+    # hook blocks prompt submission, so it needs a limit it can actually reason
+    # about — hence one deadline for the whole call rather than per-request values.
+    deadline = (time.monotonic() + timeout_s) if timeout_s else None
+
+    def _remaining() -> float | None:
+        """Seconds left in the budget, or None when unbudgeted.
+
+        Floored at 0.1 so an already-spent budget never passes 0 or a negative to
+        requests/QdrantClient (where those mean 'no timeout' or raise).
+        """
+        if deadline is None:
+            return None
+        return max(0.1, deadline - time.monotonic())
 
     top_n = cfg.get("search", {}).get("top_n", 5)
     # find_config() returns <repo>/.carta/config.yaml; the repo root is its
@@ -2224,16 +2254,20 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
         if cfg.get("embed", {}).get("colpali_enabled", None) is not False:
             collections.append(f"{cfg['project_name']}_visual")
     
-    try:
-        client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
-    except Exception as e:
-        raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
-    
     # Embed the text query ONCE, before the per-collection loop. A failure here is a
     # real embedding-backend outage (Ollama down, wrong/missing model, empty vector),
     # not a per-collection miss — surface it instead of letting the loop's handler
     # mis-classify it and return [] ("nothing embedded", #79).
-    text_query_vec = _embed_query_or_raise(query, cfg, collections)
+    text_query_vec = _embed_query_or_raise(query, cfg, collections, timeout=_remaining())
+
+    # Constructed AFTER the embed so a budgeted caller's client reflects the time
+    # already spent rather than getting a fresh full budget. Safe to reorder:
+    # QdrantClient does not connect on construction, so this try/except never
+    # actually fired on a dead backend — the failure surfaces at query time.
+    try:
+        client = QdrantClient(url=cfg["qdrant_url"], timeout=_remaining() or 10)
+    except Exception as e:
+        raise RuntimeError(f"Cannot connect to Qdrant: {e}") from e
 
     # Search each collection independently, then fuse across them by rank (RRF)
     # so incomparable score scales (text cosine/RRF vs visual ColPali MaxSim)
@@ -2241,6 +2275,11 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     per_collection: list[list[dict]] = []
 
     for coll_name in collections:
+        if deadline is not None and time.monotonic() >= deadline:
+            # Budget spent. Return what we have rather than raising — the hook's
+            # noise gate exits silently on an empty result set, so an outage
+            # degrades to silence instead of a stderr line on every prompt.
+            break
         coll_results: list[dict] = []
         try:
             if coll_name.endswith("_visual"):
