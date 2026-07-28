@@ -643,3 +643,33 @@ def test_search_timeout_default_registered_in_config():
     """The key must exist in DEFAULTS so `carta init` writes it."""
     from carta.config import DEFAULTS
     assert DEFAULTS["proactive_recall"]["search_timeout_s"] == 3
+
+
+def test_hook_returns_within_budget_against_a_blocking_backend():
+    """The whole point: a backend that hangs must not hang the prompt.
+
+    Without the budget this blocks for the full 60s embed timeout. run_search is
+    patched to block, so this exercises the hook's contract end to end rather
+    than the deadline arithmetic already covered in test_search_timeout.py.
+    """
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["search_timeout_s"] = 1
+
+    def blocking_run_search(query, search_cfg, **kwargs):
+        budget = kwargs.get("timeout_s")
+        assert budget == 1, f"hook must pass its budget down, got {budget}"
+        time.sleep(budget)
+        raise TimeoutError("backend unreachable")
+
+    start = time.monotonic()
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", side_effect=blocking_run_search),
+    ):
+        out = _capture_main()
+    elapsed = time.monotonic() - start
+
+    assert out.strip() == "", "must not inject when the backend is unreachable"
+    assert elapsed < 5, f"hook took {elapsed:.1f}s; budget was 1s"
