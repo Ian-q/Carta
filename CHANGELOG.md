@@ -4,6 +4,20 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-28
+
+### Fixed
+- **The proactive-recall hook can no longer stall prompt submission against an unreachable backend.** The hook always failed open — every path exits 0 and the prompt proceeds — so this was never a correctness bug; it was a **duration** bug. Two timeouts sat on its path: a 60 s Ollama query embed and a 10 s Qdrant client applied *per collection*, giving a worst case of `60 + 10 × n_collections` ≈ **80 s on every prompt**. That ceiling never bound in practice because the backend was on localhost, where a dead service returns `ECONNREFUSED` instantly. Pointing `qdrant_url` at a **remote host** changes the failure mode without changing a line of code: a peer that is down drops packets with no RST, so `requests` waits out the full connect timeout. The hook now runs under a wall-clock budget and stays silent when it expires. This is the prerequisite for running Carta's vector store on another machine (#106).
+
+### Added
+- **`proactive_recall.search_timeout_s`** (default `3`) — wall-clock budget covering the hook's query embed *and* its Qdrant queries together.
+- **`run_search(..., timeout_s=None)`** — optional budget. Implemented as a single deadline rather than a per-call timeout, because a per-call value is not a bound: the same 3 s across one embed and N collections is 3 s × (1+N). The query embed and the Qdrant client are each clamped to the time remaining, and once the budget is spent the loop stops querying further collections and returns the results it has rather than raising — the hook's noise gate already exits silently on an empty set, so an outage degrades to silence instead of a stderr line on every prompt.
+- **`get_embedding(..., timeout=60)`** — explicit per-request timeout. The 60 s default is unchanged and still suits the ingest path.
+
+### Notes
+- **No behaviour change for any caller but the hook.** `timeout_s=None` is byte-identical to previous behaviour, so `carta search`, the MCP tools and `carta eval` keep their existing timeouts — a slow explicit search over a wide candidate pool is legitimate, while a slow prompt is not. A global search timeout was considered and rejected for that reason. Pinned by `test_run_search_without_budget_keeps_legacy_timeouts`, which asserts the exact legacy values and passed *before* the implementation existed.
+- An outer `ThreadPoolExecutor` wrapper is **not** a valid fix here and was not used: `__exit__` waits for the abandoned thread, so it cannot free a blocked inner call — the same reasoning already documented in `_call_ollama_judge`.
+
 ## [0.14.0] — 2026-06-20
 
 ### Added
