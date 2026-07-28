@@ -136,6 +136,7 @@ DEFAULTS = {
         "low_threshold": 0.60,
         "max_results": 5,
         "judge_timeout_s": 3,
+        "search_timeout_s": 3,      # wall-clock budget for the recall search (#106)
         "ollama_model": "qwen3.5:0.8b",
     },
     "hooks": {

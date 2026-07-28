@@ -71,6 +71,7 @@ def _run() -> None:
     low_threshold = pr.get("low_threshold", 0.60)
     max_results = pr.get("max_results", 5)
     judge_timeout_s = pr.get("judge_timeout_s", 3)
+    search_timeout_s = pr.get("search_timeout_s", 3)
 
     # 5. Extract query
     query = _extract_query(prompt, cfg)
@@ -81,6 +82,12 @@ def _run() -> None:
     # rerank call can take 10s+). The three-zone judge below already filters
     # for relevance. Force both off for this search regardless of the
     # project's setting.
+    #
+    # It also runs under a wall-clock budget (search_timeout_s) so an unreachable
+    # REMOTE backend cannot stall submission. This only matters off localhost: a
+    # dead local service refuses instantly, so the underlying 60s embed timeout
+    # never binds, but a dead tailnet peer drops packets with no RST and the full
+    # timeout elapses on every prompt (#106).
     search_cfg = {
         **cfg,
         "embed": {**cfg.get("embed", {}), "colpali_enabled": False},
@@ -90,7 +97,7 @@ def _run() -> None:
         },
     }
     try:
-        hits = run_search(query, search_cfg)
+        hits = run_search(query, search_cfg, timeout_s=search_timeout_s)
     except Exception as e:
         print(f"carta-hook: search error (fail-open): {e}", file=sys.stderr)
         sys.exit(0)
