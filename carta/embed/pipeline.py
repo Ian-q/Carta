@@ -666,13 +666,6 @@ def _embed_one_file(
         "generation": generation,  # persist generation so bulk sidecars don't stay at 0
     }
 
-    # This file IS an enrichment doc (metadata["enriches"] was set above): a
-    # successful embed stamps the SOURCE's sidecar (enrichment_path,
-    # enrichment_source_hash, deep_scan requested->done) — never this file's own.
-    if metadata.get("enriches"):
-        from carta.embed.enrichment import record_enrichment
-        record_enrichment(repo_root, Path(metadata["enriches"]), rel_of_file)
-
     # Add vision metadata if available (Phase 999.4-04)
     if vision_metadata:
         sidecar_updates["vision"] = vision_metadata
@@ -766,6 +759,18 @@ def _embed_one_file(
             sidecar_updates["status"] = "embed_failed"
         elif persisted < attempted:
             sidecar_updates["status"] = "partial"
+
+    # This file IS an enrichment doc (metadata["enriches"] was set above): stamp
+    # the SOURCE's sidecar (enrichment_path, enrichment_source_hash, deep_scan
+    # requested->done) — but only once the embed's FINAL status (after the
+    # honest-success-accounting downgrades above) is genuinely "embedded". A
+    # total upsert failure (embed_failed) or a partial upsert must NOT stamp —
+    # otherwise the source records "enrichment ingested" against its own
+    # CURRENT file_hash, which enrichment_is_stale can then never flag as
+    # stale, permanently hiding the failure.
+    if metadata.get("enriches") and sidecar_updates.get("status") == "embedded":
+        from carta.embed.enrichment import record_enrichment
+        record_enrichment(repo_root, Path(metadata["enriches"]), rel_of_file)
 
     return count + image_chunk_count, sidecar_updates
 

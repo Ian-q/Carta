@@ -68,7 +68,11 @@ class TestRecordEnrichmentRoundTrip:
 
     def test_creates_minimal_sidecar_when_source_has_none(self, tmp_path):
         """No pre-existing sidecar: record_enrichment creates a minimal one via
-        the read_sidecar-or-{} -> write_sidecar round trip (no full stub needed)."""
+        the read_sidecar-or-{} -> write_sidecar round trip (no full stub needed).
+
+        Critically the minimal sidecar must carry current_path — otherwise
+        iter_canonical_sidecars (and everything built on it: the integrity
+        scan, status counters) silently skips it forever (induct.py)."""
         repo_root = tmp_path
         src_rel = Path("docs/notes/loose.pdf")
         src = repo_root / src_rel
@@ -78,9 +82,35 @@ class TestRecordEnrichmentRoundTrip:
         enr_rel = enrichment_rel_path(src_rel, INTERNAL)
         record_enrichment(repo_root, src_rel, enr_rel)
 
-        sc = read_sidecar(sidecar_path(src, repo_root))
+        sc_path = sidecar_path(src, repo_root)
+        sc = read_sidecar(sc_path)
+        assert sc["current_path"] == str(src_rel)
         assert sc["enrichment_path"] == str(enr_rel)
         assert sc["enrichment_source_hash"] == ""  # no file_hash was recorded
+
+        # Discoverable: iter_canonical_sidecars requires current_path to yield
+        # the sidecar at all (it skips entries without one) — without the fix
+        # this dict would be empty and the entry invisible forever, along with
+        # every consumer built on iter_canonical_sidecars (scan_corpus_integrity,
+        # status counters).
+        from carta.embed.induct import iter_canonical_sidecars
+        discovered = dict(iter_canonical_sidecars(repo_root))
+        assert sc_path in discovered
+        assert discovered[sc_path]["current_path"] == str(src_rel)
+
+        # Reachable by the integrity scan too (same iter_canonical_sidecars
+        # generator under the hood): a later embed stamping a real file_hash
+        # differing from the recorded (empty) enrichment_source_hash makes it
+        # a genuine count/stale candidate the scan can now actually see.
+        from carta.embed.integrity import scan_corpus_integrity
+        sc["enrichment_source_hash"] = "old-hash-from-this-record"
+        sc["file_hash"] = "a-real-hash-from-a-later-embed"
+        write_sidecar(src, sc, repo_root)
+        cfg = {"project_name": "test", "qdrant_url": "http://localhost:6333"}
+        client = MagicMock()
+        client.collection_exists.return_value = False
+        report = scan_corpus_integrity(cfg, repo_root, client=client)
+        assert str(src_rel) in report["stale_enrichments"]
 
 
 class TestPipelineAttributionHook:
@@ -135,6 +165,53 @@ class TestPipelineAttributionHook:
         assert src_sc["enrichment_path"] == str(enr_rel)
         assert src_sc["enrichment_source_hash"] == "abc123"
         assert src_sc["deep_scan"] == "done"
+
+    def test_zero_chunks_persisted_does_not_stamp_source(self, tmp_path):
+        """A total upsert failure (count==0 — e.g. Qdrant/Ollama down) must NOT
+        stamp the source sidecar. record_enrichment must gate on the embed's
+        FINAL status (after the honest-success-accounting downgrade to
+        embed_failed), not the optimistic 'embedded' set at dict-construction
+        time — otherwise the source records "enrichment ingested" against its
+        own CURRENT file_hash, which enrichment_is_stale can then never flag,
+        permanently hiding the failure."""
+        repo_root = tmp_path
+        cfg = self._cfg(tmp_path)
+
+        src_rel = Path("docs/reference/suppliers/CTS/schematic.pdf")
+        src = repo_root / src_rel
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"%PDF-1.4 fake")
+        write_sidecar(src, {
+            "slug": "schematic", "doc_type": "reference",
+            "current_path": str(src_rel), "status": "embedded",
+            "file_hash": "abc123", "deep_scan": "requested",
+        }, repo_root)
+
+        from carta.embed.enrichment import enrichment_rel_path
+        enr_rel = enrichment_rel_path(src_rel, cfg)
+        enr_path = repo_root / enr_rel
+        enr_path.parent.mkdir(parents=True, exist_ok=True)
+        enr_path.write_text("# Schematic extraction\n\nStructured content describing the schematic.")
+
+        mock_client = MagicMock()
+        # upsert_chunks persists NOTHING (simulates Qdrant/Ollama failure) —
+        # the write attempted real (non-empty) chunks but zero landed.
+        with patch("carta.embed.pipeline.upsert_chunks", return_value=0):
+            from carta.embed.pipeline import _embed_one_file
+            file_info = {"slug": "schematic-extraction", "doc_type": "reference", "generation": 1}
+            count, sidecar_updates = _embed_one_file(
+                enr_path, file_info, cfg, mock_client, repo_root,
+                max_tokens=400, overlap_fraction=0.15,
+            )
+
+        assert sidecar_updates["status"] == "embed_failed"
+        assert count == 0
+
+        # Source sidecar must be untouched — no enrichment fields at all.
+        src_sc = read_sidecar(sidecar_path(src, repo_root))
+        assert "enrichment_path" not in src_sc
+        assert "enrichment_source_hash" not in src_sc
+        assert src_sc["deep_scan"] == "requested"  # unchanged
 
     def test_non_enrichment_file_is_unaffected(self, tmp_path):
         """A plain markdown file (not ending in the enrichment suffix) must not

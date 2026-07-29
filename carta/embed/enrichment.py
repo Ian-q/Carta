@@ -50,6 +50,10 @@ def record_enrichment(repo_root: Path, source_rel: Path, enrichment_rel: Path) -
     src = repo_root / source_rel
     sc_path = sidecar_path(src, repo_root)
     sc = read_sidecar(sc_path) or {}
+    # A source with no prior sidecar gets a minimal one here — but it MUST carry
+    # current_path, or iter_canonical_sidecars (and everything built on it: the
+    # integrity scan, status counters) silently skips it forever (induct.py).
+    sc.setdefault("current_path", str(source_rel))
     sc["enrichment_path"] = str(enrichment_rel)
     sc["enrichment_source_hash"] = sc.get("file_hash", "")
     if sc.get("deep_scan") == "requested":
