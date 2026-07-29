@@ -383,14 +383,18 @@ Plus an integration-style test with the existing monkeypatch idiom: patch `_disc
 
 ```python
 def _drain_sort_key(item: tuple, triage_paths: list[str]) -> tuple:
-    """Drain order: flagged (oldest request first) -> triage-path prefixes -> FIFO."""
+    """Drain order: flagged (oldest request first) -> triage-path prefixes -> FIFO.
+
+    No path component in the keys: equal-tier items compare equal, so the
+    stable sort preserves discovery order (the FIFO guarantee).
+    """
     _sc_path, sc = item
     rel = str(sc.get("current_path") or "")
     if sc.get("priority") == "high":
-        return (0, str(sc.get("deep_scan_requested_at") or ""), rel)
+        return (0, str(sc.get("deep_scan_requested_at") or ""))
     if any(rel.startswith(p) for p in triage_paths):
-        return (1, "", rel)
-    return (2, "", rel)
+        return (1, "")
+    return (2, "")
 ```
 
 In `run_visual_embed`, right after discovery (and after Task 1 removed the scope filter):
@@ -418,7 +422,9 @@ git add carta/embed/pipeline.py carta/config.py carta/embed/tests/test_visual_dr
 git commit -m "feat(drain): flagged-first ordering + visual_triage_paths + deep_scan done marking"
 ```
 
----### Task 4: Enrichment — locations, ingestion attribution, staleness
+---
+
+### Task 4: Enrichment — locations, ingestion attribution, staleness
 
 **Files:**
 - Create: `carta/embed/enrichment.py`
