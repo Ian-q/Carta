@@ -48,24 +48,22 @@ _IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
 def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str = "") -> dict:
     """Return sidecar updates queuing 1-indexed image-heavy pages when two_pass_visual is on.
 
+    Deliberately independent of colpali_scoped_paths: ColPali scoping gates the
+    ColPali embedder only (see _visual_embed_one_page) — the OCR/vision drain
+    covers every file. The old scope gate here silently left out-of-scope PDFs
+    with zero visual coverage (2026-07 dark-corpus incident).
+
     Args:
         page_classes: List of PageClass values, one per page (0-indexed position = page-1).
-        cfg: Carta config dict. Reads embed.two_pass_visual and embed.colpali_scoped_paths.
-        rel_path: Repo-relative path of the source file, used to honor
-            colpali_scoped_paths. Out-of-scope sources are not queued — the visual
-            drain skips them anyway (``_filter_visual_pending_in_scope``), so queuing
-            them only strands phantom pages in visual_pending that re-queue every embed
-            and inflate the "N pages await visual" count. Empty/absent scopes = no
-            restriction (backward compatible).
+        cfg: Carta config dict. Reads embed.two_pass_visual.
+        rel_path: Repo-relative path of the source file. Accepted for call-site
+            compatibility but not used to gate queueing (see above).
 
     Returns:
         Dict with VISUAL_PENDING_KEY → sorted list of 1-indexed page numbers, or {} when
-        two_pass_visual is off, the source is out of scope, or no image-heavy pages exist.
+        two_pass_visual is off or no image-heavy pages exist.
     """
     if not cfg.get("embed", {}).get("two_pass_visual", True):
-        return {}
-    scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
-    if scopes and not _colpali_path_in_scope(rel_path, scopes):
         return {}
     pending = [i + 1 for i, pc in enumerate(page_classes) if pc in _IMAGE_HEAVY]
     updates: dict = {}
@@ -377,7 +375,9 @@ def _embed_one_file(
             # (fail closed — do not escalate to the heavy VLM path).
             print(
                 f"Warning: two_pass_visual page classification failed for {file_path}: {_cls_exc}; "
-                f"pages left unclassified — skipping inline vision for this file",
+                f"pages left unclassified — skipping inline vision for this file; two-pass visual "
+                f"queueing also skipped — file has no visual coverage until flagged (carta flag) "
+                f"or re-embedded",
                 file=sys.stderr,
                 flush=True,
             )
@@ -947,11 +947,11 @@ def _filter_visual_pending_in_scope(queued: list[tuple], scopes: list) -> list[t
     """Drop (sidecar_path, sidecar) pairs whose source (``current_path``) is out of
     ``colpali_scoped_paths``.
 
-    The two-pass visual drain must honor ``colpali_scoped_paths`` exactly like the
-    inline ColPali path (``_colpali_path_in_scope`` in ``_embed_one_file``).
-    Otherwise out-of-scope docs (e.g. patents) queued as ``visual_pending`` get
-    drained anyway — burning the expensive ColPali + OCR pass on docs the user
-    excluded and polluting the ``_visual`` collection with low-value figures.
+    NOT called from ``run_visual_embed`` anymore (spec Component 1): the OCR/vision
+    drain covers every queued file regardless of scope, and only the ColPali step
+    inside ``_visual_embed_one_page`` honors ``colpali_scoped_paths``. Kept as a
+    standalone helper (unit-tested) in case a future caller needs scope-filtered
+    queue slicing without pulling in the drain's OCR/ColPali side effects.
 
     Empty ``scopes`` means no restriction (backward compatible).
     """
@@ -995,9 +995,11 @@ def _visual_embed_one_page(
 
     (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
         Pass-2 chunks receive a pass-2-specific chunk_index token so their point
-        IDs are disjoint from pass-1 text chunks for the same file.
+        IDs are disjoint from pass-1 text chunks for the same file. Runs
+        unconditionally — the OCR/vision drain is not scoped by colpali_scoped_paths.
     (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
-        → upsert_visual_pages (_visual collection).
+        → upsert_visual_pages (_visual collection). Gated by colpali_scoped_paths
+        (_colpali_path_in_scope) — the only step in this function that scope gates.
 
     ``router`` and ``embedder`` are constructed ONCE by run_visual_embed and
     passed in; this function must NOT re-construct them.
@@ -1086,34 +1088,38 @@ def _visual_embed_one_page(
     if not cache_dir_path.is_absolute():
         cache_dir_path = repo_root / cache_dir_path
 
-    page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
-    if page_results:
-        result = page_results[0]
-        png_path = embedder.save_page_cache(file_path, page, result["png_bytes"])
-        try:
-            png_rel = str(png_path.relative_to(repo_root))
-        except ValueError:
-            png_rel = str(png_path)
-        visual_pages = [{
-            "slug": slug,
-            "file_path": current_path,
-            "page_num": page,
-            "vectors": result["vectors"],
-            "png_path": png_rel,
-            "doc_type": "visual_page",
-            "extraction_model": model_name,
-            "source": "visual_drainer",
-        }]
-        # ColPali vectors are the expensive, irreplaceable artifact of this pass;
-        # a short upsert must raise so the page is retried, not marked done empty.
-        stored_visual = upsert_visual_pages(visual_pages, cfg, client=client)
-        if stored_visual < len(visual_pages):
-            raise RuntimeError(
-                f"ColPali upsert incomplete for page {page} of {current_path}: "
-                f"stored {stored_visual}/{len(visual_pages)} page(s) — leaving page pending"
-            )
-        if verbose:
-            print(f"    visual: page {page} ColPali → upserted", flush=True)
+    scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
+    if scopes and not _colpali_path_in_scope(current_path, scopes):
+        pass  # out of ColPali scope: OCR chunks above still upserted
+    else:
+        page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
+        if page_results:
+            result = page_results[0]
+            png_path = embedder.save_page_cache(file_path, page, result["png_bytes"])
+            try:
+                png_rel = str(png_path.relative_to(repo_root))
+            except ValueError:
+                png_rel = str(png_path)
+            visual_pages = [{
+                "slug": slug,
+                "file_path": current_path,
+                "page_num": page,
+                "vectors": result["vectors"],
+                "png_path": png_rel,
+                "doc_type": "visual_page",
+                "extraction_model": model_name,
+                "source": "visual_drainer",
+            }]
+            # ColPali vectors are the expensive, irreplaceable artifact of this pass;
+            # a short upsert must raise so the page is retried, not marked done empty.
+            stored_visual = upsert_visual_pages(visual_pages, cfg, client=client)
+            if stored_visual < len(visual_pages):
+                raise RuntimeError(
+                    f"ColPali upsert incomplete for page {page} of {current_path}: "
+                    f"stored {stored_visual}/{len(visual_pages)} page(s) — leaving page pending"
+                )
+            if verbose:
+                print(f"    visual: page {page} ColPali → upserted", flush=True)
 
     return True
 
@@ -1157,20 +1163,9 @@ def run_visual_embed(
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
     queued = _discover_visual_pending(repo_root)
-    # Honor colpali_scoped_paths in the two-pass drain too (not just the inline path):
-    # skip out-of-scope sources (e.g. patents) that were queued as visual_pending,
-    # else the expensive ColPali pass burns on excluded docs and pollutes _visual.
-    _scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
-    if _scopes:
-        _before = len(queued)
-        queued = _filter_visual_pending_in_scope(queued, _scopes)
-        _skipped = _before - len(queued)
-        if _skipped:
-            print(
-                f"    visual drain: skipping {_skipped} out-of-scope source(s) "
-                f"(not in colpali_scoped_paths)",
-                flush=True,
-            )
+    # colpali_scoped_paths is NOT applied here: the drain OCRs every queued file
+    # regardless of scope — only the ColPali embed step inside
+    # _visual_embed_one_page honors colpali_scoped_paths (via _colpali_path_in_scope).
     summary["files"] = len(queued)
     total_pages = sum(len(sc.get(VISUAL_PENDING_KEY, []) or []) for _, sc in queued)
 

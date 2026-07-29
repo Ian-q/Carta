@@ -387,3 +387,24 @@ def test_full_success_returns_true(monkeypatch, tmp_path):
     """When both upserts store everything expected, the page is done (True)."""
     assert _drain_one_page(monkeypatch, tmp_path, upsert_chunks_ret=None, upsert_visual_ret=None,
                            with_visual_page=True) is True
+
+
+def test_drain_processes_out_of_scope_file(monkeypatch, tmp_path):
+    """The drain must OCR every queued file regardless of colpali_scoped_paths —
+    only the ColPali step inside _visual_embed_one_page keeps the scope check
+    (spec Component 1). A file outside colpali_scoped_paths must still be
+    drained (OCR text upserted), not silently dropped from the queue."""
+    sc = {"current_path": "docs/reference/x.pdf", "slug": "x",
+          VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []}
+    monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc", sc)], raising=False)
+    monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page", lambda *a, **k: True, raising=False)
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
+    _mock_router_embedder(monkeypatch)
+    cfg = {"qdrant_url": "x", "embed": {"colpali_scoped_paths": ["docs/components/"]}}
+
+    summary = pipeline.run_visual_embed(tmp_path, cfg)
+
+    assert summary["pages_embedded"] == 1
