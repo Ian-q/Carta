@@ -933,6 +933,21 @@ def _embed_visual_pages_colpali(
         raise
 
 
+def _drain_sort_key(item: tuple, triage_paths: list[str]) -> tuple:
+    """Drain order: flagged (oldest request first) -> triage-path prefixes -> FIFO.
+
+    Ties are preserved via stable sort: files within the same tier remain in
+    discovery order (no path-based alphabetization).
+    """
+    _sc_path, sc = item
+    rel = str(sc.get("current_path") or "")
+    if sc.get("priority") == "high":
+        return (0, str(sc.get("deep_scan_requested_at") or ""))
+    if any(rel.startswith(p) for p in triage_paths):
+        return (1, "")
+    return (2, "")
+
+
 def _discover_visual_pending(repo_root: Path) -> list[tuple]:
     """Return [(sidecar_path, sidecar_dict)] for sidecars with non-empty visual_pending."""
     out = []
@@ -1169,6 +1184,11 @@ def run_visual_embed(
     # colpali_scoped_paths is NOT applied here: the drain OCRs every queued file
     # regardless of scope — only the ColPali embed step inside
     # _visual_embed_one_page honors colpali_scoped_paths (via _colpali_path_in_scope).
+
+    # Sort: flagged files (high priority, oldest first), then triage paths, then FIFO
+    triage_paths = (cfg.get("embed", {}) or {}).get("visual_triage_paths", []) or []
+    queued.sort(key=lambda it: _drain_sort_key(it, triage_paths))
+
     summary["files"] = len(queued)
     total_pages = sum(len(sc.get(VISUAL_PENDING_KEY, []) or []) for _, sc in queued)
 
@@ -1233,6 +1253,8 @@ def run_visual_embed(
             # "clean up only after complete success" guard after upsert_chunks).
             if rel_path and not file_failed and sc.get(VISUAL_DONE_KEY):
                 _delete_visual_orphans(client, cfg, rel_path, list(sc[VISUAL_DONE_KEY]))
+                if sc.get("deep_scan") == "requested":
+                    _update_sidecar(sc_path, {"deep_scan": "done"})
     except BaseException:
         status.finish("failed")
         raise

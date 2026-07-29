@@ -127,6 +127,7 @@ DEFAULTS = {
         "colpali_batch_size": 1,  # pages per batch (1 for CPU)
         "colpali_sidecar_path": ".carta/visual_cache/",  # where to store page PNGs
         "colpali_scoped_paths": [],  # restrict ColPali to these repo-relative globs/dirs; [] = all PDFs
+        "visual_triage_paths": [],  # repo-relative prefixes prioritized in visual drain; [] = no triage
         "vision_call_timeout_s": 300,  # seconds per Ollama vision/OCR call (was hardcoded 120)
         "two_pass_visual": True,    # pass-1 marks image-heavy pages; pass-2 (--visual) drains them
         "visual_timeout_s": 3600,   # generous per-file timeout for the slow visual pass (0 = unbounded)

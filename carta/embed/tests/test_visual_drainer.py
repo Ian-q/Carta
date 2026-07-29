@@ -506,3 +506,104 @@ def test_visual_embed_one_page_runs_colpali_when_in_scope(monkeypatch, tmp_path)
     assert upsert_chunks_calls, "OCR chunks must be upserted"
     fake_embedder.embed_pdf_pages.assert_called_once()
     assert upsert_visual_calls, "ColPali page must be upserted for an in-scope file"
+
+
+def test_drain_sort_key_orders_flagged_then_triage_then_fifo():
+    """Drain order: flagged (oldest request first) -> triage-path prefixes -> FIFO."""
+    from carta.embed.pipeline import _drain_sort_key
+    triage = ["docs/reference/suppliers/"]
+    flagged = ("p1", {"current_path": "docs/z.pdf", "priority": "high",
+                      "deep_scan_requested_at": "2026-07-29T00:00:00+00:00"})
+    supplier = ("p2", {"current_path": "docs/reference/suppliers/CTS/a.pdf"})
+    other = ("p3", {"current_path": "docs/a.pdf"})
+    items = [other, supplier, flagged]
+    items.sort(key=lambda it: _drain_sort_key(it, triage))
+    assert [i[0] for i in items] == ["p1", "p2", "p3"]
+
+
+def test_drain_sort_key_respects_request_age():
+    """Within the flagged category, oldest request comes first."""
+    from carta.embed.pipeline import _drain_sort_key
+    older = ("p1", {"current_path": "docs/a.pdf", "priority": "high",
+                    "deep_scan_requested_at": "2026-07-29T00:00:00+00:00"})
+    newer = ("p2", {"current_path": "docs/b.pdf", "priority": "high",
+                    "deep_scan_requested_at": "2026-07-29T01:00:00+00:00"})
+    items = [newer, older]
+    items.sort(key=lambda it: _drain_sort_key(it, []))
+    assert [i[0] for i in items] == ["p1", "p2"]
+
+
+def test_drain_sort_key_preserves_fifo_within_tier():
+    """Equal-tier files preserve discovery order (stable sort, no alphabetization)."""
+    from carta.embed.pipeline import _drain_sort_key
+    # Two FIFO files in reverse alphabetical order (z before a)
+    z_file = ("pz", {"current_path": "docs/z.pdf"})
+    a_file = ("pa", {"current_path": "docs/a.pdf"})
+    items = [z_file, a_file]
+    items.sort(key=lambda it: _drain_sort_key(it, []))
+    # Must remain in discovery order [z, a], not alphabetized [a, z]
+    assert [i[0] for i in items] == ["pz", "pa"]
+
+
+def test_drain_deep_scan_requested_marks_done_on_clean(monkeypatch, tmp_path):
+    """A file with deep_scan: 'requested' drains cleanly ends with deep_scan: 'done'."""
+    sc = {"current_path": "docs/x.pdf", "slug": "x", "deep_scan": "requested",
+          VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []}
+    monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc_path", sc)], raising=False)
+
+    sidecar_updates = []
+    def record_updates(sc_path, updates):
+        sidecar_updates.append(dict(updates))
+    monkeypatch.setattr(pipeline, "_update_sidecar", record_updates)
+
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page",
+                        lambda *a, **k: True, raising=False)
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
+    _mock_router_embedder(monkeypatch)
+
+    pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
+
+    # Check that deep_scan: "done" was written
+    assert any("deep_scan" in u and u["deep_scan"] == "done" for u in sidecar_updates), \
+        f"Expected deep_scan: 'done' in updates, got: {sidecar_updates}"
+
+
+def test_drain_respects_sort_order_flagged_first_when_discovered_second(monkeypatch, tmp_path):
+    """Integration: flagged file discovered SECOND must be processed FIRST.
+
+    Validates the full sort pipeline: discovery order [plain, flagged] becomes
+    process order [flagged, plain] due to _drain_sort_key ordering.
+    """
+    # Discovery order: plain file first, flagged file second
+    plain = ("sc_plain", {"current_path": "docs/plain.pdf", "slug": "plain",
+                          VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []})
+    flagged = ("sc_flagged", {"current_path": "docs/flagged.pdf", "slug": "flagged",
+                              "priority": "high", "deep_scan_requested_at": "2026-07-29T00:00:00+00:00",
+                              VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []})
+    discovery_order = [plain, flagged]
+
+    monkeypatch.setattr(pipeline, "_discover_visual_pending",
+                        lambda r: list(discovery_order), raising=False)
+
+    # Record the order in which _visual_embed_one_page is called
+    process_order = []
+    def record_process_order(sc, page, cfg, client, repo_root, router, embedder, verbose=False):
+        process_order.append(sc["current_path"])
+        return True
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page", record_process_order, raising=False)
+
+    # Sidecar updates (needed for deep_scan write path)
+    monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
+
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
+    _mock_router_embedder(monkeypatch)
+
+    pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
+
+    # Assert: flagged was processed first, despite being discovered second
+    assert process_order == ["docs/flagged.pdf", "docs/plain.pdf"], \
+        f"Expected flagged first, got: {process_order}"
