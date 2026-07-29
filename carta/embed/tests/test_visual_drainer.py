@@ -408,3 +408,101 @@ def test_drain_processes_out_of_scope_file(monkeypatch, tmp_path):
     summary = pipeline.run_visual_embed(tmp_path, cfg)
 
     assert summary["pages_embedded"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _visual_embed_one_page is the ONLY place colpali_scoped_paths still applies
+# (spec Component 1): OCR must run unconditionally; the ColPali embed step
+# alone must skip when the sidecar's current_path is out of scope. The drain
+# test above mocks _visual_embed_one_page away entirely, so it can't catch a
+# regression in the real gate — these two tests drive the real function.
+# ---------------------------------------------------------------------------
+
+def _run_visual_embed_one_page_with_scope(monkeypatch, tmp_path, *, doc_rel_path, colpali_scoped_paths):
+    """Mirrors the _drain_one_page helper above, but exposes the OCR/ColPali
+    upsert calls (rather than just the boolean result) so scope-gating on the
+    ColPali step can be asserted from both sides."""
+    from carta.embed.pipeline import _visual_embed_one_page
+
+    upsert_chunks_calls: list = []
+
+    def fake_upsert_chunks(chunks, cfg, client=None):
+        upsert_chunks_calls.append(list(chunks))
+        return sum(1 for c in chunks if (c.get("text") or "").strip())
+    monkeypatch.setattr(pipeline, "upsert_chunks", fake_upsert_chunks)
+
+    upsert_visual_calls: list = []
+
+    def fake_upsert_visual(pages, cfg, client=None):
+        upsert_visual_calls.append(list(pages))
+        return len(pages)
+    monkeypatch.setattr("carta.embed.pipeline.upsert_visual_pages", fake_upsert_visual)
+
+    fake_router = MagicMock()
+    fake_router.analyzer.analyze.return_value = MagicMock()
+    fake_router._route.return_value = [
+        {"text": "ocr text here", "image_index": 0, "model_used": "glm-ocr", "content_type": "visual"}
+    ]
+
+    fake_embedder = MagicMock()
+    fake_embedder.embed_pdf_pages.return_value = [{"png_bytes": b"PNG", "vectors": [[0.1] * 128]}]
+    fake_embedder.save_page_cache.return_value = tmp_path / "page_0002.png"
+
+    fake_page = MagicMock()
+    fake_doc = MagicMock()
+    fake_doc.__len__ = MagicMock(return_value=5)
+    fake_doc.__getitem__ = MagicMock(return_value=fake_page)
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    import sys
+    sys.modules["fitz"] = fake_fitz
+
+    cfg = {"project_name": "test", "qdrant_url": "x",
+           "embed": {"chunking": {"max_tokens": 400},
+                     "colpali_scoped_paths": colpali_scoped_paths}}
+    pdf_file = tmp_path / doc_rel_path
+    pdf_file.parent.mkdir(parents=True, exist_ok=True)
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+    sidecar = {"current_path": str(pdf_file.relative_to(tmp_path)), "slug": "x", "generation": 1,
+               VISUAL_PENDING_KEY: [2], VISUAL_DONE_KEY: []}
+    try:
+        result = _visual_embed_one_page(sidecar, 2, cfg, MagicMock(), tmp_path,
+                                        fake_router, fake_embedder)
+    finally:
+        sys.modules.pop("fitz", None)
+
+    return result, fake_embedder, upsert_chunks_calls, upsert_visual_calls
+
+
+def test_visual_embed_one_page_skips_colpali_when_out_of_scope(monkeypatch, tmp_path):
+    """A sidecar current_path outside colpali_scoped_paths must still get its OCR
+    text upserted, but the ColPali embedder must NOT be invoked at all."""
+    result, fake_embedder, upsert_chunks_calls, upsert_visual_calls = (
+        _run_visual_embed_one_page_with_scope(
+            monkeypatch, tmp_path,
+            doc_rel_path="docs/reference/x.pdf",  # OUT of scope
+            colpali_scoped_paths=["docs/components/"],
+        )
+    )
+
+    assert result is True
+    assert upsert_chunks_calls, "OCR chunks must still be upserted for an out-of-scope file"
+    fake_embedder.embed_pdf_pages.assert_not_called()
+    assert upsert_visual_calls == []
+
+
+def test_visual_embed_one_page_runs_colpali_when_in_scope(monkeypatch, tmp_path):
+    """Sibling case: a sidecar current_path inside colpali_scoped_paths gets both
+    OCR text AND the ColPali embed step."""
+    result, fake_embedder, upsert_chunks_calls, upsert_visual_calls = (
+        _run_visual_embed_one_page_with_scope(
+            monkeypatch, tmp_path,
+            doc_rel_path="docs/components/x.pdf",  # IN scope
+            colpali_scoped_paths=["docs/components/"],
+        )
+    )
+
+    assert result is True
+    assert upsert_chunks_calls, "OCR chunks must be upserted"
+    fake_embedder.embed_pdf_pages.assert_called_once()
+    assert upsert_visual_calls, "ColPali page must be upserted for an in-scope file"

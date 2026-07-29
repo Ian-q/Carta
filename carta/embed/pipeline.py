@@ -503,16 +503,19 @@ def _embed_one_file(
         _skip_inline_vision = False
 
         if two_pass_visual and _page_classes_from_extraction is not None:
-            # Pass the repo-relative path so queueing honors colpali_scoped_paths,
-            # exactly like the drain (_filter_visual_pending_in_scope) and the inline
-            # ColPali scope check below. _skip_inline_vision stays True regardless, so
-            # an out-of-scope file gets pass-1 text only — no queue, no inline vision.
-            _rel_for_scope = (
+            # Pass the repo-relative path for call-site compatibility (the sidecar's
+            # current_path); _mark_or_collect_visual_pages no longer uses it to gate
+            # queueing — colpali_scoped_paths is scope-independent for queueing/OCR,
+            # it only gates the ColPali embed step later in the pass-2 drain
+            # (_visual_embed_one_page). Every image-heavy page gets queued here
+            # regardless of scope. _skip_inline_vision stays True regardless, so the
+            # heavy inline VLM/ColPali path is never run for a two-pass file.
+            _rel_path = (
                 str(file_path.relative_to(repo_root))
                 if file_path.is_relative_to(repo_root) else str(file_path)
             )
             _visual_queue_updates = _mark_or_collect_visual_pages(
-                _page_classes_from_extraction, cfg, _rel_for_scope
+                _page_classes_from_extraction, cfg, _rel_path
             )
             _skip_inline_vision = True  # two-pass queued; inline path not needed
         elif two_pass_visual and _page_classes_from_extraction is None:
