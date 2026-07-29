@@ -40,6 +40,20 @@ def test_flag_unknown_path_raises(repo):
         flag_file(repo, CFG, Path("docs/nope.pdf"), "x")
 
 
+def test_flag_outside_docs_root_raises(repo):
+    (repo / "secret.md").write_text("nope\n")
+    with pytest.raises(FileNotFoundError):
+        flag_file(repo, CFG, Path("secret.md"), "x")
+
+
+def test_flag_dotdot_traversal_raises(repo):
+    (repo / "secret.md").write_text("nope\n")
+    # Textually starts with "docs/" but resolves outside docs_root — must not
+    # be caught by a naive string-prefix check.
+    with pytest.raises(FileNotFoundError):
+        flag_file(repo, CFG, Path("docs/reference/../../secret.md"), "x")
+
+
 def test_clear_and_list(repo):
     flag_file(repo, CFG, Path("docs/reference/note.md"), "r")
     assert [Path(s["current_path"]).name for s in list_flagged(repo)] == ["note.md"]

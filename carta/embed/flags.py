@@ -34,8 +34,10 @@ def flag_file(repo_root: Path, cfg: dict, rel: Path, reason: str) -> dict:
     overwrite in place, so re-draining is idempotent).
     """
     src = repo_root / rel
-    if not src.is_file():
-        raise FileNotFoundError(f"not a file under the repo: {rel}")
+    docs_root = cfg.get("docs_root", "docs/")
+    docs_root_abs = (repo_root / docs_root).resolve()
+    if not src.is_file() or not src.resolve().is_relative_to(docs_root_abs):
+        raise FileNotFoundError(f"not a tracked source under {docs_root}: {rel}")
     sc = read_sidecar(sidecar_path(src, repo_root)) or generate_sidecar_stub(
         src, repo_root, cfg
     )
