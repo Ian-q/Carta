@@ -634,8 +634,9 @@ def cmd_doctor(args):
                 print("\n📦 Corpus integrity")
                 visual_mm = report.get("visual_count_mismatches", {})
                 orphan_vis = report.get("orphaned_visual_files", [])
+                stale_enr = report.get("stale_enrichments", [])
                 if (not report["affected_files"] and not report["stuck_stale"]
-                        and not visual_mm and not orphan_vis):
+                        and not visual_mm and not orphan_vis and not stale_enr):
                     print("  ✅ no issues found")
                 else:
                     for slug, files in report["slug_collisions"].items():
@@ -652,6 +653,8 @@ def cmd_doctor(args):
                         print(f"  ⚠️  visual count mismatch: {fp} (sidecar {c['sidecar']} vs qdrant {c['qdrant']})")
                     for fp in orphan_vis:
                         print(f"  ⚠️  orphaned visual points: {fp}")
+                    for fp in stale_enr:
+                        print(f"  ⚠️  enrichment stale: {fp}")
                     print("  → run `carta embed --repair` to fix")
         except Exception as e:
             if args.json:

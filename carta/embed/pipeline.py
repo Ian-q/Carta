@@ -419,6 +419,14 @@ def _embed_one_file(
         metadata["companion_path"] = str(
             companion_rel_path(file_path.relative_to(repo_root)))
 
+    from carta.embed.enrichment import enrichment_suffix, source_rel_for_enrichment
+
+    rel_of_file = file_path.relative_to(repo_root)
+    if rel_of_file.name.endswith(enrichment_suffix(cfg)):
+        src_rel = source_rel_for_enrichment(rel_of_file, cfg)
+        if src_rel and (repo_root / src_rel).is_file():
+            metadata["enriches"] = str(src_rel)
+
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     # expected_text counts only non-empty chunks — upsert_chunks drops empty ones
     # before embedding, so the cleanup gate must compare against the same set.
@@ -657,6 +665,13 @@ def _embed_one_file(
         "visual_pages": visual_pages_count,  # NEW: ColPali visual pages
         "generation": generation,  # persist generation so bulk sidecars don't stay at 0
     }
+
+    # This file IS an enrichment doc (metadata["enriches"] was set above): a
+    # successful embed stamps the SOURCE's sidecar (enrichment_path,
+    # enrichment_source_hash, deep_scan requested->done) — never this file's own.
+    if metadata.get("enriches"):
+        from carta.embed.enrichment import record_enrichment
+        record_enrichment(repo_root, Path(metadata["enriches"]), rel_of_file)
 
     # Add vision metadata if available (Phase 999.4-04)
     if vision_metadata:

@@ -131,6 +131,7 @@ DEFAULTS = {
         "vision_call_timeout_s": 300,  # seconds per Ollama vision/OCR call (was hardcoded 120)
         "two_pass_visual": True,    # pass-1 marks image-heavy pages; pass-2 (--visual) drains them
         "visual_timeout_s": 3600,   # generous per-file timeout for the slow visual pass (0 = unbounded)
+        "enrichment": {"repo_visible": False, "suffix": ".extraction.md"},
     },
     "proactive_recall": {
         "high_threshold": 0.85,

@@ -82,6 +82,19 @@ def _write_visual_sidecar(tmp_path, rel_path, visual_done, visual_pending=None):
     return sc
 
 
+def _write_enrichment_sidecar(tmp_path, rel_path, file_hash, enrichment_source_hash):
+    """Write a canonical sidecar carrying enrichment attribution fields."""
+    from carta.embed.induct import sidecar_path
+    sc = sidecar_path(tmp_path / rel_path, tmp_path)
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_text(yaml.dump({
+        "current_path": rel_path, "status": "embedded", "file_hash": file_hash,
+        "enrichment_path": rel_path + ".extraction.md",
+        "enrichment_source_hash": enrichment_source_hash,
+    }))
+    return sc
+
+
 class TestScanCorpusIntegrity:
     def test_detects_slug_collisions(self, tmp_path):
         pts = [
@@ -385,6 +398,28 @@ class TestVisualIntegrityScan:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
         assert report["visual_count_mismatches"] == {}
         assert report["orphaned_visual_files"] == []
+
+
+class TestStaleEnrichmentScan:
+    """scan_corpus_integrity surfaces sources whose enrichment attribution has
+    gone stale (enrichment_source_hash != current file_hash)."""
+
+    def test_stale_enrichment_detected_alongside_fresh_one(self, tmp_path):
+        _write_enrichment_sidecar(
+            tmp_path, "docs/stale.pdf", file_hash="new-hash",
+            enrichment_source_hash="old-hash",
+        )
+        _write_enrichment_sidecar(
+            tmp_path, "docs/fresh.pdf", file_hash="same-hash",
+            enrichment_source_hash="same-hash",
+        )
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["stale_enrichments"] == ["docs/stale.pdf"]
+
+    def test_no_enrichment_fields_is_clean(self, tmp_path):
+        _write_sidecar(tmp_path, "docs/plain.md", 1, "embedded", "abc")
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["stale_enrichments"] == []
 
 
 class TestRunRepair:

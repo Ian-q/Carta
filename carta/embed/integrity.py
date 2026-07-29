@@ -14,6 +14,7 @@ from qdrant_client import QdrantClient
 from carta.config import collection_name, collection_for_doc_type
 from carta.embed.lifecycle import compute_file_hash
 from carta.embed.induct import iter_canonical_sidecars
+from carta.embed.enrichment import enrichment_is_stale
 
 
 def _scroll_all(client, coll: str):
@@ -50,6 +51,8 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         visual_count_mismatches: {file_path: {"sidecar": n_done, "qdrant": n}} —
                               sidecar visual_done count vs _visual point count
         orphaned_visual_files: [file_path] — _visual points whose source is gone
+        stale_enrichments:    [file_path] — source files whose enrichment_source_hash
+                              no longer matches their current file_hash
     """
     if client is None:
         client = QdrantClient(url=cfg["qdrant_url"], timeout=30)
@@ -117,6 +120,7 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
     count_mismatches: dict[str, dict] = {}
     visual_count_mismatches: dict[str, dict] = {}
     stuck_stale: list[str] = []
+    stale_enrichments: list[str] = []
 
     for _sc_path, sc in iter_canonical_sidecars(repo_root):
         rel = sc["current_path"]
@@ -173,6 +177,12 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
                 "qdrant": visual_qdrant,
             }
 
+        # Stale enrichment: the source's recorded enrichment_source_hash no
+        # longer matches its current file_hash (the source changed since the
+        # extraction doc was written).
+        if enrichment_is_stale(sc):
+            stale_enrichments.append(rel)
+
     # affected_files: union of everything needing re-embed or purge.
     # Slug collisions are intentionally EXCLUDED — with path-based point IDs
     # same-slug files coexist safely; genuine legacy-collision damage (chunks
@@ -189,4 +199,5 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         "affected_files": sorted(affected),
         "visual_count_mismatches": visual_count_mismatches,
         "orphaned_visual_files": orphaned_visual_files,
+        "stale_enrichments": sorted(stale_enrichments),
     }
