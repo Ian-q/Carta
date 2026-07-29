@@ -31,6 +31,7 @@ def test_corpus_counts_by_status(tmp_path):
     assert snap["corpus"] == {
         "total": 6, "done": 2, "pending": 1, "stale": 1,
         "extraction_failed": 1, "no_text_content": 0, "other": 1,
+        "flagged": 0, "awaiting_deep_scan": 0, "enrichment_stale": 0,
     }
 
 
@@ -209,6 +210,20 @@ def test_format_current_done_plaintext():
     assert "qdrant  http://q   (--check for live counts)" in out
 
 
+def test_format_current_renders_flag_line_when_present():
+    snap = {
+        "name": "proj", "path": "/tmp/proj", "qdrant_url": "http://q",
+        "embed": {"state": "done", "age_s": 120.0, "embedded": 10,
+                  "skipped": 2, "errors": 0, "chunks": 2334},
+        "corpus": {"total": 12, "done": 10, "pending": 2, "stale": 0,
+                   "extraction_failed": 0, "other": 0,
+                   "flagged": 1, "awaiting_deep_scan": 1, "enrichment_stale": 0},
+        "check": None,
+    }
+    out = status.format_current(snap, color=False)
+    assert "flags   flagged 1 (1 awaiting deep scan)" in out
+
+
 def test_format_current_never_with_check():
     snap = {
         "name": "proj", "path": "/tmp/proj", "qdrant_url": "http://q",
@@ -293,3 +308,43 @@ class TestNoTextContentBucket:
               "extraction_failed": 0, "no_text_content": 1, "other": 0}
         line = _corpus_line(co, color=False)
         assert "1 no-text" in line
+
+
+class TestFlagCounters:
+    def test_flagged_and_awaiting_deep_scan_counted(self, tmp_path):
+        from carta.status import _flag_line, _gather_corpus
+        sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        (sc_dir / "a.embed-meta.yaml").write_text(yaml.dump({
+            "current_path": "docs/a.pdf", "priority": "high",
+            "deep_scan": "requested",
+        }))
+        (sc_dir / "b.embed-meta.yaml").write_text(yaml.dump({
+            "current_path": "docs/b.md",
+        }))
+        counts = _gather_corpus(tmp_path)
+        assert counts["flagged"] == 1
+        assert counts["awaiting_deep_scan"] == 1
+        assert counts["enrichment_stale"] == 0
+        assert _flag_line(counts, color=False) == "flags   flagged 1 (1 awaiting deep scan)"
+
+    def test_enrichment_stale_counted_by_hash_mismatch(self, tmp_path):
+        from carta.status import _gather_corpus
+        sc_dir = tmp_path / ".carta" / "sidecars" / "docs"
+        sc_dir.mkdir(parents=True)
+        (sc_dir / "a.embed-meta.yaml").write_text(yaml.dump({
+            "current_path": "docs/a.pdf",
+            "file_hash": "new-hash", "enrichment_source_hash": "old-hash",
+        }))
+        (sc_dir / "b.embed-meta.yaml").write_text(yaml.dump({
+            "current_path": "docs/b.pdf",
+            "file_hash": "same-hash", "enrichment_source_hash": "same-hash",
+        }))
+        counts = _gather_corpus(tmp_path)
+        assert counts["enrichment_stale"] == 1
+        assert counts["flagged"] == 0
+
+    def test_flag_line_omitted_when_all_zero(self):
+        from carta.status import _flag_line
+        co = {"flagged": 0, "awaiting_deep_scan": 0, "enrichment_stale": 0}
+        assert _flag_line(co, color=False) == ""

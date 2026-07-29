@@ -1135,3 +1135,33 @@ def test_cmd_import_registers_project(tmp_path, monkeypatch):
     assert reg.called, "import must register the project"
     assert Path(reg.call_args.args[0]) == tmp_path        # repo_root = carta_dir.parent
     assert reg.call_args.args[1] == "myproj"              # project name from summary
+
+
+def test_flag_command_lifecycle(tmp_path):
+    """carta flag: flag -> list -> clear -> list-empty, plus the missing-path error exit."""
+    (tmp_path / ".carta").mkdir()
+    (tmp_path / ".carta" / "config.yaml").write_text(
+        "project_name: t\nqdrant_url: http://localhost:6333\n", encoding="utf-8"
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "x.md").write_text("# hello\n", encoding="utf-8")
+
+    result = run_carta(["flag", "docs/x.md", "--reason", "r"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "flagged high-priority" in result.stdout
+
+    result = run_carta(["flag"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "docs/x.md" in result.stdout
+
+    result = run_carta(["flag", "docs/x.md", "--clear"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "cleared" in result.stdout
+
+    result = run_carta(["flag"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "no flagged documents" in result.stdout
+
+    result = run_carta(["flag", "docs/missing.pdf", "--reason", "r"], cwd=tmp_path)
+    assert result.returncode == 1
+    assert "error" in result.stderr.lower()

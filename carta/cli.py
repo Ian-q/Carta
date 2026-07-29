@@ -339,6 +339,76 @@ def cmd_search(args):
     _notify_if_update(cfg_path, cfg)
 
 
+def cmd_flag(args):
+    from pathlib import Path as _P
+
+    from carta.config import load_config
+
+    cfg_path = find_config()
+    cfg = load_config(cfg_path)
+    repo_root = cfg_path.parent.parent
+    from carta.embed.flags import clear_flag, flag_file, list_flagged
+
+    if not args.path:
+        rows = list_flagged(repo_root)
+        if not rows:
+            print("no flagged documents")
+            return
+        for sc in rows:
+            state = sc.get("deep_scan", "?")
+            reason = sc.get("deep_scan_reason", "")
+            print(f"[{state}] {sc.get('current_path')} — {reason}")
+        return
+
+    rel = _P(args.path)
+
+    if not args.clear and not args.reason:
+        print("error: --reason is required when flagging", file=sys.stderr)
+        sys.exit(1)
+
+    # flag/clear mutate the same sidecars the drain writes to — take the
+    # single-writer embed lock exactly like cmd_embed does (cli.py:160-184).
+    from carta.embed.lock import acquire as _acquire_embed_lock, EmbedLockHeld
+
+    lock_path = cfg_path.parent / "embed.lock"
+    try:
+        _acquire_embed_lock(lock_path)
+    except EmbedLockHeld as e:
+        print(
+            f"carta embed is already running (PID: {e.pid}). Wait for it to finish "
+            f"or remove .carta/embed.lock if it is stale.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    def _remove_lock():
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    atexit.register(_remove_lock)
+
+    def _signal_handler(signum, frame):
+        _remove_lock()
+        sys.exit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(_sig, _signal_handler)
+
+    if args.clear:
+        ok = clear_flag(repo_root, rel)
+        print(f"cleared: {rel}" if ok else f"no sidecar for: {rel}")
+        return
+
+    try:
+        flag_file(repo_root, cfg, rel, args.reason)
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"flagged high-priority: {rel}")
+
+
 def cmd_focus(args):
     from carta.config import load_config
     cfg_path = find_config()
@@ -1083,6 +1153,13 @@ def main():
         ),
     )
 
+    flag_p = sub.add_parser(
+        "flag", help="Mark a document high-priority for deep visual scanning"
+    )
+    flag_p.add_argument("path", nargs="?", help="Repo-relative source path (omit to list flags)")
+    flag_p.add_argument("--reason", help="One-line reason (required when flagging)")
+    flag_p.add_argument("--clear", action="store_true", help="Remove the flag")
+
     focus_p = sub.add_parser(
         "focus",
         help="Go deep in one file: page-anchored passages, or an outline (omit the query)")
@@ -1199,6 +1276,7 @@ def main():
         "scan": cmd_scan,
         "embed": cmd_embed,
         "search": cmd_search,
+        "flag": cmd_flag,
         "focus": cmd_focus,
         "audit": cmd_audit,
         "doctor": cmd_doctor,
