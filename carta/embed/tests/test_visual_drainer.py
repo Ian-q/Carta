@@ -399,7 +399,7 @@ def test_drain_processes_out_of_scope_file(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc", sc)], raising=False)
     monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "_visual_embed_one_page", lambda *a, **k: True, raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
@@ -558,7 +558,7 @@ def test_drain_deep_scan_requested_marks_done_on_clean(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline, "_visual_embed_one_page",
                         lambda *a, **k: True, raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
@@ -597,7 +597,7 @@ def test_drain_respects_sort_order_flagged_first_when_discovered_second(monkeypa
     # Sidecar updates (needed for deep_scan write path)
     monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
 
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
@@ -785,7 +785,7 @@ def test_run_visual_embed_computes_deep_flag_per_file(monkeypatch, tmp_path):
         return True
     monkeypatch.setattr(pipeline, "_visual_embed_one_page", record_deep, raising=False)
 
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
