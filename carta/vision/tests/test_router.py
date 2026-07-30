@@ -1246,3 +1246,60 @@ class TestExtractPageDeep:
         # get_pixmap must be called with the configured dpi (150), not the
         # class default (300).
         assert page.get_pixmap.call_args.kwargs["dpi"] == 150
+
+    def test_render_failure_on_one_tile_is_skipped_not_aborted(self):
+        """A tile whose render (get_pixmap/tobytes) raises must warn and
+        continue — NOT abort the whole page. The other tiles' chunks (both
+        prompts each) still come back; only the failed tile's chunks are
+        absent. Mirrors the existing per-prompt failure guard, but for the
+        render step itself (router.py finding: render was previously
+        unguarded, discarding all prior tiles' chunks on one bad render)."""
+        from carta.vision.router import tile_rects
+        router = SmartRouter(_cfg())
+        page = _deep_page(0.0, 0.0, 1000.0, 200.0)
+        expected_tiles = tile_rects(0.0, 0.0, 1000.0, 200.0, 300, 1280, 0.15)
+        assert len(expected_tiles) >= 3  # sanity: enough tiles to prove "others" survive
+
+        # get_pixmap is called once per tile; raise on tile index 1 only.
+        side_effects = [_pixmap() for _ in expected_tiles]
+        side_effects[1] = RuntimeError("pixmap render failed")
+        page.get_pixmap = MagicMock(side_effect=side_effects)
+
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 5)
+
+        seen_tiles = sorted({c["tile"] for c in result})
+        assert 1 not in seen_tiles
+        assert seen_tiles == [t for t in range(len(expected_tiles)) if t != 1]
+        # Each surviving tile still yields both extraction chunks (render
+        # failure is isolated to the one bad tile, not the whole page).
+        for t in seen_tiles:
+            tile_chunks = [c for c in result if c["tile"] == t]
+            assert {c["extraction"] for c in tile_chunks} == {"transcription", "structure"}
+
+    def test_render_failure_warns_to_stderr(self, capsys):
+        from carta.vision.router import tile_rects
+        router = SmartRouter(_cfg())
+        page = _deep_page(0.0, 0.0, 1000.0, 200.0)
+        expected_tiles = tile_rects(0.0, 0.0, 1000.0, 200.0, 300, 1280, 0.15)
+        side_effects = [_pixmap() for _ in expected_tiles]
+        side_effects[1] = RuntimeError("pixmap render failed")
+        page.get_pixmap = MagicMock(side_effect=side_effects)
+
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            router.extract_page_deep(page, 5)
+
+        err = capsys.readouterr().err
+        assert "deep render failed" in err and "page 5" in err and "tile 1" in err
+
+    def test_fitz_imported_once_not_per_tile(self):
+        """import fitz is hoisted above the per-tile loop (single import, not
+        re-imported on every iteration) — a multi-tile page must still work
+        correctly (this is an efficiency/style check, not a correctness one:
+        Python caches imports in sys.modules regardless, so this mainly
+        guards against a future re-introduction of the per-tile import)."""
+        router = SmartRouter(_cfg())
+        page = _deep_page(0.0, 0.0, 1000.0, 200.0)
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 1)
+        assert len(result) > 2  # multi-tile page, more than a single tile's worth

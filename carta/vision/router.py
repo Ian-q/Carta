@@ -462,16 +462,23 @@ class SmartRouter:
         dpi = int(self.deep_cfg.get("dpi", 300))
         tile_px = int(self.deep_cfg.get("tile_px", 1280))
         overlap = float(self.deep_cfg.get("tile_overlap", 0.15))
+        import fitz  # lazy
+
         with self._fitz_lock:
             r = page.rect
             tiles = tile_rects(r.x0, r.y0, r.x1, r.y1, dpi, tile_px, overlap)
         chunks: list[dict] = []
         for t_idx, (tx0, ty0, tx1, ty1) in enumerate(tiles):
-            import fitz  # lazy
-
-            with self._fitz_lock:
-                pix = page.get_pixmap(dpi=dpi, clip=fitz.Rect(tx0, ty0, tx1, ty1))
-                png = pix.tobytes("png")
+            try:
+                with self._fitz_lock:
+                    pix = page.get_pixmap(dpi=dpi, clip=fitz.Rect(tx0, ty0, tx1, ty1))
+                    png = pix.tobytes("png")
+            except Exception as exc:  # a failed render degrades, never aborts
+                print(
+                    f"Warning: deep render failed page {page_num} tile {t_idx}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                continue
             for extraction, model, prompt in (
                 ("transcription", self.ocr_model, GLM_OCR_PROMPT),
                 ("structure", self.vision_model, DEEP_STRUCTURE_PROMPT),
