@@ -126,6 +126,34 @@ LLAVA_PROMPT = (
     "Output only the transcribed items, one per line."
 )
 
+DEEP_STRUCTURE_PROMPT = (
+    "Describe what this technical drawing shows: name each component, state what "
+    "connects to what, and note what sits between which elements. Transcribe labels "
+    "verbatim, including non-English text. Do not invent details; omit anything "
+    "unreadable."
+)
+
+
+def tile_rects(x0, y0, x1, y1, dpi, tile_px, overlap):
+    """Grid of (x0, y0, x1, y1) point-space clips; each renders <= tile_px per edge at dpi."""
+    tile_pts = tile_px / (dpi / 72.0)
+    if (x1 - x0) <= tile_pts and (y1 - y0) <= tile_pts:
+        return [(x0, y0, x1, y1)]
+    step = tile_pts * (1.0 - overlap)
+    rects = []
+    y = y0
+    while True:
+        x = x0
+        while True:
+            rects.append((x, y, min(x + tile_pts, x1), min(y + tile_pts, y1)))
+            if x + tile_pts >= x1:
+                break
+            x += step
+        if y + tile_pts >= y1:
+            break
+        y += step
+    return rects
+
 
 class SmartRouter:
     """Routes PDF pages to extraction strategies via PageAnalyzer classification.
@@ -155,6 +183,8 @@ class SmartRouter:
         # in _route_structured, _route_text_with_images (caption fallback), and
         # _route_flattened (also used by VECTOR_DRAWING, which shares that path).
         self.render_dpi: int = int(embed.get("vision_render_dpi", 150))
+        # Deep tiled-extraction config (dpi/tile_px/tile_overlap); see extract_page_deep.
+        self.deep_cfg: dict = embed.get("deep_scan", {}) or {}
         self.analyzer = PageAnalyzer(cfg)
         # PyMuPDF (fitz) is not thread-safe. Workers must serialize all fitz
         # operations through this lock; Ollama HTTP calls run unlocked so they
@@ -426,6 +456,45 @@ class SmartRouter:
             )
             # Return the low-yield OCR result rather than discarding it
             return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", page_class_str)]
+
+    def extract_page_deep(self, page: Any, page_num: int) -> list[dict]:
+        """High-DPI tiled extraction: transcription + structure prompt per tile."""
+        dpi = int(self.deep_cfg.get("dpi", 300))
+        tile_px = int(self.deep_cfg.get("tile_px", 1280))
+        overlap = float(self.deep_cfg.get("tile_overlap", 0.15))
+        with self._fitz_lock:
+            r = page.rect
+            tiles = tile_rects(r.x0, r.y0, r.x1, r.y1, dpi, tile_px, overlap)
+        chunks: list[dict] = []
+        for t_idx, (tx0, ty0, tx1, ty1) in enumerate(tiles):
+            import fitz  # lazy
+
+            with self._fitz_lock:
+                pix = page.get_pixmap(dpi=dpi, clip=fitz.Rect(tx0, ty0, tx1, ty1))
+                png = pix.tobytes("png")
+            for extraction, model, prompt in (
+                ("transcription", self.ocr_model, GLM_OCR_PROMPT),
+                ("structure", self.vision_model, DEEP_STRUCTURE_PROMPT),
+            ):
+                try:
+                    text = self._call_ollama_vision(
+                        png, model=model, prompt=prompt,
+                        timeout=self.vision_call_timeout,
+                    )
+                except Exception as exc:  # a failed tile degrades, never aborts
+                    print(
+                        f"Warning: deep {extraction} failed page {page_num} "
+                        f"tile {t_idx}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                    continue
+                if not text.strip():
+                    continue
+                ch = self._make_chunk(page_num, t_idx, text, model, "deep_scan")
+                ch["tile"] = t_idx
+                ch["extraction"] = extraction
+                chunks.append(ch)
+        return chunks
 
     def _extract_image_crops(self, page: Any, doc: Any) -> list[tuple[int, bytes]]:
         """Return (image_index, png_bytes) for embedded images.

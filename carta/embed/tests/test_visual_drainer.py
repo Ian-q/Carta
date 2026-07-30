@@ -24,7 +24,7 @@ def test_drainer_checkpoints_each_page(monkeypatch, tmp_path):
     written = []
     monkeypatch.setattr(pipeline, "_update_sidecar", lambda sc_path, updates: written.append(dict(updates)))
     monkeypatch.setattr(pipeline, "_visual_embed_one_page",
-                        lambda sidecar, page, cfg, client, repo_root, router, embedder, verbose=False: True,
+                        lambda sidecar, page, cfg, client, repo_root, router, embedder, verbose=False, deep=False: True,
                         raising=False)
     monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
@@ -589,7 +589,7 @@ def test_drain_respects_sort_order_flagged_first_when_discovered_second(monkeypa
 
     # Record the order in which _visual_embed_one_page is called
     process_order = []
-    def record_process_order(sc, page, cfg, client, repo_root, router, embedder, verbose=False):
+    def record_process_order(sc, page, cfg, client, repo_root, router, embedder, verbose=False, deep=False):
         process_order.append(sc["current_path"])
         return True
     monkeypatch.setattr(pipeline, "_visual_embed_one_page", record_process_order, raising=False)
@@ -607,3 +607,189 @@ def test_drain_respects_sort_order_flagged_first_when_discovered_second(monkeypa
     # Assert: flagged was processed first, despite being discovered second
     assert process_order == ["docs/flagged.pdf", "docs/plain.pdf"], \
         f"Expected flagged first, got: {process_order}"
+
+
+# ---------------------------------------------------------------------------
+# Deep-tier dispatch (Task 6): _visual_embed_one_page routes to
+# router.extract_page_deep instead of router._route when deep=True or the
+# page classifies VECTOR_DRAWING; run_visual_embed computes deep per FILE
+# from sidecar["deep_scan"] == "requested".
+# ---------------------------------------------------------------------------
+
+def _run_visual_embed_one_page_deep_dispatch(monkeypatch, tmp_path, *, deep, page_class):
+    """Drives the real _visual_embed_one_page and returns the fake_router so
+    the caller can assert which of extract_page_deep / _route was invoked."""
+    from carta.embed.pipeline import _visual_embed_one_page
+
+    monkeypatch.setattr(
+        pipeline, "upsert_chunks",
+        lambda chunks, cfg, client=None: sum(1 for c in chunks if (c.get("text") or "").strip()),
+    )
+    monkeypatch.setattr("carta.embed.pipeline.upsert_visual_pages", lambda pages, cfg, client=None: len(pages))
+
+    fake_router = MagicMock()
+    profile = MagicMock()
+    profile.page_class = page_class
+    fake_router.analyzer.analyze.return_value = profile
+    fake_router._route.return_value = [
+        {"text": "route text", "image_index": 0, "model_used": "glm-ocr", "content_type": "visual"}
+    ]
+    fake_router.extract_page_deep.return_value = [
+        {"text": "deep transcription", "image_index": 0, "model_used": "glm-ocr:latest",
+         "content_type": "deep_scan", "tile": 0, "extraction": "transcription"},
+        {"text": "deep structure", "image_index": 0, "model_used": "qwen3-vl:8b",
+         "content_type": "deep_scan", "tile": 0, "extraction": "structure"},
+    ]
+
+    fake_embedder = MagicMock()
+    fake_embedder.embed_pdf_pages.return_value = []
+
+    fake_page = MagicMock()
+    fake_doc = MagicMock()
+    fake_doc.__len__ = MagicMock(return_value=5)
+    fake_doc.__getitem__ = MagicMock(return_value=fake_page)
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    import sys
+    sys.modules["fitz"] = fake_fitz
+
+    cfg = {"project_name": "test", "qdrant_url": "x", "embed": {"chunking": {"max_tokens": 400}}}
+    pdf_file = tmp_path / "docs" / "x.pdf"
+    pdf_file.parent.mkdir(parents=True, exist_ok=True)
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+    sidecar = {"current_path": str(pdf_file.relative_to(tmp_path)), "slug": "x", "generation": 1,
+               VISUAL_PENDING_KEY: [2], VISUAL_DONE_KEY: []}
+    try:
+        _visual_embed_one_page(sidecar, 2, cfg, MagicMock(), tmp_path, fake_router, fake_embedder, deep=deep)
+    finally:
+        sys.modules.pop("fitz", None)
+
+    return fake_router
+
+
+def test_visual_embed_one_page_deep_flag_dispatches_to_extract_page_deep(monkeypatch, tmp_path):
+    """deep=True must call router.extract_page_deep, never router._route —
+    even for a page that classifies as an ordinary STRUCTURED_TEXT page."""
+    from carta.vision.classifier import PageClass
+    fake_router = _run_visual_embed_one_page_deep_dispatch(
+        monkeypatch, tmp_path, deep=True, page_class=PageClass.STRUCTURED_TEXT
+    )
+    fake_router.extract_page_deep.assert_called_once()
+    fake_router._route.assert_not_called()
+
+
+def test_visual_embed_one_page_vector_drawing_dispatches_to_extract_page_deep(monkeypatch, tmp_path):
+    """A VECTOR_DRAWING page must route to extract_page_deep even with deep=False
+    (the file wasn't flagged, but the page itself is dense vector-CAD)."""
+    from carta.vision.classifier import PageClass
+    fake_router = _run_visual_embed_one_page_deep_dispatch(
+        monkeypatch, tmp_path, deep=False, page_class=PageClass.VECTOR_DRAWING
+    )
+    fake_router.extract_page_deep.assert_called_once()
+    fake_router._route.assert_not_called()
+
+
+def test_visual_embed_one_page_non_deep_non_vector_uses_route(monkeypatch, tmp_path):
+    """Neither deep=True nor VECTOR_DRAWING -> existing _route path, unaffected
+    (regression guard for every non-flagged, non-vector-CAD page)."""
+    from carta.vision.classifier import PageClass
+    fake_router = _run_visual_embed_one_page_deep_dispatch(
+        monkeypatch, tmp_path, deep=False, page_class=PageClass.STRUCTURED_TEXT
+    )
+    fake_router._route.assert_called_once()
+    fake_router.extract_page_deep.assert_not_called()
+
+
+def test_deep_chunks_carry_tile_and_extraction_into_upsert(monkeypatch, tmp_path):
+    """tile/extraction on router.extract_page_deep's chunks must flow into the
+    per-part chunk dicts passed to upsert_chunks (so they land in the Qdrant
+    payload for free — embed.py's build_point copies all non-text chunk keys),
+    and each of the 3 deep chunks (2 tiles x prompts, one tile's structure
+    prompt having failed) gets a distinct chunk_index."""
+    from carta.embed.pipeline import _visual_embed_one_page
+    from carta.vision.classifier import PageClass
+
+    captured: list[dict] = []
+
+    def fake_upsert(chunks, cfg, client=None):
+        captured.extend(chunks)
+        return sum(1 for c in chunks if (c.get("text") or "").strip())
+    monkeypatch.setattr(pipeline, "upsert_chunks", fake_upsert)
+    monkeypatch.setattr("carta.embed.pipeline.upsert_visual_pages", lambda pages, cfg, client=None: len(pages))
+
+    fake_router = MagicMock()
+    profile = MagicMock()
+    profile.page_class = PageClass.VECTOR_DRAWING
+    fake_router.analyzer.analyze.return_value = profile
+    fake_router.extract_page_deep.return_value = [
+        {"text": "transcription text", "image_index": 0, "model_used": "glm-ocr:latest",
+         "content_type": "deep_scan", "tile": 0, "extraction": "transcription"},
+        {"text": "structure text", "image_index": 0, "model_used": "qwen3-vl:8b",
+         "content_type": "deep_scan", "tile": 0, "extraction": "structure"},
+        {"text": "tile 1 transcription", "image_index": 1, "model_used": "glm-ocr:latest",
+         "content_type": "deep_scan", "tile": 1, "extraction": "transcription"},
+    ]
+
+    fake_embedder = MagicMock()
+    fake_embedder.embed_pdf_pages.return_value = []
+
+    fake_page = MagicMock()
+    fake_doc = MagicMock()
+    fake_doc.__len__ = MagicMock(return_value=5)
+    fake_doc.__getitem__ = MagicMock(return_value=fake_page)
+    fake_fitz = MagicMock()
+    fake_fitz.open.return_value = fake_doc
+    import sys
+    sys.modules["fitz"] = fake_fitz
+
+    cfg = {"project_name": "test", "qdrant_url": "x", "embed": {"chunking": {"max_tokens": 400}}}
+    pdf_file = tmp_path / "docs" / "x.pdf"
+    pdf_file.parent.mkdir(parents=True, exist_ok=True)
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+    sidecar = {"current_path": str(pdf_file.relative_to(tmp_path)), "slug": "x", "generation": 1,
+               VISUAL_PENDING_KEY: [2], VISUAL_DONE_KEY: []}
+    try:
+        _visual_embed_one_page(sidecar, 2, cfg, MagicMock(), tmp_path, fake_router, fake_embedder)
+    finally:
+        sys.modules.pop("fitz", None)
+
+    assert len(captured) == 3
+    # chunk_index must be unique across all 3 (tiles x prompts): i enumerates
+    # every deep chunk distinctly via the existing nested-loop counter.
+    assert len({c["chunk_index"] for c in captured}) == 3
+    by_text = {c["text"]: c for c in captured}
+    assert by_text["transcription text"]["tile"] == 0
+    assert by_text["transcription text"]["extraction"] == "transcription"
+    assert by_text["structure text"]["tile"] == 0
+    assert by_text["structure text"]["extraction"] == "structure"
+    assert by_text["tile 1 transcription"]["tile"] == 1
+    assert by_text["tile 1 transcription"]["extraction"] == "transcription"
+
+
+def test_run_visual_embed_computes_deep_flag_per_file(monkeypatch, tmp_path):
+    """deep = sc.get('deep_scan') == 'requested', computed per FILE and passed
+    through to _visual_embed_one_page — a flagged file gets deep=True, a
+    plain file gets deep=False."""
+    flagged = ("sc_flagged", {"current_path": "docs/flagged.pdf", "slug": "flagged",
+                              "deep_scan": "requested",
+                              VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []})
+    plain = ("sc_plain", {"current_path": "docs/plain.pdf", "slug": "plain",
+                          VISUAL_PENDING_KEY: [1], VISUAL_DONE_KEY: []})
+    monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [flagged, plain], raising=False)
+    monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
+
+    captured_deep = {}
+
+    def record_deep(sc, page, cfg, client, repo_root, router, embedder, verbose=False, deep=False):
+        captured_deep[sc["current_path"]] = deep
+        return True
+    monkeypatch.setattr(pipeline, "_visual_embed_one_page", record_deep, raising=False)
+
+    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
+    monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
+    _mock_router_embedder(monkeypatch)
+
+    pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
+
+    assert captured_deep == {"docs/flagged.pdf": True, "docs/plain.pdf": False}

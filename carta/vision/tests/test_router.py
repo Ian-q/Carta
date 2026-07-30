@@ -1100,3 +1100,149 @@ class TestResourceCleanup:
             with pytest.raises(RuntimeError):
                 router.extract_pdf(Path("/x/y.pdf"))
         fake_doc.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# tile_rects — pure geometry, module-level (Task 6)
+# ---------------------------------------------------------------------------
+
+def test_tile_rects_small_page_single_tile():
+    from carta.vision.router import tile_rects
+    # 612x792pt letter at 300dpi -> 2550x3300px; tile_px 4000 covers it whole
+    assert tile_rects(0, 0, 612, 792, 300, 4000, 0.15) == [(0, 0, 612, 792)]
+
+
+def test_tile_rects_cover_and_overlap():
+    from carta.vision.router import tile_rects
+    rects = tile_rects(0, 0, 1000, 800, 300, 1280, 0.15)
+    assert len(rects) > 1
+    xs = sorted({r[0] for r in rects}); ys = sorted({r[1] for r in rects})
+    tile_pts = 1280 / (300 / 72.0)
+    step = tile_pts * 0.85
+    assert all(abs((b - a) - step) < 1e-6 for a, b in zip(xs, xs[1:]))
+    assert max(r[2] for r in rects) == 1000 and max(r[3] for r in rects) == 800
+
+
+# ---------------------------------------------------------------------------
+# SmartRouter.extract_page_deep — high-DPI tiled two-prompt extraction (Task 6)
+# ---------------------------------------------------------------------------
+
+def _deep_page(x0=0.0, y0=0.0, x1=200.0, y1=200.0):
+    """Mock page whose .rect carries float bounds and whose get_pixmap
+    returns a fresh pixmap mock every call.
+
+    Default bounds (200x200pt) fit inside a single tile at the class
+    defaults (dpi=300, tile_px=1280 -> tile_pts=307.2pt) so single-tile
+    tests don't need to override deep_cfg.
+    """
+    page = MagicMock()
+    rect = MagicMock()
+    rect.x0, rect.y0, rect.x1, rect.y1 = x0, y0, x1, y1
+    page.rect = rect
+    page.get_pixmap.return_value = _pixmap()
+    return page
+
+
+class TestExtractPageDeep:
+    def test_single_tile_produces_transcription_and_structure_chunks(self):
+        """A page small enough for one tile (default dpi=300/tile_px=1280) yields
+        exactly 2 chunks: one transcription (self.ocr_model), one structure
+        (self.vision_model), both tagged tile=0."""
+        router = SmartRouter(_cfg(ocr_model="glm-ocr:latest", ollama_vision_model="qwen3-vl:8b"))
+        page = _deep_page()
+        with patch.object(router, "_call_ollama_vision", return_value="txt") as mock_call:
+            result = router.extract_page_deep(page, 7)
+
+        assert mock_call.call_count == 2
+        assert len(result) == 2
+        extractions = {c["extraction"] for c in result}
+        assert extractions == {"transcription", "structure"}
+        assert all(c["tile"] == 0 for c in result)
+        assert all(c["page_num"] == 7 for c in result)
+        assert all(c["page_class"] == "deep_scan" for c in result)
+        assert all(c["content_type"] == "deep_scan" for c in result)
+
+        models_by_extraction = {c["extraction"]: c["model_used"] for c in result}
+        assert models_by_extraction["transcription"] == "glm-ocr:latest"
+        assert models_by_extraction["structure"] == "qwen3-vl:8b"
+
+    def test_multi_tile_indices_match_tile_rects(self):
+        """A page spanning multiple tiles gets 2 chunks per tile, with `tile`
+        indices matching tile_rects()'s own enumeration."""
+        from carta.vision.router import tile_rects
+        router = SmartRouter(_cfg(deep_scan={"dpi": 300, "tile_px": 1280, "tile_overlap": 0.15}))
+        page = _deep_page(0.0, 0.0, 1000.0, 800.0)
+        expected_tiles = tile_rects(0.0, 0.0, 1000.0, 800.0, 300, 1280, 0.15)
+        assert len(expected_tiles) > 1  # sanity: this page must actually tile
+
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 1)
+
+        assert len(result) == 2 * len(expected_tiles)
+        seen_tiles = sorted({c["tile"] for c in result})
+        assert seen_tiles == list(range(len(expected_tiles)))
+        # Each tile index appears exactly twice (transcription + structure).
+        for t in seen_tiles:
+            tile_chunks = [c for c in result if c["tile"] == t]
+            assert {c["extraction"] for c in tile_chunks} == {"transcription", "structure"}
+
+    def test_failed_prompt_is_skipped_not_aborted(self):
+        """A raising vision call for one prompt degrades that prompt only —
+        the other prompt's chunk still comes back, and no exception propagates."""
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=[RuntimeError("timeout"), "structure text"],
+        ):
+            result = router.extract_page_deep(page, 3)
+
+        assert len(result) == 1
+        assert result[0]["extraction"] == "structure"
+        assert result[0]["text"] == "structure text"
+
+    def test_failed_prompt_warns_to_stderr(self, capsys):
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=[RuntimeError("timeout"), "structure text"],
+        ):
+            router.extract_page_deep(page, 3)
+        err = capsys.readouterr().err
+        assert "deep" in err and "transcription" in err and "page 3" in err and "tile 0" in err
+
+    def test_both_prompts_fail_returns_empty_list(self):
+        """Every tile's prompts failing must degrade to [] — never raise."""
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=RuntimeError("down"),
+        ):
+            result = router.extract_page_deep(page, 1)
+        assert result == []
+
+    def test_empty_text_is_skipped(self):
+        """A prompt that returns only whitespace produces no chunk."""
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=["   ", "structure text"],
+        ):
+            result = router.extract_page_deep(page, 1)
+        assert len(result) == 1
+        assert result[0]["extraction"] == "structure"
+
+    def test_deep_cfg_overrides_dpi_tile_px_overlap(self):
+        """dpi/tile_px/tile_overlap come from self.deep_cfg, not hardcoded defaults."""
+        router = SmartRouter(_cfg(deep_scan={"dpi": 150, "tile_px": 4000, "tile_overlap": 0.15}))
+        page = _deep_page(0.0, 0.0, 612.0, 792.0)
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                mock_fitz.Rect = lambda *a: ("Rect", a)
+                router.extract_page_deep(page, 1)
+        # get_pixmap must be called with the configured dpi (150), not the
+        # class default (300).
+        assert page.get_pixmap.call_args.kwargs["dpi"] == 150

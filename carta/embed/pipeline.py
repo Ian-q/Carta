@@ -1028,6 +1028,7 @@ def _visual_embed_one_page(
     router,
     embedder,
     verbose: bool = False,
+    deep: bool = False,
 ) -> bool:
     """OCR text + ColPali for a single 1-indexed page. Raise on failure.
 
@@ -1035,6 +1036,9 @@ def _visual_embed_one_page(
         Pass-2 chunks receive a pass-2-specific chunk_index token so their point
         IDs are disjoint from pass-1 text chunks for the same file. Runs
         unconditionally — the OCR/vision drain is not scoped by colpali_scoped_paths.
+        A file flagged for deep scan (``deep=True``) or a page that classifies
+        VECTOR_DRAWING routes through ``router.extract_page_deep`` (high-DPI
+        tiled two-prompt extraction) instead of the normal ``router._route``.
     (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
         → upsert_visual_pages (_visual collection). Gated by colpali_scoped_paths
         (_colpali_path_in_scope) — the only step in this function that scope gates.
@@ -1072,8 +1076,14 @@ def _visual_embed_one_page(
                     f"Page {page} out of range (PDF has {len(doc)} pages)"
                 )
             fitz_page = doc[page - 1]
+
+            from carta.vision.classifier import PageClass
+
             profile = router.analyzer.analyze(fitz_page)
-            chunks = router._route(fitz_page, page, profile, doc)
+            if deep or profile.page_class is PageClass.VECTOR_DRAWING:
+                chunks = router.extract_page_deep(fitz_page, page)
+            else:
+                chunks = router._route(fitz_page, page, profile, doc)
         finally:
             doc.close()
 
@@ -1086,7 +1096,7 @@ def _visual_embed_one_page(
         for chunk in chunks:
             for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
                 i = len(image_chunks)
-                image_chunks.append({
+                entry = {
                     "slug": slug,
                     "file_path": current_path,
                     "doc_type": "image_description",
@@ -1101,7 +1111,15 @@ def _visual_embed_one_page(
                     "model_used": chunk.get("model_used", "glm-ocr"),
                     "content_type": chunk.get("content_type", "visual"),
                     "source": "visual_drainer",
-                })
+                }
+                # Deep-tier chunks (router.extract_page_deep) carry tile/extraction —
+                # pass them through so they land in the Qdrant payload for free
+                # (build_point copies every non-text chunk key).
+                if "tile" in chunk:
+                    entry["tile"] = chunk["tile"]
+                if "extraction" in chunk:
+                    entry["extraction"] = chunk["extraction"]
+                image_chunks.append(entry)
         # Honour the docstring contract: a short upsert (Qdrant/Ollama hiccup)
         # must raise so the page stays in visual_pending, never be silently
         # marked done with its OCR text lost. upsert_chunks legitimately drops
@@ -1247,11 +1265,12 @@ def run_visual_embed(
         for sc_path, sc in queued:
             rel_path = sc.get("current_path") or ""
             file_failed = False
+            deep = sc.get("deep_scan") == "requested"
             for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
                 idx += 1
                 status.file_start(idx, f"page {page} of {rel_path}")
                 try:
-                    _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
+                    _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose, deep=deep)
                     move_to_done(sc, page)
                     _update_sidecar(sc_path, {
                         VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
