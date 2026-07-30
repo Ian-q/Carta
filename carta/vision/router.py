@@ -135,7 +135,16 @@ DEEP_STRUCTURE_PROMPT = (
 
 
 def tile_rects(x0, y0, x1, y1, dpi, tile_px, overlap):
-    """Grid of (x0, y0, x1, y1) point-space clips; each renders <= tile_px per edge at dpi."""
+    """Grid of (x0, y0, x1, y1) point-space clips; each renders <= tile_px per edge at dpi.
+
+    Raises:
+        ValueError: if tile_px < 1 or overlap is not in [0, 1) — either would
+            make the sliding-window step <= 0, looping forever.
+    """
+    if tile_px < 1:
+        raise ValueError(f"tile_px must be >= 1, got {tile_px!r}")
+    if not (0 <= overlap < 1.0):
+        raise ValueError(f"overlap must be in [0, 1), got {overlap!r}")
     tile_pts = tile_px / (dpi / 72.0)
     if (x1 - x0) <= tile_pts and (y1 - y0) <= tile_pts:
         return [(x0, y0, x1, y1)]
@@ -460,8 +469,14 @@ class SmartRouter:
     def extract_page_deep(self, page: Any, page_num: int) -> list[dict]:
         """High-DPI tiled extraction: transcription + structure prompt per tile."""
         dpi = int(self.deep_cfg.get("dpi", 300))
-        tile_px = int(self.deep_cfg.get("tile_px", 1280))
-        overlap = float(self.deep_cfg.get("tile_overlap", 0.15))
+        # Clamp rather than pass through raw config: tile_rects raises on an
+        # out-of-range tile_px/overlap (nontermination guard), but a config
+        # typo mid-drain should degrade gracefully, not raise and abort the
+        # page (the drain's per-page try/except doesn't help against a hang,
+        # and aborting on every page for the run's duration is worse than a
+        # clamped-but-working tile grid).
+        tile_px = max(1, int(self.deep_cfg.get("tile_px", 1280)))
+        overlap = min(max(float(self.deep_cfg.get("tile_overlap", 0.15)), 0.0), 0.9)
         import fitz  # lazy
 
         with self._fitz_lock:

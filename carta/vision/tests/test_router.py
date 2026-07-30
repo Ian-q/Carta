@@ -1123,6 +1123,20 @@ def test_tile_rects_cover_and_overlap():
     assert max(r[2] for r in rects) == 1000 and max(r[3] for r in rects) == 800
 
 
+def test_tile_rects_raises_on_overlap_at_one():
+    """overlap >= 1.0 makes step <= 0 -> infinite loop; must raise instead."""
+    from carta.vision.router import tile_rects
+    with pytest.raises(ValueError):
+        tile_rects(0, 0, 1000, 800, 300, 1280, 1.0)
+
+
+def test_tile_rects_raises_on_zero_tile_px():
+    """tile_px <= 0 makes step <= 0 -> infinite loop; must raise instead."""
+    from carta.vision.router import tile_rects
+    with pytest.raises(ValueError):
+        tile_rects(0, 0, 1000, 800, 300, 0, 0.15)
+
+
 # ---------------------------------------------------------------------------
 # SmartRouter.extract_page_deep — high-DPI tiled two-prompt extraction (Task 6)
 # ---------------------------------------------------------------------------
@@ -1291,6 +1305,17 @@ class TestExtractPageDeep:
 
         err = capsys.readouterr().err
         assert "deep render failed" in err and "page 5" in err and "tile 1" in err
+
+    def test_overlap_typo_is_clamped_not_hung(self):
+        """A config typo (tile_overlap=15, meant 0.15 i.e. 15%) must be clamped
+        by extract_page_deep BEFORE calling tile_rects (which itself raises on
+        an out-of-range overlap) — a config typo degrades to a large-but-finite
+        tile grid instead of hanging or aborting mid-drain."""
+        router = SmartRouter(_cfg(deep_scan={"dpi": 300, "tile_px": 1280, "tile_overlap": 15}))
+        page = _deep_page(0.0, 0.0, 1000.0, 800.0)
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 1)
+        assert len(result) > 0
 
     def test_fitz_imported_once_not_per_tile(self):
         """import fitz is hoisted above the per-tile loop (single import, not
