@@ -86,7 +86,13 @@ class TestRecordEnrichmentRoundTrip:
         sc = read_sidecar(sc_path)
         assert sc["current_path"] == str(src_rel)
         assert sc["enrichment_path"] == str(enr_rel)
-        assert sc["enrichment_source_hash"] == ""  # no file_hash was recorded
+        # No file_hash existed yet — record_enrichment must hash the source
+        # from disk rather than stamp the falsy "" blindly (a blind stamp
+        # would make enrichment_is_stale return False forever).
+        from carta.embed.lifecycle import compute_file_hash
+        real_hash = compute_file_hash(src)
+        assert sc["enrichment_source_hash"] == real_hash
+        assert sc["file_hash"] == real_hash
 
         # Discoverable: iter_canonical_sidecars requires current_path to yield
         # the sidecar at all (it skips entries without one) — without the fix
@@ -100,7 +106,7 @@ class TestRecordEnrichmentRoundTrip:
 
         # Reachable by the integrity scan too (same iter_canonical_sidecars
         # generator under the hood): a later embed stamping a real file_hash
-        # differing from the recorded (empty) enrichment_source_hash makes it
+        # differing from the recorded enrichment_source_hash makes it
         # a genuine count/stale candidate the scan can now actually see.
         from carta.embed.integrity import scan_corpus_integrity
         sc["enrichment_source_hash"] = "old-hash-from-this-record"
@@ -111,6 +117,72 @@ class TestRecordEnrichmentRoundTrip:
         client.collection_exists.return_value = False
         report = scan_corpus_integrity(cfg, repo_root, client=client)
         assert str(src_rel) in report["stale_enrichments"]
+
+    def test_flag_created_stub_gets_real_hash_and_flips_stale_on_change(self, tmp_path):
+        """A `carta flag`-created stub sidecar has file_hash=None (generate_sidecar_stub's
+        default). record_enrichment must not stamp that blind falsy value — it must hash
+        the source from disk so a later content change is actually detectable as stale."""
+        repo_root = tmp_path
+        src_rel = Path("docs/flagged/needs-deep-scan.pdf")
+        src = repo_root / src_rel
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"%PDF-1.4 original content")
+
+        write_sidecar(src, {
+            "current_path": str(src_rel),
+            "status": "pending",
+            "file_hash": None,  # exactly what generate_sidecar_stub sets pre-embed
+            "deep_scan": "requested",
+        }, repo_root)
+
+        enr_rel = enrichment_rel_path(src_rel, INTERNAL)
+        record_enrichment(repo_root, src_rel, enr_rel)
+
+        sc = read_sidecar(sidecar_path(src, repo_root))
+        from carta.embed.lifecycle import compute_file_hash
+        real_hash = compute_file_hash(src)
+        assert sc["enrichment_source_hash"] == real_hash
+        assert len(sc["enrichment_source_hash"]) == 64
+        assert all(c in "0123456789abcdef" for c in sc["enrichment_source_hash"])
+        assert sc["file_hash"] == real_hash  # sidecar made coherent too
+        assert not enrichment_is_stale(sc)
+        assert sc["deep_scan"] == "done"
+
+        # Source content changes; simulate a later re-embed of the SOURCE that
+        # recomputes file_hash (enrichment_source_hash is untouched until the
+        # extraction is re-verified) — staleness must now flip true.
+        src.write_bytes(b"%PDF-1.4 changed content")
+        sc["file_hash"] = compute_file_hash(src)
+        assert enrichment_is_stale(sc)
+
+    def test_unreadable_source_warns_and_does_not_stamp(self, tmp_path, capsys):
+        """A missing/unreadable source (open() raises OSError) must leave the
+        sidecar's enrichment fields unstamped and warn to stderr, rather than
+        silently persisting a bogus/blind hash."""
+        repo_root = tmp_path
+        src_rel = Path("docs/flagged/gone.pdf")
+        src = repo_root / src_rel
+        # Deliberately do NOT create the source file — compute_file_hash's
+        # read_bytes() will raise FileNotFoundError (an OSError).
+
+        write_sidecar(src, {
+            "current_path": str(src_rel),
+            "status": "pending",
+            "file_hash": None,
+            "deep_scan": "requested",
+        }, repo_root)
+
+        enr_rel = enrichment_rel_path(src_rel, INTERNAL)
+        record_enrichment(repo_root, src_rel, enr_rel)
+
+        sc = read_sidecar(sidecar_path(src, repo_root))
+        assert sc.get("enrichment_source_hash") is None
+        assert "enrichment_path" not in sc
+        assert sc["deep_scan"] == "requested"  # unchanged — not promoted to "done"
+
+        err = capsys.readouterr().err
+        assert "warning" in err.lower()
+        assert str(src_rel) in err
 
 
 class TestPipelineAttributionHook:
