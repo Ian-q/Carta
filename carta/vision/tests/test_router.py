@@ -929,6 +929,89 @@ class TestRouteVectorDrawing:
         assert mock_call.call_args[1]["model"] == "llava:latest"
 
 
+class TestChunkPageClassLabel:
+    """Persisted chunk `page_class`/`content_type` must reflect the real
+    PageClass, even when VECTOR_DRAWING shares another class's route method.
+
+    This matters beyond cosmetics: checkpoint-resume progress replay reads
+    the *chunk's* page_class (router.py extract_pdf, the `completed` resume
+    branch), not the live profile — so a hardcoded literal in the shared
+    route method would make "vector_drawing" unobservable after a resume,
+    contradicting the progress_callback docstrings."""
+
+    def test_auto_mode_vector_drawing_chunk_carries_real_label(self):
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result[0]["page_class"] == "vector_drawing"
+        assert result[0]["content_type"] == "vector_drawing"
+
+    def test_ocr_override_mode_vector_drawing_chunk_carries_real_label(self):
+        """mode=ocr routes VECTOR_DRAWING via _route_structured (shared with
+        STRUCTURED_TEXT, whose own hardcoded label is "structured_text")."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="ocr text"):
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result[0]["page_class"] == "vector_drawing"
+        assert result[0]["content_type"] == "vector_drawing"
+
+    def test_vision_override_mode_vector_drawing_chunk_carries_real_label(self):
+        """mode=vision routes VECTOR_DRAWING via _route_text_with_images
+        (shared with TEXT_WITH_IMAGES, whose own hardcoded label is
+        "text_with_images")."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm text"):
+                result = router._route(
+                    page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+                )
+        assert result[0]["page_class"] == "vector_drawing"
+        assert result[0]["content_type"] == "vector_drawing"
+
+    def test_flattened_page_still_carries_flattened_label(self):
+        """Regression: a real FLATTENED page must keep the "flattened" label
+        (the default page_class_str) — unaffected by the VECTOR_DRAWING fix."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert result[0]["page_class"] == "flattened"
+        assert result[0]["content_type"] == "flattened"
+
+    def test_structured_text_page_still_carries_structured_text_label(self):
+        """Regression: STRUCTURED_TEXT (the class that normally owns
+        _route_structured) keeps its own default label."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="table text"):
+            result = router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert result[0]["page_class"] == "structured_text"
+
+    def test_text_with_images_page_still_carries_text_with_images_label(self):
+        """Regression: TEXT_WITH_IMAGES (the class that normally owns
+        _route_text_with_images) keeps its own default label."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        with patch.object(router, "_extract_image_crops", return_value=[(0, b"img0")]):
+            with patch.object(router, "_call_ollama_vision", return_value="desc"):
+                result = router._route(
+                    page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock()
+                )
+        assert result[0]["page_class"] == "text_with_images"
+
+
 # ---------------------------------------------------------------------------
 # Configurable render DPI (Task 5) — replaces the three hardcoded dpi=150
 # literals in _route_structured, _route_text_with_images (caption fallback),

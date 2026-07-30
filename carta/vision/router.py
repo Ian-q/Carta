@@ -288,7 +288,13 @@ class SmartRouter:
         # vision_routing override modes — checked before auto dispatch.
         # Every mode below gates only on PURE_TEXT, so VECTOR_DRAWING (never
         # equal to PURE_TEXT) automatically falls through with FLATTENED in
-        # each mode — it must never hit a PURE_TEXT early-out.
+        # each mode — it must never hit a PURE_TEXT early-out. Whichever path
+        # it takes, pass the real page_class_str through so the *persisted*
+        # chunk (and therefore checkpoint-resume progress reporting, which
+        # replays from the chunk — not the live profile) also reports
+        # "vector_drawing" rather than whatever string that path's other
+        # callers hardcode ("structured_text"/"text_with_images"/"flattened").
+        is_vector_drawing = profile.page_class is PageClass.VECTOR_DRAWING
         if self.vision_routing == "off":
             # Never call any model; treat every page as text-only
             return []
@@ -296,11 +302,17 @@ class SmartRouter:
             # Every non-PURE_TEXT page goes through OCR only — never call VLM
             if profile.page_class == PageClass.PURE_TEXT:
                 return []
+            if is_vector_drawing:
+                return self._route_structured(page, page_num, page_class_str=profile.page_class.value)
             return self._route_structured(page, page_num)
         if self.vision_routing == "vision":
             # Every non-PURE_TEXT page goes through VLM only — never call OCR
             if profile.page_class == PageClass.PURE_TEXT:
                 return []
+            if is_vector_drawing:
+                return self._route_text_with_images(
+                    page, page_num, profile, doc, page_class_str=profile.page_class.value
+                )
             return self._route_text_with_images(page, page_num, profile, doc)
         # mode == "auto" (default): original heuristic dispatch
         if profile.page_class == PageClass.PURE_TEXT:
@@ -312,9 +324,13 @@ class SmartRouter:
         # FLATTENED and VECTOR_DRAWING (raster-free, vector-CAD dense — no
         # embedded images, so it never matches TEXT_WITH_IMAGES above) both
         # fall through to the full-page render + OCR->LLaVA fallback path.
+        if is_vector_drawing:
+            return self._route_flattened(page, page_num, page_class_str=profile.page_class.value)
         return self._route_flattened(page, page_num)
 
-    def _route_structured(self, page: Any, page_num: int) -> list[dict]:
+    def _route_structured(
+        self, page: Any, page_num: int, page_class_str: str = "structured_text"
+    ) -> list[dict]:
         with self._fitz_lock:
             pix = page.get_pixmap(dpi=self.render_dpi)
             png_bytes = pix.tobytes("png")
@@ -329,10 +345,15 @@ class SmartRouter:
                 file=sys.stderr, flush=True,
             )
             return []
-        return [self._make_chunk(page_num, 0, text, "glm-ocr", "structured_text")]
+        return [self._make_chunk(page_num, 0, text, "glm-ocr", page_class_str)]
 
     def _route_text_with_images(
-        self, page: Any, page_num: int, profile: PageProfile, doc: Any
+        self,
+        page: Any,
+        page_num: int,
+        profile: PageProfile,
+        doc: Any,
+        page_class_str: str = "text_with_images",
     ) -> list[dict]:
         with self._fitz_lock:
             crops = self._extract_image_crops(page, doc)
@@ -345,7 +366,7 @@ class SmartRouter:
                         timeout=self.vision_call_timeout,
                     )
                     chunks.append(
-                        self._make_chunk(page_num, idx, text, "llava", "text_with_images")
+                        self._make_chunk(page_num, idx, text, "llava", page_class_str)
                     )
                 except Exception as exc:
                     print(
@@ -363,7 +384,7 @@ class SmartRouter:
                     timeout=self.vision_call_timeout,
                 )
                 chunks.append(
-                    self._make_chunk(page_num, 0, text, "llava", "text_with_images")
+                    self._make_chunk(page_num, 0, text, "llava", page_class_str)
                 )
             except Exception as exc:
                 print(
@@ -372,7 +393,9 @@ class SmartRouter:
                 )
         return chunks
 
-    def _route_flattened(self, page: Any, page_num: int) -> list[dict]:
+    def _route_flattened(
+        self, page: Any, page_num: int, page_class_str: str = "flattened"
+    ) -> list[dict]:
         with self._fitz_lock:
             pix = page.get_pixmap(dpi=self.render_dpi)
             png_bytes = pix.tobytes("png")
@@ -388,21 +411,21 @@ class SmartRouter:
             )
             return []
         if len(ocr_text) >= self.flattened_min_yield:
-            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
+            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", page_class_str)]
         # Low yield — page is likely a photo or decorative image, try LLaVA
         try:
             vision_text = self._call_ollama_vision(
                 png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT,
                 timeout=self.vision_call_timeout,
             )
-            return [self._make_chunk(page_num, 0, vision_text, "llava", "flattened")]
+            return [self._make_chunk(page_num, 0, vision_text, "llava", page_class_str)]
         except Exception as exc:
             print(
                 f"Warning: {self.vision_model} fallback failed for flattened page {page_num}: {exc}",
                 file=sys.stderr, flush=True,
             )
             # Return the low-yield OCR result rather than discarding it
-            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
+            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", page_class_str)]
 
     def _extract_image_crops(self, page: Any, doc: Any) -> list[tuple[int, bytes]]:
         """Return (image_index, png_bytes) for embedded images.
