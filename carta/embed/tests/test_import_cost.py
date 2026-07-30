@@ -19,6 +19,7 @@ where the regression is cheapest to reintroduce.
 import ast
 import importlib.util
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -64,6 +65,65 @@ def test_pipeline_has_no_module_level_colpali_import():
 def test_hook_module_has_no_module_level_colpali_import():
     offenders = _module_level_colpali_imports("carta.hook.hook")
     assert not offenders, f"module-level colpali import(s) in the hook: {offenders}"
+
+
+def test_no_monkeypatch_targets_a_missing_module_attribute():
+    """`raising=False` on an attribute that does not exist patches NOTHING, silently.
+
+    This has bitten `test_visual_drainer.py` twice. Both times the sequence was the
+    same: a test patched `pipeline.is_colpali_available`, that import later became
+    function-local, and `raising=False` turned the patch into a no-op — so the test
+    fell through to the real function and asserted nothing. It surfaced only as a
+    confusing downstream assertion failure, not as "your patch target is wrong".
+
+    Scans every test module for `monkeypatch.setattr(<module>, "<attr>", ...,
+    raising=False)` and fails if `<attr>` is absent from the target. `raising=False`
+    is legitimate when creating a genuinely new attribute — but on these
+    module-level helpers it has only ever masked drift.
+    """
+    alias_to_module = {
+        "pipeline": "carta.embed.pipeline",
+        "embed": "carta.embed.embed",
+        "hook": "carta.hook.hook",
+        "scoped": "carta.search.scoped",
+        "scoped_mod": "carta.search.scoped",
+        "rr_mod": "carta.search.rerank",
+    }
+    call = re.compile(
+        r'monkeypatch\.setattr\(\s*([A-Za-z_][\w.]*)\s*,\s*"([^"]+)"[^)]*raising\s*=\s*False'
+    )
+
+    loaded: dict[str, object | None] = {}
+    offenders: list[str] = []
+    root = pathlib.Path(__file__).resolve().parents[2]  # the carta package
+
+    for path in sorted(root.rglob("test_*.py")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            m = call.search(line)
+            if not m:
+                continue
+            target = alias_to_module.get(m.group(1))
+            if target is None:
+                continue
+            if target not in loaded:
+                try:
+                    loaded[target] = importlib.import_module(target)
+                except Exception:
+                    loaded[target] = None
+            module = loaded[target]
+            if module is not None and not hasattr(module, m.group(2)):
+                offenders.append(
+                    f"{path.relative_to(root)}:{lineno} — "
+                    f"{target} has no attribute {m.group(2)!r}"
+                )
+
+    assert not offenders, (
+        "monkeypatch call(s) that silently patch nothing:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nPatch the module that DEFINES the name (e.g. "
+          '"carta.embed.colpali.is_colpali_available"), and drop raising=False so '
+          "a stale target fails loudly."
+    )
 
 
 @pytest.mark.skipif(

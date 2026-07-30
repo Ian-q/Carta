@@ -36,8 +36,7 @@ Carta is a semantic memory sidecar for Claude Code that gives agents automatic a
 - requests 2.31+ - HTTP client library
 - PyYAML 6.0+ - YAML parsing for config and frontmatter
 ## Configuration
-- `CARTA_QDRANT_URL` - Override Qdrant URL (default: `http://localhost:6333`)
-- `CARTA_OLLAMA_URL` - Override Ollama URL (default: `http://localhost:11434`)
+- `CARTA_QDRANT_URL` / `CARTA_OLLAMA_URL` - **Seed values, not runtime overrides.** Read only by `carta/install/bootstrap.py` (at `carta init`, to write the URL *into* the config) and `carta/install/preflight.py` (so a remote backend isn't reported as down). `load_config` never consults them, so setting one at runtime does **not** redirect `carta search`, the MCP tools, or the hook — those follow `qdrant_url` / `embed.ollama_url` in `.carta/config.yaml`. To point an existing project elsewhere, edit the config.
 - `PYTHONPATH` - Set during tests in `carta/tests/test_cli.py`
 - `pyproject.toml` - Single source of truth for package metadata and dependencies
 ## Platform Requirements
