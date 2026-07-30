@@ -4,6 +4,35 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-30
+
+Demand-driven deep scanning: a document can now be marked high-priority mid-session and get treatment a one-size pipeline cannot justify for every page.
+
+**The incident that motivated it.** A vector-CAD supplier schematic sat in a corpus as `status: embedded` with **one chunk** — its title block — and `visual_pages: 0`. Its labels are outline text, so `page.get_text()` returned almost nothing and a text-layer search concluded, wrongly, that a component drawn plainly on the sheet did not exist. Three causes stacked: the file's last sidecar generations came from paths that never queued visual pages, the project's visual backlog was never drained, and even a completed OCR pass answers "what labels are on this sheet" rather than "what connects to what".
+
+### Added
+
+- **`carta flag <path> --reason "…"`** — marks a source high-priority for deep scanning. Writes `priority`, `deep_scan`, `deep_scan_reason`, `deep_scan_requested_at` to the sidecar; `carta flag` alone lists flagged docs, `--clear` removes the mark. Flagging a PDF **force-queues every page** (`visual_done` reset, `visual_pending` = all pages), because a deep scan is a redo and must not inherit a past misclassification. Paths are validated to resolve inside `docs_root` (`..` traversal included).
+- **Flagged-first drain ordering** — `carta embed --visual` now processes flagged files first (oldest request first), then files under the new **`embed.visual_triage_paths`** prefixes, then everything else in discovery order. `deep_scan` flips to `done` when a flagged file drains cleanly.
+- **Deep extraction tier** — flagged pages (and auto-detected vector drawings) render at **`embed.deep_scan.dpi`** (default 300) and are **tiled** (`tile_px` 1280, `tile_overlap` 0.15) with two prompts per tile: the existing transcription prompt plus a **structure prompt** that asks what the drawing shows, what connects to what, and what sits between which elements. Chunks carry `tile` and `extraction` (`transcription`|`structure`). A failed render or prompt on one tile warns and continues — it never aborts the page.
+- **`PageClass.VECTOR_DRAWING`** — pages with no raster images, dense vector paths (`deep_scan.vector_min_paths`, default 50) and little extractable text (`vector_text_max_chars`, default 1000) now classify as vector drawings and route to the deep tier. This fires *before* the text-length test, so a title block can no longer push a CAD sheet into the text lane.
+- **Enrichment documents** — a human- or model-authored structured extraction of a visual source (`schematic.pdf.extraction.md`). Location is per project via **`embed.enrichment.repo_visible`**: a committed sibling of the source, or `.carta/companions/` (default). Its chunks carry an `enriches` payload pointing at the source; the source's sidecar records `enrichment_path` and `enrichment_source_hash`, so **`carta status` and `carta doctor` report an enrichment as stale once the source changes** — and as **orphaned** when the source is gone or renamed.
+- **`embed.vision_render_dpi`** (default 150) — the standard vision render DPI is no longer a hardcoded literal.
+
+### Fixed
+
+- **`colpali_scoped_paths` no longer gates OCR/vision coverage.** It silently gated both pass-1 queueing and the entire `--visual` drain, so an out-of-scope PDF got **zero** visual coverage rather than "no ColPali vectors" — a cost knob acting as a correctness switch. It now scopes only the ColPali embed step; OCR and the deep tier cover every file.
+- **The fail-closed classification path says what it cost.** When page classification raises, the file still falls back to text-only extraction, but the warning now states that visual queueing was skipped and the file has no visual coverage until it is flagged or re-embedded.
+- **A re-embed can no longer shrink a pending deep scan.** A text re-embed or `--repair` between flagging and draining replaced `visual_pending` with just the image-heavy pages, silently dropping exactly the pages a force-queue exists to keep. Pending pages are now unioned while `deep_scan` is `requested`.
+- **Enrichment staleness cannot be stamped blind.** Recording an enrichment against a source with no computed hash (a flag-created stub, or no sidecar yet) stored an empty hash, which made the source permanently un-stale. The hash is computed from disk when missing; an unreadable source warns and stamps nothing. Relatedly, the stamp is now written only after the embed's final success accounting, so a failed upsert no longer marks an enrichment as ingested.
+- **`tile_rects` cannot hang the drain.** An `embed.deep_scan.tile_overlap` of `15` (meaning 15%) or a non-positive `tile_px` produced a non-advancing step and an infinite loop — which, unlike an exception, no per-page guard can absorb. Values are clamped at the call site and rejected outright by `tile_rects`.
+- **`carta doctor` no longer suggests `--repair` for problems repair cannot fix.** Stale enrichments need the extraction re-verified against the changed source; orphaned ones need the source relocated or the doc re-pointed.
+
+### Notes
+
+- Existing projects are unaffected until they opt in: every new config key defaults to today's behaviour, no sidecar field is required, and non-flagged non-vector pages take the same path as before.
+- The deep tier is deliberately expensive — two model calls per tile — which is why it is demand-driven rather than the default. A large sheet can be many tiles; budget an overnight drain accordingly.
+
 ## [0.15.0] — 2026-07-28
 
 ### Fixed
