@@ -4,6 +4,17 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-07-30
+
+### Fixed
+- **`carta-hook` no longer imports torch on every prompt.** The hook loads `run_search` from `carta.embed.pipeline` on *every* prompt and blocks submission. A module-level `from carta.embed.colpali import is_colpali_available` pulled in torch + transformers transitively — **purely to read a boolean** — whether or not ColPali was enabled. The hook explicitly forces ColPali off and still paid it. Measured on a torch-capable interpreter: `import carta.embed.pipeline` **4.29 s → 1.22 s**, modules loaded 3207 → 1111. **~3.1 s saved per prompt, in every project.** Same class as the 0.7.1 fix one layer lower: 0.7.1 stopped ColPali *loading a model* per prompt; it never stopped the module being *imported*. Every other colpali import in `pipeline.py` was already function-local — line 41 was the lone holdout.
+- **Four drainer tests were asserting nothing.** They patched `pipeline.is_colpali_available` with `raising=False`; once that import became function-local the attribute vanished from `pipeline`, and `raising=False` silently made the patch a no-op, so the tests exercised the real function and `run_visual_embed` bailed early. Repointed to `carta.embed.colpali` (the module that defines the name) with `raising=False` dropped, so a stale target fails loudly.
+- **`CLAUDE.md` misdocumented `CARTA_QDRANT_URL` / `CARTA_OLLAMA_URL`** as general overrides. They are **seed values**, read only by `bootstrap.py` at `carta init` and by `preflight.py`; `load_config` never consults them. Setting one at runtime does not redirect `carta search`, the MCP tools, or the hook — those follow `.carta/config.yaml`.
+
+### Added
+- **A guard for the silent-no-op monkeypatch class.** `test_no_monkeypatch_targets_a_missing_module_attribute` scans every test module for `raising=False` setattrs whose attribute is absent from the target. This defect had hit `test_visual_drainer.py` twice; it now reports the exact `file:line` instead of surfacing as an unrelated assertion failure three layers downstream.
+- The lazy-import invariant is pinned by a **static (AST)** test rather than a `sys.modules` probe. A runtime check passes vacuously wherever torch is absent — including CI and any environment without the `[visual]` extra — i.e. it would have guarded nothing exactly where the regression is cheapest to reintroduce.
+
 ## [0.16.0] — 2026-07-30
 
 Demand-driven deep scanning: a document can now be marked high-priority mid-session and get treatment a one-size pipeline cannot justify for every page.
