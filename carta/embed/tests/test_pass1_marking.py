@@ -23,6 +23,20 @@ def test_mark_noop_when_no_image_heavy_pages():
     assert pipeline._mark_or_collect_visual_pages(page_classes, cfg) == {}
 
 
+# VECTOR_DRAWING (vector-CAD pages) is image-heavy too — it must be queued for
+# the OCR/vision drain just like TEXT_WITH_IMAGES/FLATTENED (Task 5).
+
+def test_vector_drawing_is_in_image_heavy_set():
+    assert PageClass.VECTOR_DRAWING in pipeline._IMAGE_HEAVY
+
+
+def test_mark_collects_vector_drawing_pages():
+    cfg = {"embed": {"two_pass_visual": True}}
+    page_classes = [PageClass.PURE_TEXT, PageClass.VECTOR_DRAWING, PageClass.STRUCTURED_TEXT]
+    updates = pipeline._mark_or_collect_visual_pages(page_classes, cfg)
+    assert updates[VISUAL_PENDING_KEY] == [2]
+
+
 # Queue-side scope: colpali_scoped_paths must NOT gate queueing (spec Component 1).
 # Queueing/OCR drain covers every file regardless of scope; only the ColPali embed
 # step inside _visual_embed_one_page honors colpali_scoped_paths. The old behavior

@@ -855,6 +855,135 @@ class TestVisionCallTimeout:
         assert mock_call.call_args[1]["timeout"] == 300
 
 
+# ---------------------------------------------------------------------------
+# VECTOR_DRAWING dispatch — must behave exactly like FLATTENED (Task 5)
+# ---------------------------------------------------------------------------
+
+class TestRouteVectorDrawing:
+    def test_auto_mode_dispatches_like_flattened_at_default_dpi(self):
+        """VECTOR_DRAWING → full-page render (150 dpi) + OCR, same as FLATTENED."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60) as mock_call:
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        mock_call.assert_called_once()
+        assert page.get_pixmap.call_args[1]["dpi"] == 150
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_low_ocr_yield_falls_back_to_llava_same_as_flattened(self):
+        """VECTOR_DRAWING low-yield OCR still falls back to LLaVA, same as FLATTENED."""
+        router = SmartRouter(_cfg(
+            vision_flattened_min_yield=50,
+            ocr_model="glm-ocr:latest",
+            ollama_vision_model="llava:latest",
+        ))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=["short", "full image description"]
+        ):
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result[0]["model_used"] == "llava"
+
+    def test_vision_routing_off_returns_empty(self):
+        router = SmartRouter(_cfg_routing("off"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result == []
+        mock_call.assert_not_called()
+
+    def test_vision_routing_ocr_uses_ocr_model_not_vlm(self):
+        """mode=ocr: VECTOR_DRAWING never falls into the PURE_TEXT early-out and
+        gets routed through OCR (not skipped, not sent to the VLM)."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="ocr text") as mock_call:
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert mock_call.call_args[1]["model"] == "glm-ocr:latest"
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_vision_routing_vision_uses_vlm_not_ocr(self):
+        """mode=vision: VECTOR_DRAWING never falls into the PURE_TEXT early-out and
+        gets routed through the VLM (not skipped, not sent to OCR)."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm text") as mock_call:
+                result = router._route(
+                    page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+                )
+        assert mock_call.call_args[1]["model"] == "llava:latest"
+
+
+# ---------------------------------------------------------------------------
+# Configurable render DPI (Task 5) — replaces the three hardcoded dpi=150
+# literals in _route_structured, _route_text_with_images (caption fallback),
+# and _route_flattened.
+# ---------------------------------------------------------------------------
+
+class TestRenderDpiConfig:
+    def test_default_render_dpi_is_150(self):
+        router = SmartRouter(_cfg())
+        assert router.render_dpi == 150
+
+    def test_configured_render_dpi_attribute(self):
+        router = SmartRouter(_cfg(vision_render_dpi=220))
+        assert router.render_dpi == 220
+
+    def test_configured_dpi_used_in_structured_route(self):
+        router = SmartRouter(_cfg(vision_render_dpi=220))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="OCR text"):
+            router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+    def test_configured_dpi_used_in_caption_fallback_route(self):
+        """TEXT_WITH_IMAGES with no image crops (vector graphic) — full-page render dpi."""
+        router = SmartRouter(_cfg(vision_render_dpi=220))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vector desc"):
+                router._route(
+                    page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_captions=True), MagicMock()
+                )
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+    def test_configured_dpi_used_in_flattened_route(self):
+        router = SmartRouter(_cfg(vision_render_dpi=220, vision_flattened_min_yield=50))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+    def test_configured_dpi_used_in_vector_drawing_route(self):
+        """VECTOR_DRAWING shares the flattened path — same configurable dpi."""
+        router = SmartRouter(_cfg(vision_render_dpi=220, vision_flattened_min_yield=50))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+
 class TestResourceCleanup:
     """Long visual drains leak resources unless streamed responses and PDF
     handles are always released — even on early break / mid-page error."""

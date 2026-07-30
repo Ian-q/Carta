@@ -42,7 +42,7 @@ from carta.embed.colpali import is_colpali_available
 from carta.embed.status import StatusWriter
 from carta.vision.classifier import PageClass, PageAnalyzer
 
-_IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
+_IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED, PageClass.VECTOR_DRAWING}
 
 
 def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str = "") -> dict:

@@ -151,6 +151,10 @@ class SmartRouter:
         self.vision_routing: str = embed.get("vision_routing", "auto")
         # Configurable per-call timeout (seconds); replaces the old hardcoded 120
         self.vision_call_timeout: int = int(embed.get("vision_call_timeout_s", 300))
+        # Full-page pixmap render DPI; replaces the old hardcoded dpi=150 literals
+        # in _route_structured, _route_text_with_images (caption fallback), and
+        # _route_flattened (also used by VECTOR_DRAWING, which shares that path).
+        self.render_dpi: int = int(embed.get("vision_render_dpi", 150))
         self.analyzer = PageAnalyzer(cfg)
         # PyMuPDF (fitz) is not thread-safe. Workers must serialize all fitz
         # operations through this lock; Ollama HTTP calls run unlocked so they
@@ -169,7 +173,7 @@ class SmartRouter:
         Args:
             pdf_path: Path to PDF file.
             progress_callback: Optional callback(page_num, total_pages, page_class, model_used, char_count).
-                               page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
+                               page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"|"vector_drawing"
                                model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                                char_count: total chars extracted for this page; 0 for skipped pages.
             checkpoint_path: Optional path to a JSON file persisting per-page progress
@@ -281,7 +285,10 @@ class SmartRouter:
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
     ) -> list[dict]:
-        # vision_routing override modes — checked before auto dispatch
+        # vision_routing override modes — checked before auto dispatch.
+        # Every mode below gates only on PURE_TEXT, so VECTOR_DRAWING (never
+        # equal to PURE_TEXT) automatically falls through with FLATTENED in
+        # each mode — it must never hit a PURE_TEXT early-out.
         if self.vision_routing == "off":
             # Never call any model; treat every page as text-only
             return []
@@ -302,11 +309,14 @@ class SmartRouter:
             return self._route_structured(page, page_num)
         if profile.page_class == PageClass.TEXT_WITH_IMAGES:
             return self._route_text_with_images(page, page_num, profile, doc)
+        # FLATTENED and VECTOR_DRAWING (raster-free, vector-CAD dense — no
+        # embedded images, so it never matches TEXT_WITH_IMAGES above) both
+        # fall through to the full-page render + OCR->LLaVA fallback path.
         return self._route_flattened(page, page_num)
 
     def _route_structured(self, page: Any, page_num: int) -> list[dict]:
         with self._fitz_lock:
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=self.render_dpi)
             png_bytes = pix.tobytes("png")
         try:
             text = self._call_ollama_vision(
@@ -345,7 +355,7 @@ class SmartRouter:
         else:
             # Caption fallback: likely a vector graphic not listed by get_images()
             with self._fitz_lock:
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=self.render_dpi)
                 png_bytes = pix.tobytes("png")
             try:
                 text = self._call_ollama_vision(
@@ -364,7 +374,7 @@ class SmartRouter:
 
     def _route_flattened(self, page: Any, page_num: int) -> list[dict]:
         with self._fitz_lock:
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=self.render_dpi)
             png_bytes = pix.tobytes("png")
         try:
             ocr_text = self._call_ollama_vision(
@@ -506,7 +516,7 @@ def extract_image_descriptions_intelligent(
         pdf_path: Path to PDF file.
         cfg: Carta config dict.
         progress_callback: Optional callback(page_num, total_pages, page_class, model_used, char_count).
-                           page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
+                           page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"|"vector_drawing"
                            model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                            char_count: total chars extracted for this page; 0 for skipped pages.
         cancel_event: Optional threading.Event; if set, stops page iteration early.

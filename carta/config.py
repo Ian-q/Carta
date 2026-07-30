@@ -129,6 +129,14 @@ DEFAULTS = {
         "colpali_scoped_paths": [],  # restrict ColPali to these repo-relative globs/dirs; [] = all PDFs
         "visual_triage_paths": [],  # repo-relative prefixes prioritized in visual drain; [] = no triage
         "vision_call_timeout_s": 300,  # seconds per Ollama vision/OCR call (was hardcoded 120)
+        "vision_render_dpi": 150,  # full-page pixmap render DPI (structured/text-with-images-fallback/flattened+vector-drawing routes)
+        "deep_scan": {  # NEW: vector-CAD detection thresholds (+ future tiled-render config)
+            "dpi": 300,
+            "tile_px": 1280,
+            "tile_overlap": 0.15,
+            "vector_min_paths": 50,       # >= this many page.get_drawings() paths -> candidate vector-CAD page
+            "vector_text_max_chars": 1000,  # below this text_length -> vector-CAD wins over FLATTENED/PURE_TEXT
+        },
         "two_pass_visual": True,    # pass-1 marks image-heavy pages; pass-2 (--visual) drains them
         "visual_timeout_s": 3600,   # generous per-file timeout for the slow visual pass (0 = unbounded)
         "enrichment": {"repo_visible": False, "suffix": ".extraction.md"},

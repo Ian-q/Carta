@@ -90,6 +90,31 @@ class TestVisionThresholdDefaults:
         assert DEFAULTS["embed"]["vision_max_images_per_page"] == 4
 
 
+class TestDeepScanDefaults:
+    """embed.deep_scan (vector-CAD detection thresholds + future tiled-render
+    config) and embed.vision_render_dpi (Task 5)."""
+
+    def test_vision_render_dpi_default(self):
+        from carta.config import DEFAULTS
+        assert DEFAULTS["embed"]["vision_render_dpi"] == 150
+
+    def test_deep_scan_defaults_present(self):
+        from carta.config import DEFAULTS
+        deep = DEFAULTS["embed"]["deep_scan"]
+        assert deep["dpi"] == 300
+        assert deep["tile_px"] == 1280
+        assert deep["tile_overlap"] == 0.15
+        assert deep["vector_min_paths"] == 50
+        assert deep["vector_text_max_chars"] == 1000
+
+    def test_deep_scan_merges_into_loaded_config(self, tmp_path):
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump(MINIMAL_CONFIG))
+        cfg = load_config(cfg_path)
+        assert cfg["embed"]["deep_scan"]["vector_min_paths"] == 50
+        assert cfg["embed"]["vision_render_dpi"] == 150
+
+
 def test_judge_model_default_is_qwen35():
     assert DEFAULTS["proactive_recall"]["ollama_model"] == "qwen3.5:0.8b"
 
