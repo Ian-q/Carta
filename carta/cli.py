@@ -635,8 +635,10 @@ def cmd_doctor(args):
                 visual_mm = report.get("visual_count_mismatches", {})
                 orphan_vis = report.get("orphaned_visual_files", [])
                 stale_enr = report.get("stale_enrichments", [])
+                orphan_enr = report.get("orphaned_enrichments", [])
                 if (not report["affected_files"] and not report["stuck_stale"]
-                        and not visual_mm and not orphan_vis and not stale_enr):
+                        and not visual_mm and not orphan_vis and not stale_enr
+                        and not orphan_enr):
                     print("  ✅ no issues found")
                 else:
                     for slug, files in report["slug_collisions"].items():
@@ -653,9 +655,30 @@ def cmd_doctor(args):
                         print(f"  ⚠️  visual count mismatch: {fp} (sidecar {c['sidecar']} vs qdrant {c['qdrant']})")
                     for fp in orphan_vis:
                         print(f"  ⚠️  orphaned visual points: {fp}")
+                    # `--repair` fixes everything printed above (it re-embeds/purges
+                    # affected files, requeues visual mismatches, purges orphaned
+                    # visual points, and corrects stuck-stale status in place) — so
+                    # the nudge belongs right after those lines, not after the
+                    # enrichment buckets below, which --repair cannot fix.
+                    if report["affected_files"] or report["stuck_stale"] or visual_mm or orphan_vis:
+                        print("  → run `carta embed --repair` to fix")
                     for fp in stale_enr:
                         print(f"  ⚠️  enrichment stale: {fp}")
-                    print("  → run `carta embed --repair` to fix")
+                    if stale_enr:
+                        print(
+                            "  → enrichment needs re-verification against the "
+                            "changed source — re-author or re-embed the extraction doc"
+                        )
+                    for entry in orphan_enr:
+                        print(
+                            f"  ⚠️  orphaned enrichment: {entry['current_path']} "
+                            f"(extraction doc: {entry['enrichment_path']})"
+                        )
+                    if orphan_enr:
+                        print(
+                            "  → source is missing/renamed — relocate the source "
+                            "or re-point the enrichment doc (not `--repair`)"
+                        )
         except Exception as e:
             if args.json:
                 # Still emit one valid JSON document; note the skipped check

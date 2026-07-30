@@ -52,7 +52,12 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
                               sidecar visual_done count vs _visual point count
         orphaned_visual_files: [file_path] — _visual points whose source is gone
         stale_enrichments:    [file_path] — source files whose enrichment_source_hash
-                              no longer matches their current file_hash
+                              no longer matches their current file_hash (source
+                              still exists — a missing source is orphaned instead)
+        orphaned_enrichments: [{"current_path", "enrichment_path"}] — sidecars
+                              carrying enrichment_path whose SOURCE is missing/
+                              renamed. Not repairable by re-embedding; the
+                              extraction needs relocating or re-authoring.
     """
     if client is None:
         client = QdrantClient(url=cfg["qdrant_url"], timeout=30)
@@ -121,6 +126,7 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
     visual_count_mismatches: dict[str, dict] = {}
     stuck_stale: list[str] = []
     stale_enrichments: list[str] = []
+    orphaned_enrichments: list[dict] = []
 
     for _sc_path, sc in iter_canonical_sidecars(repo_root):
         rel = sc["current_path"]
@@ -177,11 +183,22 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
                 "qdrant": visual_qdrant,
             }
 
-        # Stale enrichment: the source's recorded enrichment_source_hash no
-        # longer matches its current file_hash (the source changed since the
-        # extraction doc was written).
-        if enrichment_is_stale(sc):
-            stale_enrichments.append(rel)
+        # Enrichment attribution: a sidecar with enrichment_path set is tracked
+        # against its SOURCE. If the source is gone/renamed, that's an orphaned
+        # enrichment — repair can't fix a missing source by re-embedding, a
+        # human/Claude needs to relocate or re-author the extraction — mirroring
+        # the sibling _visual orphan routing above. Only when the source still
+        # exists does a hash mismatch mean genuinely stale (the extraction
+        # predates a real content change to the source).
+        if sc.get("enrichment_path"):
+            if (repo_root / rel).exists():
+                if enrichment_is_stale(sc):
+                    stale_enrichments.append(rel)
+            else:
+                orphaned_enrichments.append({
+                    "current_path": rel,
+                    "enrichment_path": sc["enrichment_path"],
+                })
 
     # affected_files: union of everything needing re-embed or purge.
     # Slug collisions are intentionally EXCLUDED — with path-based point IDs
@@ -200,4 +217,5 @@ def scan_corpus_integrity(cfg: dict, repo_root: Path, client=None) -> dict:
         "visual_count_mismatches": visual_count_mismatches,
         "orphaned_visual_files": orphaned_visual_files,
         "stale_enrichments": sorted(stale_enrichments),
+        "orphaned_enrichments": sorted(orphaned_enrichments, key=lambda d: d["current_path"]),
     }

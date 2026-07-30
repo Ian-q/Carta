@@ -365,6 +365,29 @@ class TestDoctorCorpusIntegrity:
         "orphaned_visual_files": ["docs/gone.pdf"],
     }
 
+    _STALE_ENRICHMENT_ONLY_REPORT = {
+        "slug_collisions": {},
+        "empty_files": [],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": [],
+        "stale_enrichments": ["docs/schematic.pdf"],
+    }
+
+    _ORPHANED_ENRICHMENT_ONLY_REPORT = {
+        "slug_collisions": {},
+        "empty_files": [],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": [],
+        "orphaned_enrichments": [
+            {"current_path": "docs/gone.pdf",
+             "enrichment_path": "docs/gone.pdf.extraction.md"},
+        ],
+    }
+
     def _make_args(self, json_flag=False):
         from unittest.mock import MagicMock
         args = MagicMock()
@@ -467,6 +490,66 @@ class TestDoctorCorpusIntegrity:
         assert "docs/scan.pdf" in out   # visual count mismatch surfaced
         assert "docs/gone.pdf" in out   # orphaned visual surfaced
         assert "carta embed --repair" in out
+
+    def test_doctor_stale_enrichment_gets_distinct_hint_not_repair(self, tmp_path, capsys):
+        """Enrichment-stale issues can't be fixed by `--repair` (it needs
+        human/Claude re-verification of the extraction against the changed
+        source) — the blanket repair hint must not follow these lines."""
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._STALE_ENRICHMENT_ONLY_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "no issues found" not in out
+        assert "docs/schematic.pdf" in out
+        assert "re-verification" in out
+        assert "carta embed --repair" not in out
+
+    def test_doctor_orphaned_enrichment_gets_relocate_hint_not_repair(self, tmp_path, capsys):
+        """A missing/renamed enrichment source needs relocating or re-pointing —
+        `--repair` can't recreate a source that's gone, so it must not be hinted."""
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._ORPHANED_ENRICHMENT_ONLY_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "no issues found" not in out
+        assert "docs/gone.pdf" in out
+        assert "docs/gone.pdf.extraction.md" in out
+        assert "relocat" in out or "re-point" in out
+        assert "carta embed --repair" not in out
 
     def test_doctor_outside_project(self, capsys):
         """find_config raises FileNotFoundError — doctor finishes, no integrity section."""
