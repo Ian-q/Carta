@@ -544,6 +544,24 @@ def _embed_one_file(
         elif not two_pass_visual:
             _visual_queue_updates = {}
 
+        # A `carta flag` force-queue (deep_scan: requested) must survive a text
+        # re-embed / repair that happens in between the flag and the visual
+        # drain. _mark_or_collect_visual_pages only returns THIS pass's
+        # freshly-classified image-heavy pages — merging that in via a plain
+        # dict-key overwrite (below, at the sidecar_updates.update() merge)
+        # would silently shrink visual_pending to whatever this pass's
+        # classifier calls image-heavy, dropping pages the flag force-queued
+        # that now look ordinary. Union with whatever was already pending
+        # while the flag is still live.
+        if file_path.is_relative_to(repo_root):
+            _existing_sc = read_sidecar(sidecar_path(file_path, repo_root)) or {}
+            if _existing_sc.get("deep_scan") == "requested":
+                _prior_pending = _existing_sc.get(VISUAL_PENDING_KEY) or []
+                _fresh_pending = _visual_queue_updates.get(VISUAL_PENDING_KEY) or []
+                _unioned_pending = sorted(set(_prior_pending) | set(_fresh_pending))
+                if _unioned_pending:
+                    _visual_queue_updates[VISUAL_PENDING_KEY] = _unioned_pending
+
         # Check if ColPali multimodal embedding is enabled (Issue #1)
         colpali_enabled = (not _skip_inline_vision) and cfg.get("embed", {}).get("colpali_enabled", False)
 
