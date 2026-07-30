@@ -26,7 +26,7 @@ def test_drainer_checkpoints_each_page(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "_visual_embed_one_page",
                         lambda sidecar, page, cfg, client, repo_root, router, embedder, verbose=False, deep=False: True,
                         raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
@@ -44,7 +44,7 @@ def test_drainer_writes_status_file(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "_visual_embed_one_page",
                         lambda *a, **k: True, raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     monkeypatch.setattr(pipeline, "_delete_visual_orphans", lambda *a, **k: None)
     _mock_router_embedder(monkeypatch)
@@ -67,7 +67,7 @@ def test_drainer_leaves_failed_page_pending(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise RuntimeError("model crashed")
     monkeypatch.setattr(pipeline, "_visual_embed_one_page", boom, raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     _mock_router_embedder(monkeypatch)
     summary = pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
@@ -77,7 +77,7 @@ def test_drainer_leaves_failed_page_pending(monkeypatch, tmp_path):
 
 
 def test_drainer_preflight_when_visual_unavailable(monkeypatch, tmp_path):
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: False, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: False, raising=False)
     summary = pipeline.run_visual_embed(tmp_path, {"qdrant_url": "x", "embed": {}})
     assert summary.get("status") == "visual_unavailable"
     assert summary["pages_embedded"] == 0
@@ -251,7 +251,7 @@ def test_drainer_sweeps_orphans_after_clean_file(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "_discover_visual_pending", lambda r: [("sc", sc)], raising=False)
     monkeypatch.setattr(pipeline, "_update_sidecar", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "_visual_embed_one_page", lambda *a, **k: True, raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     _mock_router_embedder(monkeypatch)
 
@@ -273,7 +273,7 @@ def test_drainer_skips_sweep_when_a_page_fails(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise RuntimeError("colpali failed")
     monkeypatch.setattr(pipeline, "_visual_embed_one_page", boom, raising=False)
-    monkeypatch.setattr(pipeline, "is_colpali_available", lambda: True, raising=False)
+    monkeypatch.setattr("carta.embed.colpali.is_colpali_available", lambda: True, raising=False)
     monkeypatch.setattr(pipeline, "QdrantClient", lambda **k: MagicMock())
     _mock_router_embedder(monkeypatch)
 
