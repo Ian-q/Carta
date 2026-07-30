@@ -126,6 +126,43 @@ LLAVA_PROMPT = (
     "Output only the transcribed items, one per line."
 )
 
+DEEP_STRUCTURE_PROMPT = (
+    "Describe what this technical drawing shows: name each component, state what "
+    "connects to what, and note what sits between which elements. Transcribe labels "
+    "verbatim, including non-English text. Do not invent details; omit anything "
+    "unreadable."
+)
+
+
+def tile_rects(x0, y0, x1, y1, dpi, tile_px, overlap):
+    """Grid of (x0, y0, x1, y1) point-space clips; each renders <= tile_px per edge at dpi.
+
+    Raises:
+        ValueError: if tile_px < 1 or overlap is not in [0, 1) — either would
+            make the sliding-window step <= 0, looping forever.
+    """
+    if tile_px < 1:
+        raise ValueError(f"tile_px must be >= 1, got {tile_px!r}")
+    if not (0 <= overlap < 1.0):
+        raise ValueError(f"overlap must be in [0, 1), got {overlap!r}")
+    tile_pts = tile_px / (dpi / 72.0)
+    if (x1 - x0) <= tile_pts and (y1 - y0) <= tile_pts:
+        return [(x0, y0, x1, y1)]
+    step = tile_pts * (1.0 - overlap)
+    rects = []
+    y = y0
+    while True:
+        x = x0
+        while True:
+            rects.append((x, y, min(x + tile_pts, x1), min(y + tile_pts, y1)))
+            if x + tile_pts >= x1:
+                break
+            x += step
+        if y + tile_pts >= y1:
+            break
+        y += step
+    return rects
+
 
 class SmartRouter:
     """Routes PDF pages to extraction strategies via PageAnalyzer classification.
@@ -151,6 +188,12 @@ class SmartRouter:
         self.vision_routing: str = embed.get("vision_routing", "auto")
         # Configurable per-call timeout (seconds); replaces the old hardcoded 120
         self.vision_call_timeout: int = int(embed.get("vision_call_timeout_s", 300))
+        # Full-page pixmap render DPI; replaces the old hardcoded dpi=150 literals
+        # in _route_structured, _route_text_with_images (caption fallback), and
+        # _route_flattened (also used by VECTOR_DRAWING, which shares that path).
+        self.render_dpi: int = int(embed.get("vision_render_dpi", 150))
+        # Deep tiled-extraction config (dpi/tile_px/tile_overlap); see extract_page_deep.
+        self.deep_cfg: dict = embed.get("deep_scan", {}) or {}
         self.analyzer = PageAnalyzer(cfg)
         # PyMuPDF (fitz) is not thread-safe. Workers must serialize all fitz
         # operations through this lock; Ollama HTTP calls run unlocked so they
@@ -169,7 +212,7 @@ class SmartRouter:
         Args:
             pdf_path: Path to PDF file.
             progress_callback: Optional callback(page_num, total_pages, page_class, model_used, char_count).
-                               page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
+                               page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"|"vector_drawing"
                                model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                                char_count: total chars extracted for this page; 0 for skipped pages.
             checkpoint_path: Optional path to a JSON file persisting per-page progress
@@ -281,7 +324,16 @@ class SmartRouter:
     def _route(
         self, page: Any, page_num: int, profile: PageProfile, doc: Any
     ) -> list[dict]:
-        # vision_routing override modes — checked before auto dispatch
+        # vision_routing override modes — checked before auto dispatch.
+        # Every mode below gates only on PURE_TEXT, so VECTOR_DRAWING (never
+        # equal to PURE_TEXT) automatically falls through with FLATTENED in
+        # each mode — it must never hit a PURE_TEXT early-out. Whichever path
+        # it takes, pass the real page_class_str through so the *persisted*
+        # chunk (and therefore checkpoint-resume progress reporting, which
+        # replays from the chunk — not the live profile) also reports
+        # "vector_drawing" rather than whatever string that path's other
+        # callers hardcode ("structured_text"/"text_with_images"/"flattened").
+        is_vector_drawing = profile.page_class is PageClass.VECTOR_DRAWING
         if self.vision_routing == "off":
             # Never call any model; treat every page as text-only
             return []
@@ -289,11 +341,17 @@ class SmartRouter:
             # Every non-PURE_TEXT page goes through OCR only — never call VLM
             if profile.page_class == PageClass.PURE_TEXT:
                 return []
+            if is_vector_drawing:
+                return self._route_structured(page, page_num, page_class_str=profile.page_class.value)
             return self._route_structured(page, page_num)
         if self.vision_routing == "vision":
             # Every non-PURE_TEXT page goes through VLM only — never call OCR
             if profile.page_class == PageClass.PURE_TEXT:
                 return []
+            if is_vector_drawing:
+                return self._route_text_with_images(
+                    page, page_num, profile, doc, page_class_str=profile.page_class.value
+                )
             return self._route_text_with_images(page, page_num, profile, doc)
         # mode == "auto" (default): original heuristic dispatch
         if profile.page_class == PageClass.PURE_TEXT:
@@ -302,11 +360,18 @@ class SmartRouter:
             return self._route_structured(page, page_num)
         if profile.page_class == PageClass.TEXT_WITH_IMAGES:
             return self._route_text_with_images(page, page_num, profile, doc)
+        # FLATTENED and VECTOR_DRAWING (raster-free, vector-CAD dense — no
+        # embedded images, so it never matches TEXT_WITH_IMAGES above) both
+        # fall through to the full-page render + OCR->LLaVA fallback path.
+        if is_vector_drawing:
+            return self._route_flattened(page, page_num, page_class_str=profile.page_class.value)
         return self._route_flattened(page, page_num)
 
-    def _route_structured(self, page: Any, page_num: int) -> list[dict]:
+    def _route_structured(
+        self, page: Any, page_num: int, page_class_str: str = "structured_text"
+    ) -> list[dict]:
         with self._fitz_lock:
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=self.render_dpi)
             png_bytes = pix.tobytes("png")
         try:
             text = self._call_ollama_vision(
@@ -319,10 +384,15 @@ class SmartRouter:
                 file=sys.stderr, flush=True,
             )
             return []
-        return [self._make_chunk(page_num, 0, text, "glm-ocr", "structured_text")]
+        return [self._make_chunk(page_num, 0, text, "glm-ocr", page_class_str)]
 
     def _route_text_with_images(
-        self, page: Any, page_num: int, profile: PageProfile, doc: Any
+        self,
+        page: Any,
+        page_num: int,
+        profile: PageProfile,
+        doc: Any,
+        page_class_str: str = "text_with_images",
     ) -> list[dict]:
         with self._fitz_lock:
             crops = self._extract_image_crops(page, doc)
@@ -335,7 +405,7 @@ class SmartRouter:
                         timeout=self.vision_call_timeout,
                     )
                     chunks.append(
-                        self._make_chunk(page_num, idx, text, "llava", "text_with_images")
+                        self._make_chunk(page_num, idx, text, "llava", page_class_str)
                     )
                 except Exception as exc:
                     print(
@@ -345,7 +415,7 @@ class SmartRouter:
         else:
             # Caption fallback: likely a vector graphic not listed by get_images()
             with self._fitz_lock:
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=self.render_dpi)
                 png_bytes = pix.tobytes("png")
             try:
                 text = self._call_ollama_vision(
@@ -353,7 +423,7 @@ class SmartRouter:
                     timeout=self.vision_call_timeout,
                 )
                 chunks.append(
-                    self._make_chunk(page_num, 0, text, "llava", "text_with_images")
+                    self._make_chunk(page_num, 0, text, "llava", page_class_str)
                 )
             except Exception as exc:
                 print(
@@ -362,9 +432,11 @@ class SmartRouter:
                 )
         return chunks
 
-    def _route_flattened(self, page: Any, page_num: int) -> list[dict]:
+    def _route_flattened(
+        self, page: Any, page_num: int, page_class_str: str = "flattened"
+    ) -> list[dict]:
         with self._fitz_lock:
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=self.render_dpi)
             png_bytes = pix.tobytes("png")
         try:
             ocr_text = self._call_ollama_vision(
@@ -378,21 +450,73 @@ class SmartRouter:
             )
             return []
         if len(ocr_text) >= self.flattened_min_yield:
-            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
+            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", page_class_str)]
         # Low yield — page is likely a photo or decorative image, try LLaVA
         try:
             vision_text = self._call_ollama_vision(
                 png_bytes, model=self.vision_model, prompt=LLAVA_PROMPT,
                 timeout=self.vision_call_timeout,
             )
-            return [self._make_chunk(page_num, 0, vision_text, "llava", "flattened")]
+            return [self._make_chunk(page_num, 0, vision_text, "llava", page_class_str)]
         except Exception as exc:
             print(
                 f"Warning: {self.vision_model} fallback failed for flattened page {page_num}: {exc}",
                 file=sys.stderr, flush=True,
             )
             # Return the low-yield OCR result rather than discarding it
-            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", "flattened")]
+            return [self._make_chunk(page_num, 0, ocr_text, "glm-ocr", page_class_str)]
+
+    def extract_page_deep(self, page: Any, page_num: int) -> list[dict]:
+        """High-DPI tiled extraction: transcription + structure prompt per tile."""
+        dpi = int(self.deep_cfg.get("dpi", 300))
+        # Clamp rather than pass through raw config: tile_rects raises on an
+        # out-of-range tile_px/overlap (nontermination guard), but a config
+        # typo mid-drain should degrade gracefully, not raise and abort the
+        # page (the drain's per-page try/except doesn't help against a hang,
+        # and aborting on every page for the run's duration is worse than a
+        # clamped-but-working tile grid).
+        tile_px = max(1, int(self.deep_cfg.get("tile_px", 1280)))
+        overlap = min(max(float(self.deep_cfg.get("tile_overlap", 0.15)), 0.0), 0.9)
+        import fitz  # lazy
+
+        with self._fitz_lock:
+            r = page.rect
+            tiles = tile_rects(r.x0, r.y0, r.x1, r.y1, dpi, tile_px, overlap)
+        chunks: list[dict] = []
+        for t_idx, (tx0, ty0, tx1, ty1) in enumerate(tiles):
+            try:
+                with self._fitz_lock:
+                    pix = page.get_pixmap(dpi=dpi, clip=fitz.Rect(tx0, ty0, tx1, ty1))
+                    png = pix.tobytes("png")
+            except Exception as exc:  # a failed render degrades, never aborts
+                print(
+                    f"Warning: deep render failed page {page_num} tile {t_idx}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                continue
+            for extraction, model, prompt in (
+                ("transcription", self.ocr_model, GLM_OCR_PROMPT),
+                ("structure", self.vision_model, DEEP_STRUCTURE_PROMPT),
+            ):
+                try:
+                    text = self._call_ollama_vision(
+                        png, model=model, prompt=prompt,
+                        timeout=self.vision_call_timeout,
+                    )
+                except Exception as exc:  # a failed tile degrades, never aborts
+                    print(
+                        f"Warning: deep {extraction} failed page {page_num} "
+                        f"tile {t_idx}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                    continue
+                if not text.strip():
+                    continue
+                ch = self._make_chunk(page_num, t_idx, text, model, "deep_scan")
+                ch["tile"] = t_idx
+                ch["extraction"] = extraction
+                chunks.append(ch)
+        return chunks
 
     def _extract_image_crops(self, page: Any, doc: Any) -> list[tuple[int, bytes]]:
         """Return (image_index, png_bytes) for embedded images.
@@ -506,7 +630,7 @@ def extract_image_descriptions_intelligent(
         pdf_path: Path to PDF file.
         cfg: Carta config dict.
         progress_callback: Optional callback(page_num, total_pages, page_class, model_used, char_count).
-                           page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"
+                           page_class: "pure_text"|"structured_text"|"text_with_images"|"flattened"|"vector_drawing"
                            model_used: "skip" for PURE_TEXT, otherwise the model name (e.g. "glm-ocr", "llava")
                            char_count: total chars extracted for this page; 0 for skipped pages.
         cancel_event: Optional threading.Event; if set, stops page iteration early.

@@ -365,6 +365,29 @@ class TestDoctorCorpusIntegrity:
         "orphaned_visual_files": ["docs/gone.pdf"],
     }
 
+    _STALE_ENRICHMENT_ONLY_REPORT = {
+        "slug_collisions": {},
+        "empty_files": [],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": [],
+        "stale_enrichments": ["docs/schematic.pdf"],
+    }
+
+    _ORPHANED_ENRICHMENT_ONLY_REPORT = {
+        "slug_collisions": {},
+        "empty_files": [],
+        "partial_empty_files": {},
+        "count_mismatches": {},
+        "stuck_stale": [],
+        "affected_files": [],
+        "orphaned_enrichments": [
+            {"current_path": "docs/gone.pdf",
+             "enrichment_path": "docs/gone.pdf.extraction.md"},
+        ],
+    }
+
     def _make_args(self, json_flag=False):
         from unittest.mock import MagicMock
         args = MagicMock()
@@ -467,6 +490,66 @@ class TestDoctorCorpusIntegrity:
         assert "docs/scan.pdf" in out   # visual count mismatch surfaced
         assert "docs/gone.pdf" in out   # orphaned visual surfaced
         assert "carta embed --repair" in out
+
+    def test_doctor_stale_enrichment_gets_distinct_hint_not_repair(self, tmp_path, capsys):
+        """Enrichment-stale issues can't be fixed by `--repair` (it needs
+        human/Claude re-verification of the extraction against the changed
+        source) — the blanket repair hint must not follow these lines."""
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._STALE_ENRICHMENT_ONLY_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "no issues found" not in out
+        assert "docs/schematic.pdf" in out
+        assert "re-verification" in out
+        assert "carta embed --repair" not in out
+
+    def test_doctor_orphaned_enrichment_gets_relocate_hint_not_repair(self, tmp_path, capsys):
+        """A missing/renamed enrichment source needs relocating or re-pointing —
+        `--repair` can't recreate a source that's gone, so it must not be hinted."""
+        from unittest.mock import patch
+        from carta import cli
+
+        cfg_file = tmp_path / ".carta" / "config.yaml"
+        cfg_file.parent.mkdir()
+        cfg_file.write_text(
+            "project_name: test\nqdrant_url: http://localhost:6333\n"
+        )
+
+        with patch("carta.cli.find_config", return_value=cfg_file), \
+             patch("carta.embed.integrity.scan_corpus_integrity",
+                   return_value=self._ORPHANED_ENRICHMENT_ONLY_REPORT), \
+             patch("carta.install.preflight.PreflightChecker") as MockChecker, \
+             patch("carta.install.auto_fix.AutoInstaller"):
+            self._make_preflight_mock(MockChecker)
+            try:
+                cli.cmd_doctor(self._make_args())
+            except SystemExit:
+                pass
+
+        out = capsys.readouterr().out
+        assert "no issues found" not in out
+        assert "docs/gone.pdf" in out
+        assert "docs/gone.pdf.extraction.md" in out
+        assert "relocat" in out or "re-point" in out
+        assert "carta embed --repair" not in out
 
     def test_doctor_outside_project(self, capsys):
         """find_config raises FileNotFoundError — doctor finishes, no integrity section."""
@@ -1135,3 +1218,33 @@ def test_cmd_import_registers_project(tmp_path, monkeypatch):
     assert reg.called, "import must register the project"
     assert Path(reg.call_args.args[0]) == tmp_path        # repo_root = carta_dir.parent
     assert reg.call_args.args[1] == "myproj"              # project name from summary
+
+
+def test_flag_command_lifecycle(tmp_path):
+    """carta flag: flag -> list -> clear -> list-empty, plus the missing-path error exit."""
+    (tmp_path / ".carta").mkdir()
+    (tmp_path / ".carta" / "config.yaml").write_text(
+        "project_name: t\nqdrant_url: http://localhost:6333\n", encoding="utf-8"
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "x.md").write_text("# hello\n", encoding="utf-8")
+
+    result = run_carta(["flag", "docs/x.md", "--reason", "r"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "flagged high-priority" in result.stdout
+
+    result = run_carta(["flag"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "docs/x.md" in result.stdout
+
+    result = run_carta(["flag", "docs/x.md", "--clear"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "cleared" in result.stdout
+
+    result = run_carta(["flag"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "no flagged documents" in result.stdout
+
+    result = run_carta(["flag", "docs/missing.pdf", "--reason", "r"], cwd=tmp_path)
+    assert result.returncode == 1
+    assert "error" in result.stderr.lower()

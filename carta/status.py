@@ -87,7 +87,8 @@ def _gather_embed(repo_root: Path, now: float) -> dict:
 
 def _gather_corpus(repo_root: Path) -> dict:
     counts = {"total": 0, "done": 0, "pending": 0, "stale": 0,
-              "extraction_failed": 0, "no_text_content": 0, "other": 0}
+              "extraction_failed": 0, "no_text_content": 0, "other": 0,
+              "flagged": 0, "awaiting_deep_scan": 0, "enrichment_stale": 0}
     sidecars = Path(repo_root) / ".carta" / "sidecars"
     if not sidecars.is_dir():
         return counts
@@ -103,6 +104,13 @@ def _gather_corpus(repo_root: Path) -> dict:
             counts[st] += 1
         else:
             counts["other"] += 1
+        if data.get("priority") == "high":
+            counts["flagged"] += 1
+            if data.get("deep_scan") == "requested":
+                counts["awaiting_deep_scan"] += 1
+        rec = data.get("enrichment_source_hash")
+        if rec and rec != data.get("file_hash", ""):
+            counts["enrichment_stale"] += 1
     return counts
 
 
@@ -210,6 +218,17 @@ def _corpus_line(co: dict, color: bool) -> str:
     return "docs    " + " · ".join(parts)
 
 
+def _flag_line(co: dict, color: bool) -> str:
+    if not (co.get("flagged") or co.get("enrichment_stale")):
+        return ""
+    parts = []
+    if co.get("flagged"):
+        parts.append(f"flagged {co['flagged']} ({co.get('awaiting_deep_scan', 0)} awaiting deep scan)")
+    if co.get("enrichment_stale"):
+        parts.append(f"enrichment stale: {co['enrichment_stale']}")
+    return "flags   " + " · ".join(parts)
+
+
 def _qdrant_lines(snap: dict, color: bool) -> list:
     chk = snap.get("check")
     if not chk:
@@ -240,6 +259,9 @@ def format_current(snap: dict, *, color: bool = True) -> str:
     )
     lines = [header, "  " + _embed_line(snap["embed"], color),
              "  " + _corpus_line(snap["corpus"], color)]
+    flag_line = _flag_line(snap["corpus"], color)
+    if flag_line:
+        lines.append("  " + flag_line)
     lines += ["  " + ln for ln in _qdrant_lines(snap, color)]
     return "\n".join(lines)
 

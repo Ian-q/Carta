@@ -23,9 +23,25 @@ def test_mark_noop_when_no_image_heavy_pages():
     assert pipeline._mark_or_collect_visual_pages(page_classes, cfg) == {}
 
 
-# Queue-side scope (bug: queueing ignored colpali_scoped_paths; only the drain
-# skipped out-of-scope sources, so patents re-queued every embed and inflated the
-# misleading "N pages await visual" count). Queueing must honor scope like the drain.
+# VECTOR_DRAWING (vector-CAD pages) is image-heavy too — it must be queued for
+# the OCR/vision drain just like TEXT_WITH_IMAGES/FLATTENED (Task 5).
+
+def test_vector_drawing_is_in_image_heavy_set():
+    assert PageClass.VECTOR_DRAWING in pipeline._IMAGE_HEAVY
+
+
+def test_mark_collects_vector_drawing_pages():
+    cfg = {"embed": {"two_pass_visual": True}}
+    page_classes = [PageClass.PURE_TEXT, PageClass.VECTOR_DRAWING, PageClass.STRUCTURED_TEXT]
+    updates = pipeline._mark_or_collect_visual_pages(page_classes, cfg)
+    assert updates[VISUAL_PENDING_KEY] == [2]
+
+
+# Queue-side scope: colpali_scoped_paths must NOT gate queueing (spec Component 1).
+# Queueing/OCR drain covers every file regardless of scope; only the ColPali embed
+# step inside _visual_embed_one_page honors colpali_scoped_paths. The old behavior
+# (queueing gated on scope) silently left out-of-scope PDFs with zero visual
+# coverage — the 2026-07 dark-corpus incident.
 
 _SCOPED_CFG = {
     "embed": {
@@ -35,12 +51,14 @@ _SCOPED_CFG = {
 }
 
 
-def test_mark_skips_out_of_scope_source_when_scopes_set():
+def test_mark_queues_out_of_scope_source_when_scopes_set():
+    """Out-of-scope sources are still queued for the OCR/vision drain — only the
+    ColPali embed step (at drain time) respects colpali_scoped_paths."""
     page_classes = [PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED]
     updates = pipeline._mark_or_collect_visual_pages(
         page_classes, _SCOPED_CFG, "docs/reference/patents/US123.pdf"
     )
-    assert updates == {}  # out of scope → not queued (drain would skip it anyway)
+    assert updates[VISUAL_PENDING_KEY] == [1, 2]
 
 
 def test_mark_queues_in_scope_source_when_scopes_set():
