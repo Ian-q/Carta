@@ -82,6 +82,31 @@ def _write_visual_sidecar(tmp_path, rel_path, visual_done, visual_pending=None):
     return sc
 
 
+def _write_enrichment_sidecar(tmp_path, rel_path, file_hash, enrichment_source_hash,
+                               create_source=True):
+    """Write a canonical sidecar carrying enrichment attribution fields.
+
+    create_source=True (default) also touches the SOURCE file on disk — the
+    stale/orphaned routing checks whether the source still exists before
+    treating a hash mismatch as "stale" rather than "orphaned" (a gone/renamed
+    source is an orphan regardless of hash). Pass create_source=False to
+    simulate a renamed/deleted source.
+    """
+    from carta.embed.induct import sidecar_path
+    sc = sidecar_path(tmp_path / rel_path, tmp_path)
+    sc.parent.mkdir(parents=True, exist_ok=True)
+    sc.write_text(yaml.dump({
+        "current_path": rel_path, "status": "embedded", "file_hash": file_hash,
+        "enrichment_path": rel_path + ".extraction.md",
+        "enrichment_source_hash": enrichment_source_hash,
+    }))
+    if create_source:
+        src = tmp_path / rel_path
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("source content")
+    return sc
+
+
 class TestScanCorpusIntegrity:
     def test_detects_slug_collisions(self, tmp_path):
         pts = [
@@ -385,6 +410,59 @@ class TestVisualIntegrityScan:
         report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
         assert report["visual_count_mismatches"] == {}
         assert report["orphaned_visual_files"] == []
+
+
+class TestStaleEnrichmentScan:
+    """scan_corpus_integrity surfaces sources whose enrichment attribution has
+    gone stale (enrichment_source_hash != current file_hash)."""
+
+    def test_stale_enrichment_detected_alongside_fresh_one(self, tmp_path):
+        _write_enrichment_sidecar(
+            tmp_path, "docs/stale.pdf", file_hash="new-hash",
+            enrichment_source_hash="old-hash",
+        )
+        _write_enrichment_sidecar(
+            tmp_path, "docs/fresh.pdf", file_hash="same-hash",
+            enrichment_source_hash="same-hash",
+        )
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["stale_enrichments"] == ["docs/stale.pdf"]
+
+    def test_no_enrichment_fields_is_clean(self, tmp_path):
+        _write_sidecar(tmp_path, "docs/plain.md", 1, "embedded", "abc")
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["stale_enrichments"] == []
+
+
+class TestOrphanedEnrichmentScan:
+    """A sidecar with enrichment_path set whose SOURCE is missing/renamed is an
+    orphaned enrichment, not a stale one — repair can't fix a missing source by
+    re-embedding; a human/Claude needs to relocate or re-author the extraction.
+    Mirrors the sibling _visual orphan routing (TestVisualIntegrityScan)."""
+
+    def test_gone_source_lands_in_orphaned_not_stale(self, tmp_path):
+        _write_enrichment_sidecar(
+            tmp_path, "docs/renamed-or-deleted.pdf",
+            file_hash="new-hash", enrichment_source_hash="old-hash",
+            create_source=False,
+        )
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["stale_enrichments"] == []
+        assert report["orphaned_enrichments"] == [
+            {"current_path": "docs/renamed-or-deleted.pdf",
+             "enrichment_path": "docs/renamed-or-deleted.pdf.extraction.md"}
+        ]
+
+    def test_existing_stale_test_still_reports_stale_when_source_present(self, tmp_path):
+        """Sanity companion to TestStaleEnrichmentScan: with the source present,
+        a hash mismatch is still reported as stale, not orphaned."""
+        _write_enrichment_sidecar(
+            tmp_path, "docs/stale.pdf", file_hash="new-hash",
+            enrichment_source_hash="old-hash",
+        )
+        report = scan_corpus_integrity(CFG, tmp_path, client=_client_with_points([]))
+        assert report["stale_enrichments"] == ["docs/stale.pdf"]
+        assert report["orphaned_enrichments"] == []
 
 
 class TestRunRepair:

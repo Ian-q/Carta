@@ -23,6 +23,7 @@ def _make_page(
     blocks: list = None,
     page_rect=None,
     image_rects: dict = None,
+    drawings: list = None,
 ) -> MagicMock:
     """Build a minimal mock fitz Page for PageAnalyzer.analyze().
 
@@ -34,8 +35,12 @@ def _make_page(
         image_rects: dict mapping xref → rect-like object for get_image_rects().
                      Missing xrefs return []. Provide large rects for "real" images,
                      small rects for logos/decorative images.
+        drawings: list returned by page.get_drawings() (vector path count source).
+                  Defaults to [] (unconfigured MagicMock().get_drawings() also
+                  defaults to len()==0, but this makes intent explicit).
     """
     page = MagicMock()
+    page.get_drawings.return_value = drawings or []
 
     def _get_text(fmt: str = "text", **kw):
         if fmt == "blocks":
@@ -205,6 +210,77 @@ class TestFigureCaptionRegex:
 # ---------------------------------------------------------------------------
 # Table detection
 # ---------------------------------------------------------------------------
+
+class TestPageClassVectorDrawing:
+    """Vector-CAD signature: raster-free + drawing-dense + sparse text.
+
+    Closes two misclassification paths: (1) a classifier that would otherwise
+    call a dense-drawing, text-light page PURE_TEXT/FLATTENED because it has
+    no raster images, and (2) a title block that pushes text_length past 150
+    (the FLATTENED threshold) — the vector-CAD check runs FIRST, before the
+    text_min check, so it still wins.
+    """
+
+    def test_classify_direct_vector_drawing(self):
+        """Brief Step 1: raster-free, drawing-dense, sparse text -> VECTOR_DRAWING
+        even when text_length exceeds the FLATTENED threshold (title-block case)."""
+        analyzer = PageAnalyzer({"embed": {"deep_scan": {"vector_min_paths": 50,
+                                                          "vector_text_max_chars": 1000}}})
+        assert analyzer._classify(300, False, False, False, drawing_count=200) is PageClass.VECTOR_DRAWING
+
+    def test_classify_raster_images_present_not_vector_cad(self):
+        analyzer = PageAnalyzer({"embed": {"deep_scan": {"vector_min_paths": 50,
+                                                          "vector_text_max_chars": 1000}}})
+        assert analyzer._classify(300, True, False, False, drawing_count=200) is not PageClass.VECTOR_DRAWING
+
+    def test_classify_text_heavy_page_stays_pure_text(self):
+        """Text-heavy pages with incidental rules/underlines (many drawings) stay text."""
+        analyzer = PageAnalyzer({"embed": {"deep_scan": {"vector_min_paths": 50,
+                                                          "vector_text_max_chars": 1000}}})
+        assert analyzer._classify(2000, False, False, False, drawing_count=200) is PageClass.PURE_TEXT
+
+    def test_classify_default_thresholds_without_config(self):
+        """Defaults (vector_min_paths=50, vector_text_max_chars=1000) apply with bare {} cfg."""
+        analyzer = PageAnalyzer({})
+        assert analyzer._classify(300, False, False, False, drawing_count=50) is PageClass.VECTOR_DRAWING
+        assert analyzer._classify(300, False, False, False, drawing_count=49) is not PageClass.VECTOR_DRAWING
+
+    def test_analyze_computes_drawing_count_from_page(self):
+        """analyze() reads len(page.get_drawings()) into profile.drawing_count."""
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="x" * 300, drawings=[object()] * 75)
+        profile = analyzer.analyze(page)
+        assert profile.drawing_count == 75
+        assert profile.page_class == PageClass.VECTOR_DRAWING
+
+    def test_analyze_falls_back_to_zero_without_get_drawings(self):
+        """Pages from a fitz build without get_drawings() must not raise —
+        drawing_count falls back to 0 via the hasattr guard."""
+        analyzer = PageAnalyzer({})
+
+        class NoDrawingsPage:
+            def get_text(self, fmt="text", **kw):
+                return [] if fmt == "blocks" else "x" * 300
+            def get_images(self):
+                return []
+            rect = _mock_rect(0, 0, 595, 842)
+
+        profile = analyzer.analyze(NoDrawingsPage())
+        assert profile.drawing_count == 0
+        assert profile.page_class == PageClass.PURE_TEXT
+
+    def test_vector_drawing_beats_flattened_short_text(self):
+        """Even short text (would be FLATTENED) yields VECTOR_DRAWING when the
+        vector-CAD signature is present — the check runs before the text_min gate."""
+        analyzer = PageAnalyzer({})
+        page = _make_page(text="A0", drawings=[object()] * 200)
+        assert analyzer.analyze(page).page_class == PageClass.VECTOR_DRAWING
+
+    def test_default_drawing_count_is_zero_in_classify(self):
+        """_classify(..., ) without drawing_count must default to 0 (never VECTOR_DRAWING)."""
+        analyzer = PageAnalyzer({})
+        assert analyzer._classify(300, False, False, False) is not PageClass.VECTOR_DRAWING
+
 
 class TestTableDetection:
     def test_two_columns_detected(self):

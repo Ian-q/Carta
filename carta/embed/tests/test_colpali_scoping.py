@@ -139,3 +139,15 @@ class TestEdgeCases:
     def test_single_star_glob_in_scope(self):
         """'**' alone in scopes matches everything (degenerate case)."""
         assert _colpali_path_in_scope("anywhere/deep/file.pdf", ["**"]) is True
+
+
+def test_queueing_ignores_colpali_scope():
+    """OCR/vision queueing must not be gated by colpali_scoped_paths (spec Component 1)."""
+    from carta.embed.pipeline import _mark_or_collect_visual_pages
+    from carta.vision.classifier import PageClass
+    cfg = {"embed": {"two_pass_visual": True,
+                     "colpali_scoped_paths": ["docs/components/"]}}
+    updates = _mark_or_collect_visual_pages(
+        [PageClass.FLATTENED, PageClass.PURE_TEXT], cfg,
+        rel_path="docs/reference/suppliers/CTS/schematic.pdf")  # OUT of scope
+    assert updates.get("visual_pending") == [1]

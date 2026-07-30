@@ -725,3 +725,107 @@ class TestRunEmbedFileLifecycle:
             assert mock_embed.call_count == 1, (
                 f"Expected _embed_one_file NOT called on skip, but call count is {mock_embed.call_count}."
             )
+
+
+@patch("carta.embed.pipeline.delete_other_points")
+@patch("carta.embed.pipeline.upsert_chunks", return_value=1)
+@patch("carta.embed.pipeline.chunk_text")
+@patch("carta.embed.pipeline.extract_pdf_text_and_classify")
+def test_reembed_unions_fresh_classification_with_prior_visual_pending(
+        mock_extract, mock_chunk, mock_upsert, mock_delete, tmp_path):
+    """A `carta flag`-created force-queue (deep_scan: requested + visual_pending)
+    must survive a text re-embed in between flag and drain: _mark_or_collect_
+    visual_pages only returns THIS pass's freshly-classified image-heavy pages,
+    so merging it in via plain dict overwrite would silently erode pages the
+    flag forced that this pass's classifier calls something else (e.g. plain
+    text this time around) — instead the fresh queue must be UNIONED with
+    whatever was already pending while deep_scan is still "requested"."""
+    from carta.embed.pipeline import _embed_one_file
+    from carta.embed.induct import write_sidecar
+    from carta.embed.visual_queue import VISUAL_PENDING_KEY
+    from carta.vision.classifier import PageClass
+
+    repo = tmp_path
+    doc = repo / "docs" / "flagged.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+
+    src_rel = doc.relative_to(repo)
+    write_sidecar(doc, {
+        "current_path": str(src_rel),
+        "status": "embedded",
+        "file_hash": "old-hash",
+        "deep_scan": "requested",
+        "visual_pending": [1, 2, 3],
+        "visual_done": [],
+    }, repo)
+
+    # This re-embed classifies only page 2 as image-heavy — pages 1 and 3 were
+    # force-queued by the flag but look ordinary (pure-text/structured-text)
+    # to this pass's classifier.
+    mock_extract.return_value = (
+        [{"page": 1, "text": "text one"}, {"page": 2, "text": "text two"},
+         {"page": 3, "text": "text three"}],
+        [PageClass.PURE_TEXT, PageClass.TEXT_WITH_IMAGES, PageClass.STRUCTURED_TEXT],
+    )
+    mock_chunk.return_value = [{"chunk_index": 0, "text": "chunk", "page": 1}]
+
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                  "two_pass_visual": True},
+    }
+    file_info = {"slug": "flagged", "doc_type": "reference", "generation": 1}
+    count, sidecar_updates = _embed_one_file(
+        doc, file_info, cfg, MagicMock(), repo, 800, 0.15,
+    )
+
+    assert sidecar_updates[VISUAL_PENDING_KEY] == [1, 2, 3]
+
+
+@patch("carta.embed.pipeline.delete_other_points")
+@patch("carta.embed.pipeline.upsert_chunks", return_value=1)
+@patch("carta.embed.pipeline.chunk_text")
+@patch("carta.embed.pipeline.extract_pdf_text_and_classify")
+def test_reembed_without_deep_scan_flag_does_not_union(
+        mock_extract, mock_chunk, mock_upsert, mock_delete, tmp_path):
+    """Sanity companion: without an active deep_scan flag, a plain re-embed's
+    fresh classification is NOT unioned with stale prior visual_pending — the
+    union guard must not leak into ordinary (non-flagged) re-embeds."""
+    from carta.embed.pipeline import _embed_one_file
+    from carta.embed.induct import write_sidecar
+    from carta.embed.visual_queue import VISUAL_PENDING_KEY
+    from carta.vision.classifier import PageClass
+
+    repo = tmp_path
+    doc = repo / "docs" / "plain.pdf"
+    doc.parent.mkdir(parents=True)
+    doc.write_bytes(b"%PDF-1.4 fake")
+
+    src_rel = doc.relative_to(repo)
+    write_sidecar(doc, {
+        "current_path": str(src_rel),
+        "status": "embedded",
+        "file_hash": "old-hash",
+        "visual_pending": [1, 2, 3],
+        "visual_done": [],
+    }, repo)
+
+    mock_extract.return_value = (
+        [{"page": 1, "text": "text one"}, {"page": 2, "text": "text two"},
+         {"page": 3, "text": "text three"}],
+        [PageClass.PURE_TEXT, PageClass.TEXT_WITH_IMAGES, PageClass.STRUCTURED_TEXT],
+    )
+    mock_chunk.return_value = [{"chunk_index": 0, "text": "chunk", "page": 1}]
+
+    cfg = {
+        "project_name": "test", "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://x", "ollama_model": "m",
+                  "two_pass_visual": True},
+    }
+    file_info = {"slug": "plain", "doc_type": "reference", "generation": 1}
+    count, sidecar_updates = _embed_one_file(
+        doc, file_info, cfg, MagicMock(), repo, 800, 0.15,
+    )
+
+    assert sidecar_updates[VISUAL_PENDING_KEY] == [2]

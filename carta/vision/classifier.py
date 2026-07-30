@@ -1,10 +1,13 @@
 """PDF page classification for smart vision routing.
 
 Analyzes PyMuPDF page objects using free metadata (zero model calls) to
-determine the appropriate extraction strategy for each page.
+determine the appropriate extraction strategy for each page. The vector-CAD
+check (``page.get_drawings()``) walks the page's full display list to count
+vector paths — still no model calls, just more CPU work than the other,
+cheaper signals.
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -21,6 +24,7 @@ class PageClass(Enum):
     STRUCTURED_TEXT = "structured_text"
     TEXT_WITH_IMAGES = "text_with_images"
     FLATTENED = "flattened"
+    VECTOR_DRAWING = "vector_drawing"
 
 
 @dataclass
@@ -28,25 +32,35 @@ class PageProfile:
     """Signals extracted from a PDF page for routing decisions.
 
     Attributes:
-        text_length:  Characters returned by page.get_text()
-        has_images:   True if page.get_images() is non-empty
-        has_tables:   True if column-alignment heuristic fires
-        has_captions: True if FIGURE_CAPTION_RE matches page text
-        page_class:   Resulting routing class
+        text_length:   Characters returned by page.get_text()
+        has_images:    True if page.get_images() is non-empty
+        has_tables:    True if column-alignment heuristic fires
+        has_captions:  True if FIGURE_CAPTION_RE matches page text
+        drawing_count: len(page.get_drawings()) — vector path count; 0 if
+                       the fitz build doesn't expose get_drawings()
+        page_class:    Resulting routing class
     """
     text_length: int
     has_images: bool
     has_tables: bool
     has_captions: bool
+    # kw_only so this new field can sit between has_captions and page_class
+    # (declaration order) without violating dataclass's "no non-default field
+    # after a default field" rule for page_class, which has no default and
+    # must stay last/required. Positional construction of the first 4 fields
+    # plus a keyword page_class= (the existing call pattern) still works.
+    drawing_count: int = field(default=0, kw_only=True)
     page_class: PageClass
 
 
 class PageAnalyzer:
-    """Classify a PDF page using only PyMuPDF metadata (zero model calls).
+    """Classify a PDF page using only PyMuPDF metadata (zero model calls —
+    get_drawings() walks the display list but never calls a model).
 
     Args:
-        cfg: Carta config dict. Reads embed.vision_text_min_chars and
-             embed.vision_text_max_chars.
+        cfg: Carta config dict. Reads embed.vision_text_min_chars,
+             embed.vision_text_max_chars, and embed.deep_scan.vector_min_paths
+             / embed.deep_scan.vector_text_max_chars (vector-CAD detection).
     """
 
     def __init__(self, cfg: dict):
@@ -54,6 +68,9 @@ class PageAnalyzer:
         self.text_min: int = embed.get("vision_text_min_chars", 150)
         self.text_max: int = embed.get("vision_text_max_chars", 600)
         self.image_min_area_fraction: float = embed.get("vision_image_min_area_fraction", 0.05)
+        deep = embed.get("deep_scan", {}) or {}
+        self.vector_min_paths: int = deep.get("vector_min_paths", 50)
+        self.vector_text_max: int = deep.get("vector_text_max_chars", 1000)
 
     def analyze(self, page: Any) -> PageProfile:
         """Return a PageProfile for *page*.
@@ -69,12 +86,16 @@ class PageAnalyzer:
         has_images = self._has_significant_images(page)
         has_tables = self._detect_tables(page)
         has_captions = bool(FIGURE_CAPTION_RE.search(text))
-        page_class = self._classify(text_length, has_images, has_tables, has_captions)
+        drawing_count = len(page.get_drawings()) if hasattr(page, "get_drawings") else 0
+        page_class = self._classify(
+            text_length, has_images, has_tables, has_captions, drawing_count=drawing_count
+        )
         return PageProfile(
             text_length=text_length,
             has_images=has_images,
             has_tables=has_tables,
             has_captions=has_captions,
+            drawing_count=drawing_count,
             page_class=page_class,
         )
 
@@ -84,7 +105,15 @@ class PageAnalyzer:
         has_images: bool,
         has_tables: bool,
         has_captions: bool,
+        drawing_count: int = 0,
     ) -> PageClass:
+        # Vector-CAD signature checked FIRST: a title block can push text_length
+        # past text_min (150), which would otherwise misclassify a raster-free,
+        # drawing-dense page as PURE_TEXT/STRUCTURED_TEXT and skip vision routing.
+        if (not has_images
+                and drawing_count >= self.vector_min_paths
+                and text_length < self.vector_text_max):
+            return PageClass.VECTOR_DRAWING
         if text_length < self.text_min:
             return PageClass.FLATTENED
         if has_tables:

@@ -42,30 +42,28 @@ from carta.embed.colpali import is_colpali_available
 from carta.embed.status import StatusWriter
 from carta.vision.classifier import PageClass, PageAnalyzer
 
-_IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED}
+_IMAGE_HEAVY = {PageClass.TEXT_WITH_IMAGES, PageClass.FLATTENED, PageClass.VECTOR_DRAWING}
 
 
 def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str = "") -> dict:
     """Return sidecar updates queuing 1-indexed image-heavy pages when two_pass_visual is on.
 
+    Deliberately independent of colpali_scoped_paths: ColPali scoping gates the
+    ColPali embedder only (see _visual_embed_one_page) — the OCR/vision drain
+    covers every file. The old scope gate here silently left out-of-scope PDFs
+    with zero visual coverage (2026-07 dark-corpus incident).
+
     Args:
         page_classes: List of PageClass values, one per page (0-indexed position = page-1).
-        cfg: Carta config dict. Reads embed.two_pass_visual and embed.colpali_scoped_paths.
-        rel_path: Repo-relative path of the source file, used to honor
-            colpali_scoped_paths. Out-of-scope sources are not queued — the visual
-            drain skips them anyway (``_filter_visual_pending_in_scope``), so queuing
-            them only strands phantom pages in visual_pending that re-queue every embed
-            and inflate the "N pages await visual" count. Empty/absent scopes = no
-            restriction (backward compatible).
+        cfg: Carta config dict. Reads embed.two_pass_visual.
+        rel_path: Repo-relative path of the source file. Accepted for call-site
+            compatibility but not used to gate queueing (see above).
 
     Returns:
         Dict with VISUAL_PENDING_KEY → sorted list of 1-indexed page numbers, or {} when
-        two_pass_visual is off, the source is out of scope, or no image-heavy pages exist.
+        two_pass_visual is off or no image-heavy pages exist.
     """
     if not cfg.get("embed", {}).get("two_pass_visual", True):
-        return {}
-    scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
-    if scopes and not _colpali_path_in_scope(rel_path, scopes):
         return {}
     pending = [i + 1 for i, pc in enumerate(page_classes) if pc in _IMAGE_HEAVY]
     updates: dict = {}
@@ -377,7 +375,9 @@ def _embed_one_file(
             # (fail closed — do not escalate to the heavy VLM path).
             print(
                 f"Warning: two_pass_visual page classification failed for {file_path}: {_cls_exc}; "
-                f"pages left unclassified — skipping inline vision for this file",
+                f"pages left unclassified — skipping inline vision for this file; two-pass visual "
+                f"queueing also skipped — file has no visual coverage until flagged (carta flag) "
+                f"or re-embedded",
                 file=sys.stderr,
                 flush=True,
             )
@@ -418,6 +418,14 @@ def _embed_one_file(
         metadata["derived"] = "spreadsheet"
         metadata["companion_path"] = str(
             companion_rel_path(file_path.relative_to(repo_root)))
+
+    from carta.embed.enrichment import enrichment_suffix, source_rel_for_enrichment
+
+    rel_of_file = file_path.relative_to(repo_root)
+    if rel_of_file.name.endswith(enrichment_suffix(cfg)):
+        src_rel = source_rel_for_enrichment(rel_of_file, cfg)
+        if src_rel and (repo_root / src_rel).is_file():
+            metadata["enriches"] = str(src_rel)
 
     enriched = [{**metadata, **chunk} for chunk in raw_chunks]
     # expected_text counts only non-empty chunks — upsert_chunks drops empty ones
@@ -503,16 +511,19 @@ def _embed_one_file(
         _skip_inline_vision = False
 
         if two_pass_visual and _page_classes_from_extraction is not None:
-            # Pass the repo-relative path so queueing honors colpali_scoped_paths,
-            # exactly like the drain (_filter_visual_pending_in_scope) and the inline
-            # ColPali scope check below. _skip_inline_vision stays True regardless, so
-            # an out-of-scope file gets pass-1 text only — no queue, no inline vision.
-            _rel_for_scope = (
+            # Pass the repo-relative path for call-site compatibility (the sidecar's
+            # current_path); _mark_or_collect_visual_pages no longer uses it to gate
+            # queueing — colpali_scoped_paths is scope-independent for queueing/OCR,
+            # it only gates the ColPali embed step later in the pass-2 drain
+            # (_visual_embed_one_page). Every image-heavy page gets queued here
+            # regardless of scope. _skip_inline_vision stays True regardless, so the
+            # heavy inline VLM/ColPali path is never run for a two-pass file.
+            _rel_path = (
                 str(file_path.relative_to(repo_root))
                 if file_path.is_relative_to(repo_root) else str(file_path)
             )
             _visual_queue_updates = _mark_or_collect_visual_pages(
-                _page_classes_from_extraction, cfg, _rel_for_scope
+                _page_classes_from_extraction, cfg, _rel_path
             )
             _skip_inline_vision = True  # two-pass queued; inline path not needed
         elif two_pass_visual and _page_classes_from_extraction is None:
@@ -532,6 +543,24 @@ def _embed_one_file(
                 )
         elif not two_pass_visual:
             _visual_queue_updates = {}
+
+        # A `carta flag` force-queue (deep_scan: requested) must survive a text
+        # re-embed / repair that happens in between the flag and the visual
+        # drain. _mark_or_collect_visual_pages only returns THIS pass's
+        # freshly-classified image-heavy pages — merging that in via a plain
+        # dict-key overwrite (below, at the sidecar_updates.update() merge)
+        # would silently shrink visual_pending to whatever this pass's
+        # classifier calls image-heavy, dropping pages the flag force-queued
+        # that now look ordinary. Union with whatever was already pending
+        # while the flag is still live.
+        if file_path.is_relative_to(repo_root):
+            _existing_sc = read_sidecar(sidecar_path(file_path, repo_root)) or {}
+            if _existing_sc.get("deep_scan") == "requested":
+                _prior_pending = _existing_sc.get(VISUAL_PENDING_KEY) or []
+                _fresh_pending = _visual_queue_updates.get(VISUAL_PENDING_KEY) or []
+                _unioned_pending = sorted(set(_prior_pending) | set(_fresh_pending))
+                if _unioned_pending:
+                    _visual_queue_updates[VISUAL_PENDING_KEY] = _unioned_pending
 
         # Check if ColPali multimodal embedding is enabled (Issue #1)
         colpali_enabled = (not _skip_inline_vision) and cfg.get("embed", {}).get("colpali_enabled", False)
@@ -749,6 +778,18 @@ def _embed_one_file(
         elif persisted < attempted:
             sidecar_updates["status"] = "partial"
 
+    # This file IS an enrichment doc (metadata["enriches"] was set above): stamp
+    # the SOURCE's sidecar (enrichment_path, enrichment_source_hash, deep_scan
+    # requested->done) — but only once the embed's FINAL status (after the
+    # honest-success-accounting downgrades above) is genuinely "embedded". A
+    # total upsert failure (embed_failed) or a partial upsert must NOT stamp —
+    # otherwise the source records "enrichment ingested" against its own
+    # CURRENT file_hash, which enrichment_is_stale can then never flag as
+    # stale, permanently hiding the failure.
+    if metadata.get("enriches") and sidecar_updates.get("status") == "embedded":
+        from carta.embed.enrichment import record_enrichment
+        record_enrichment(repo_root, Path(metadata["enriches"]), rel_of_file)
+
     return count + image_chunk_count, sidecar_updates
 
 
@@ -930,6 +971,21 @@ def _embed_visual_pages_colpali(
         raise
 
 
+def _drain_sort_key(item: tuple, triage_paths: list[str]) -> tuple:
+    """Drain order: flagged (oldest request first) -> triage-path prefixes -> FIFO.
+
+    Ties are preserved via stable sort: files within the same tier remain in
+    discovery order (no path-based alphabetization).
+    """
+    _sc_path, sc = item
+    rel = str(sc.get("current_path") or "")
+    if sc.get("priority") == "high":
+        return (0, str(sc.get("deep_scan_requested_at") or ""))
+    if any(rel.startswith(p) for p in triage_paths):
+        return (1, "")
+    return (2, "")
+
+
 def _discover_visual_pending(repo_root: Path) -> list[tuple]:
     """Return [(sidecar_path, sidecar_dict)] for sidecars with non-empty visual_pending."""
     out = []
@@ -947,11 +1003,11 @@ def _filter_visual_pending_in_scope(queued: list[tuple], scopes: list) -> list[t
     """Drop (sidecar_path, sidecar) pairs whose source (``current_path``) is out of
     ``colpali_scoped_paths``.
 
-    The two-pass visual drain must honor ``colpali_scoped_paths`` exactly like the
-    inline ColPali path (``_colpali_path_in_scope`` in ``_embed_one_file``).
-    Otherwise out-of-scope docs (e.g. patents) queued as ``visual_pending`` get
-    drained anyway — burning the expensive ColPali + OCR pass on docs the user
-    excluded and polluting the ``_visual`` collection with low-value figures.
+    NOT called from ``run_visual_embed`` anymore (spec Component 1): the OCR/vision
+    drain covers every queued file regardless of scope, and only the ColPali step
+    inside ``_visual_embed_one_page`` honors ``colpali_scoped_paths``. Kept as a
+    standalone helper (unit-tested) in case a future caller needs scope-filtered
+    queue slicing without pulling in the drain's OCR/ColPali side effects.
 
     Empty ``scopes`` means no restriction (backward compatible).
     """
@@ -990,14 +1046,20 @@ def _visual_embed_one_page(
     router,
     embedder,
     verbose: bool = False,
+    deep: bool = False,
 ) -> bool:
     """OCR text + ColPali for a single 1-indexed page. Raise on failure.
 
     (a) glm-ocr text for the page via SmartRouter → upsert_chunks (hybrid text index).
         Pass-2 chunks receive a pass-2-specific chunk_index token so their point
-        IDs are disjoint from pass-1 text chunks for the same file.
+        IDs are disjoint from pass-1 text chunks for the same file. Runs
+        unconditionally — the OCR/vision drain is not scoped by colpali_scoped_paths.
+        A file flagged for deep scan (``deep=True``) or a page that classifies
+        VECTOR_DRAWING routes through ``router.extract_page_deep`` (high-DPI
+        tiled two-prompt extraction) instead of the normal ``router._route``.
     (b) ColPali for the page via ColPaliEmbedder.embed_pdf_pages(page_nums=[page])
-        → upsert_visual_pages (_visual collection).
+        → upsert_visual_pages (_visual collection). Gated by colpali_scoped_paths
+        (_colpali_path_in_scope) — the only step in this function that scope gates.
 
     ``router`` and ``embedder`` are constructed ONCE by run_visual_embed and
     passed in; this function must NOT re-construct them.
@@ -1032,8 +1094,14 @@ def _visual_embed_one_page(
                     f"Page {page} out of range (PDF has {len(doc)} pages)"
                 )
             fitz_page = doc[page - 1]
+
+            from carta.vision.classifier import PageClass
+
             profile = router.analyzer.analyze(fitz_page)
-            chunks = router._route(fitz_page, page, profile, doc)
+            if deep or profile.page_class is PageClass.VECTOR_DRAWING:
+                chunks = router.extract_page_deep(fitz_page, page)
+            else:
+                chunks = router._route(fitz_page, page, profile, doc)
         finally:
             doc.close()
 
@@ -1046,7 +1114,7 @@ def _visual_embed_one_page(
         for chunk in chunks:
             for part_text in _split_vision_text(chunk.get("text", ""), max_tokens):
                 i = len(image_chunks)
-                image_chunks.append({
+                entry = {
                     "slug": slug,
                     "file_path": current_path,
                     "doc_type": "image_description",
@@ -1061,7 +1129,15 @@ def _visual_embed_one_page(
                     "model_used": chunk.get("model_used", "glm-ocr"),
                     "content_type": chunk.get("content_type", "visual"),
                     "source": "visual_drainer",
-                })
+                }
+                # Deep-tier chunks (router.extract_page_deep) carry tile/extraction —
+                # pass them through so they land in the Qdrant payload for free
+                # (build_point copies every non-text chunk key).
+                if "tile" in chunk:
+                    entry["tile"] = chunk["tile"]
+                if "extraction" in chunk:
+                    entry["extraction"] = chunk["extraction"]
+                image_chunks.append(entry)
         # Honour the docstring contract: a short upsert (Qdrant/Ollama hiccup)
         # must raise so the page stays in visual_pending, never be silently
         # marked done with its OCR text lost. upsert_chunks legitimately drops
@@ -1086,34 +1162,38 @@ def _visual_embed_one_page(
     if not cache_dir_path.is_absolute():
         cache_dir_path = repo_root / cache_dir_path
 
-    page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
-    if page_results:
-        result = page_results[0]
-        png_path = embedder.save_page_cache(file_path, page, result["png_bytes"])
-        try:
-            png_rel = str(png_path.relative_to(repo_root))
-        except ValueError:
-            png_rel = str(png_path)
-        visual_pages = [{
-            "slug": slug,
-            "file_path": current_path,
-            "page_num": page,
-            "vectors": result["vectors"],
-            "png_path": png_rel,
-            "doc_type": "visual_page",
-            "extraction_model": model_name,
-            "source": "visual_drainer",
-        }]
-        # ColPali vectors are the expensive, irreplaceable artifact of this pass;
-        # a short upsert must raise so the page is retried, not marked done empty.
-        stored_visual = upsert_visual_pages(visual_pages, cfg, client=client)
-        if stored_visual < len(visual_pages):
-            raise RuntimeError(
-                f"ColPali upsert incomplete for page {page} of {current_path}: "
-                f"stored {stored_visual}/{len(visual_pages)} page(s) — leaving page pending"
-            )
-        if verbose:
-            print(f"    visual: page {page} ColPali → upserted", flush=True)
+    scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
+    if scopes and not _colpali_path_in_scope(current_path, scopes):
+        pass  # out of ColPali scope: OCR chunks above still upserted
+    else:
+        page_results = embedder.embed_pdf_pages(file_path, page_nums=[page])
+        if page_results:
+            result = page_results[0]
+            png_path = embedder.save_page_cache(file_path, page, result["png_bytes"])
+            try:
+                png_rel = str(png_path.relative_to(repo_root))
+            except ValueError:
+                png_rel = str(png_path)
+            visual_pages = [{
+                "slug": slug,
+                "file_path": current_path,
+                "page_num": page,
+                "vectors": result["vectors"],
+                "png_path": png_rel,
+                "doc_type": "visual_page",
+                "extraction_model": model_name,
+                "source": "visual_drainer",
+            }]
+            # ColPali vectors are the expensive, irreplaceable artifact of this pass;
+            # a short upsert must raise so the page is retried, not marked done empty.
+            stored_visual = upsert_visual_pages(visual_pages, cfg, client=client)
+            if stored_visual < len(visual_pages):
+                raise RuntimeError(
+                    f"ColPali upsert incomplete for page {page} of {current_path}: "
+                    f"stored {stored_visual}/{len(visual_pages)} page(s) — leaving page pending"
+                )
+            if verbose:
+                print(f"    visual: page {page} ColPali → upserted", flush=True)
 
     return True
 
@@ -1157,20 +1237,14 @@ def run_visual_embed(
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
     queued = _discover_visual_pending(repo_root)
-    # Honor colpali_scoped_paths in the two-pass drain too (not just the inline path):
-    # skip out-of-scope sources (e.g. patents) that were queued as visual_pending,
-    # else the expensive ColPali pass burns on excluded docs and pollutes _visual.
-    _scopes = (cfg.get("embed", {}) or {}).get("colpali_scoped_paths", []) or []
-    if _scopes:
-        _before = len(queued)
-        queued = _filter_visual_pending_in_scope(queued, _scopes)
-        _skipped = _before - len(queued)
-        if _skipped:
-            print(
-                f"    visual drain: skipping {_skipped} out-of-scope source(s) "
-                f"(not in colpali_scoped_paths)",
-                flush=True,
-            )
+    # colpali_scoped_paths is NOT applied here: the drain OCRs every queued file
+    # regardless of scope — only the ColPali embed step inside
+    # _visual_embed_one_page honors colpali_scoped_paths (via _colpali_path_in_scope).
+
+    # Sort: flagged files (high priority, oldest first), then triage paths, then FIFO
+    triage_paths = (cfg.get("embed", {}) or {}).get("visual_triage_paths", []) or []
+    queued.sort(key=lambda it: _drain_sort_key(it, triage_paths))
+
     summary["files"] = len(queued)
     total_pages = sum(len(sc.get(VISUAL_PENDING_KEY, []) or []) for _, sc in queued)
 
@@ -1209,11 +1283,12 @@ def run_visual_embed(
         for sc_path, sc in queued:
             rel_path = sc.get("current_path") or ""
             file_failed = False
+            deep = sc.get("deep_scan") == "requested"
             for page in list(sc.get(VISUAL_PENDING_KEY, []) or []):
                 idx += 1
                 status.file_start(idx, f"page {page} of {rel_path}")
                 try:
-                    _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose)
+                    _visual_embed_one_page(sc, page, cfg, client, repo_root, router, embedder, verbose, deep=deep)
                     move_to_done(sc, page)
                     _update_sidecar(sc_path, {
                         VISUAL_PENDING_KEY: sc[VISUAL_PENDING_KEY],
@@ -1235,6 +1310,8 @@ def run_visual_embed(
             # "clean up only after complete success" guard after upsert_chunks).
             if rel_path and not file_failed and sc.get(VISUAL_DONE_KEY):
                 _delete_visual_orphans(client, cfg, rel_path, list(sc[VISUAL_DONE_KEY]))
+                if sc.get("deep_scan") == "requested":
+                    _update_sidecar(sc_path, {"deep_scan": "done"})
     except BaseException:
         status.finish("failed")
         raise

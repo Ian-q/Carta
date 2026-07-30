@@ -855,6 +855,218 @@ class TestVisionCallTimeout:
         assert mock_call.call_args[1]["timeout"] == 300
 
 
+# ---------------------------------------------------------------------------
+# VECTOR_DRAWING dispatch — must behave exactly like FLATTENED (Task 5)
+# ---------------------------------------------------------------------------
+
+class TestRouteVectorDrawing:
+    def test_auto_mode_dispatches_like_flattened_at_default_dpi(self):
+        """VECTOR_DRAWING → full-page render (150 dpi) + OCR, same as FLATTENED."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60) as mock_call:
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        mock_call.assert_called_once()
+        assert page.get_pixmap.call_args[1]["dpi"] == 150
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_low_ocr_yield_falls_back_to_llava_same_as_flattened(self):
+        """VECTOR_DRAWING low-yield OCR still falls back to LLaVA, same as FLATTENED."""
+        router = SmartRouter(_cfg(
+            vision_flattened_min_yield=50,
+            ocr_model="glm-ocr:latest",
+            ollama_vision_model="llava:latest",
+        ))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=["short", "full image description"]
+        ):
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result[0]["model_used"] == "llava"
+
+    def test_vision_routing_off_returns_empty(self):
+        router = SmartRouter(_cfg_routing("off"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision") as mock_call:
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result == []
+        mock_call.assert_not_called()
+
+    def test_vision_routing_ocr_uses_ocr_model_not_vlm(self):
+        """mode=ocr: VECTOR_DRAWING never falls into the PURE_TEXT early-out and
+        gets routed through OCR (not skipped, not sent to the VLM)."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="ocr text") as mock_call:
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert mock_call.call_args[1]["model"] == "glm-ocr:latest"
+        assert result[0]["model_used"] == "glm-ocr"
+
+    def test_vision_routing_vision_uses_vlm_not_ocr(self):
+        """mode=vision: VECTOR_DRAWING never falls into the PURE_TEXT early-out and
+        gets routed through the VLM (not skipped, not sent to OCR)."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm text") as mock_call:
+                result = router._route(
+                    page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+                )
+        assert mock_call.call_args[1]["model"] == "llava:latest"
+
+
+class TestChunkPageClassLabel:
+    """Persisted chunk `page_class`/`content_type` must reflect the real
+    PageClass, even when VECTOR_DRAWING shares another class's route method.
+
+    This matters beyond cosmetics: checkpoint-resume progress replay reads
+    the *chunk's* page_class (router.py extract_pdf, the `completed` resume
+    branch), not the live profile — so a hardcoded literal in the shared
+    route method would make "vector_drawing" unobservable after a resume,
+    contradicting the progress_callback docstrings."""
+
+    def test_auto_mode_vector_drawing_chunk_carries_real_label(self):
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result[0]["page_class"] == "vector_drawing"
+        assert result[0]["content_type"] == "vector_drawing"
+
+    def test_ocr_override_mode_vector_drawing_chunk_carries_real_label(self):
+        """mode=ocr routes VECTOR_DRAWING via _route_structured (shared with
+        STRUCTURED_TEXT, whose own hardcoded label is "structured_text")."""
+        router = SmartRouter(_cfg_routing("ocr"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="ocr text"):
+            result = router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert result[0]["page_class"] == "vector_drawing"
+        assert result[0]["content_type"] == "vector_drawing"
+
+    def test_vision_override_mode_vector_drawing_chunk_carries_real_label(self):
+        """mode=vision routes VECTOR_DRAWING via _route_text_with_images
+        (shared with TEXT_WITH_IMAGES, whose own hardcoded label is
+        "text_with_images")."""
+        router = SmartRouter(_cfg_routing("vision"))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vlm text"):
+                result = router._route(
+                    page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+                )
+        assert result[0]["page_class"] == "vector_drawing"
+        assert result[0]["content_type"] == "vector_drawing"
+
+    def test_flattened_page_still_carries_flattened_label(self):
+        """Regression: a real FLATTENED page must keep the "flattened" label
+        (the default page_class_str) — unaffected by the VECTOR_DRAWING fix."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            result = router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert result[0]["page_class"] == "flattened"
+        assert result[0]["content_type"] == "flattened"
+
+    def test_structured_text_page_still_carries_structured_text_label(self):
+        """Regression: STRUCTURED_TEXT (the class that normally owns
+        _route_structured) keeps its own default label."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="table text"):
+            result = router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert result[0]["page_class"] == "structured_text"
+
+    def test_text_with_images_page_still_carries_text_with_images_label(self):
+        """Regression: TEXT_WITH_IMAGES (the class that normally owns
+        _route_text_with_images) keeps its own default label."""
+        router = SmartRouter(_cfg())
+        page = MagicMock()
+        with patch.object(router, "_extract_image_crops", return_value=[(0, b"img0")]):
+            with patch.object(router, "_call_ollama_vision", return_value="desc"):
+                result = router._route(
+                    page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_images=True), MagicMock()
+                )
+        assert result[0]["page_class"] == "text_with_images"
+
+
+# ---------------------------------------------------------------------------
+# Configurable render DPI (Task 5) — replaces the three hardcoded dpi=150
+# literals in _route_structured, _route_text_with_images (caption fallback),
+# and _route_flattened.
+# ---------------------------------------------------------------------------
+
+class TestRenderDpiConfig:
+    def test_default_render_dpi_is_150(self):
+        router = SmartRouter(_cfg())
+        assert router.render_dpi == 150
+
+    def test_configured_render_dpi_attribute(self):
+        router = SmartRouter(_cfg(vision_render_dpi=220))
+        assert router.render_dpi == 220
+
+    def test_configured_dpi_used_in_structured_route(self):
+        router = SmartRouter(_cfg(vision_render_dpi=220))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="OCR text"):
+            router._route(page, 1, _profile(PageClass.STRUCTURED_TEXT), MagicMock())
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+    def test_configured_dpi_used_in_caption_fallback_route(self):
+        """TEXT_WITH_IMAGES with no image crops (vector graphic) — full-page render dpi."""
+        router = SmartRouter(_cfg(vision_render_dpi=220))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_extract_image_crops", return_value=[]):
+            with patch.object(router, "_call_ollama_vision", return_value="vector desc"):
+                router._route(
+                    page, 1, _profile(PageClass.TEXT_WITH_IMAGES, has_captions=True), MagicMock()
+                )
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+    def test_configured_dpi_used_in_flattened_route(self):
+        router = SmartRouter(_cfg(vision_render_dpi=220, vision_flattened_min_yield=50))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            router._route(page, 1, _profile(PageClass.FLATTENED), MagicMock())
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+    def test_configured_dpi_used_in_vector_drawing_route(self):
+        """VECTOR_DRAWING shares the flattened path — same configurable dpi."""
+        router = SmartRouter(_cfg(vision_render_dpi=220, vision_flattened_min_yield=50))
+        page = MagicMock()
+        page.get_pixmap.return_value = _pixmap()
+        with patch.object(router, "_call_ollama_vision", return_value="x" * 60):
+            router._route(
+                page, 1, _profile(PageClass.VECTOR_DRAWING, drawing_count=200), MagicMock()
+            )
+        assert page.get_pixmap.call_args[1]["dpi"] == 220
+
+
 class TestResourceCleanup:
     """Long visual drains leak resources unless streamed responses and PDF
     handles are always released — even on early break / mid-page error."""
@@ -888,3 +1100,231 @@ class TestResourceCleanup:
             with pytest.raises(RuntimeError):
                 router.extract_pdf(Path("/x/y.pdf"))
         fake_doc.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# tile_rects — pure geometry, module-level (Task 6)
+# ---------------------------------------------------------------------------
+
+def test_tile_rects_small_page_single_tile():
+    from carta.vision.router import tile_rects
+    # 612x792pt letter at 300dpi -> 2550x3300px; tile_px 4000 covers it whole
+    assert tile_rects(0, 0, 612, 792, 300, 4000, 0.15) == [(0, 0, 612, 792)]
+
+
+def test_tile_rects_cover_and_overlap():
+    from carta.vision.router import tile_rects
+    rects = tile_rects(0, 0, 1000, 800, 300, 1280, 0.15)
+    assert len(rects) > 1
+    xs = sorted({r[0] for r in rects}); ys = sorted({r[1] for r in rects})
+    tile_pts = 1280 / (300 / 72.0)
+    step = tile_pts * 0.85
+    assert all(abs((b - a) - step) < 1e-6 for a, b in zip(xs, xs[1:]))
+    assert max(r[2] for r in rects) == 1000 and max(r[3] for r in rects) == 800
+
+
+def test_tile_rects_raises_on_overlap_at_one():
+    """overlap >= 1.0 makes step <= 0 -> infinite loop; must raise instead."""
+    from carta.vision.router import tile_rects
+    with pytest.raises(ValueError):
+        tile_rects(0, 0, 1000, 800, 300, 1280, 1.0)
+
+
+def test_tile_rects_raises_on_zero_tile_px():
+    """tile_px <= 0 makes step <= 0 -> infinite loop; must raise instead."""
+    from carta.vision.router import tile_rects
+    with pytest.raises(ValueError):
+        tile_rects(0, 0, 1000, 800, 300, 0, 0.15)
+
+
+# ---------------------------------------------------------------------------
+# SmartRouter.extract_page_deep — high-DPI tiled two-prompt extraction (Task 6)
+# ---------------------------------------------------------------------------
+
+def _deep_page(x0=0.0, y0=0.0, x1=200.0, y1=200.0):
+    """Mock page whose .rect carries float bounds and whose get_pixmap
+    returns a fresh pixmap mock every call.
+
+    Default bounds (200x200pt) fit inside a single tile at the class
+    defaults (dpi=300, tile_px=1280 -> tile_pts=307.2pt) so single-tile
+    tests don't need to override deep_cfg.
+    """
+    page = MagicMock()
+    rect = MagicMock()
+    rect.x0, rect.y0, rect.x1, rect.y1 = x0, y0, x1, y1
+    page.rect = rect
+    page.get_pixmap.return_value = _pixmap()
+    return page
+
+
+class TestExtractPageDeep:
+    def test_single_tile_produces_transcription_and_structure_chunks(self):
+        """A page small enough for one tile (default dpi=300/tile_px=1280) yields
+        exactly 2 chunks: one transcription (self.ocr_model), one structure
+        (self.vision_model), both tagged tile=0."""
+        router = SmartRouter(_cfg(ocr_model="glm-ocr:latest", ollama_vision_model="qwen3-vl:8b"))
+        page = _deep_page()
+        with patch.object(router, "_call_ollama_vision", return_value="txt") as mock_call:
+            result = router.extract_page_deep(page, 7)
+
+        assert mock_call.call_count == 2
+        assert len(result) == 2
+        extractions = {c["extraction"] for c in result}
+        assert extractions == {"transcription", "structure"}
+        assert all(c["tile"] == 0 for c in result)
+        assert all(c["page_num"] == 7 for c in result)
+        assert all(c["page_class"] == "deep_scan" for c in result)
+        assert all(c["content_type"] == "deep_scan" for c in result)
+
+        models_by_extraction = {c["extraction"]: c["model_used"] for c in result}
+        assert models_by_extraction["transcription"] == "glm-ocr:latest"
+        assert models_by_extraction["structure"] == "qwen3-vl:8b"
+
+    def test_multi_tile_indices_match_tile_rects(self):
+        """A page spanning multiple tiles gets 2 chunks per tile, with `tile`
+        indices matching tile_rects()'s own enumeration."""
+        from carta.vision.router import tile_rects
+        router = SmartRouter(_cfg(deep_scan={"dpi": 300, "tile_px": 1280, "tile_overlap": 0.15}))
+        page = _deep_page(0.0, 0.0, 1000.0, 800.0)
+        expected_tiles = tile_rects(0.0, 0.0, 1000.0, 800.0, 300, 1280, 0.15)
+        assert len(expected_tiles) > 1  # sanity: this page must actually tile
+
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 1)
+
+        assert len(result) == 2 * len(expected_tiles)
+        seen_tiles = sorted({c["tile"] for c in result})
+        assert seen_tiles == list(range(len(expected_tiles)))
+        # Each tile index appears exactly twice (transcription + structure).
+        for t in seen_tiles:
+            tile_chunks = [c for c in result if c["tile"] == t]
+            assert {c["extraction"] for c in tile_chunks} == {"transcription", "structure"}
+
+    def test_failed_prompt_is_skipped_not_aborted(self):
+        """A raising vision call for one prompt degrades that prompt only —
+        the other prompt's chunk still comes back, and no exception propagates."""
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=[RuntimeError("timeout"), "structure text"],
+        ):
+            result = router.extract_page_deep(page, 3)
+
+        assert len(result) == 1
+        assert result[0]["extraction"] == "structure"
+        assert result[0]["text"] == "structure text"
+
+    def test_failed_prompt_warns_to_stderr(self, capsys):
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=[RuntimeError("timeout"), "structure text"],
+        ):
+            router.extract_page_deep(page, 3)
+        err = capsys.readouterr().err
+        assert "deep" in err and "transcription" in err and "page 3" in err and "tile 0" in err
+
+    def test_both_prompts_fail_returns_empty_list(self):
+        """Every tile's prompts failing must degrade to [] — never raise."""
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=RuntimeError("down"),
+        ):
+            result = router.extract_page_deep(page, 1)
+        assert result == []
+
+    def test_empty_text_is_skipped(self):
+        """A prompt that returns only whitespace produces no chunk."""
+        router = SmartRouter(_cfg())
+        page = _deep_page()
+        with patch.object(
+            router, "_call_ollama_vision",
+            side_effect=["   ", "structure text"],
+        ):
+            result = router.extract_page_deep(page, 1)
+        assert len(result) == 1
+        assert result[0]["extraction"] == "structure"
+
+    def test_deep_cfg_overrides_dpi_tile_px_overlap(self):
+        """dpi/tile_px/tile_overlap come from self.deep_cfg, not hardcoded defaults."""
+        router = SmartRouter(_cfg(deep_scan={"dpi": 150, "tile_px": 4000, "tile_overlap": 0.15}))
+        page = _deep_page(0.0, 0.0, 612.0, 792.0)
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            with patch("carta.vision.router.fitz") as mock_fitz:
+                mock_fitz.Rect = lambda *a: ("Rect", a)
+                router.extract_page_deep(page, 1)
+        # get_pixmap must be called with the configured dpi (150), not the
+        # class default (300).
+        assert page.get_pixmap.call_args.kwargs["dpi"] == 150
+
+    def test_render_failure_on_one_tile_is_skipped_not_aborted(self):
+        """A tile whose render (get_pixmap/tobytes) raises must warn and
+        continue — NOT abort the whole page. The other tiles' chunks (both
+        prompts each) still come back; only the failed tile's chunks are
+        absent. Mirrors the existing per-prompt failure guard, but for the
+        render step itself (router.py finding: render was previously
+        unguarded, discarding all prior tiles' chunks on one bad render)."""
+        from carta.vision.router import tile_rects
+        router = SmartRouter(_cfg())
+        page = _deep_page(0.0, 0.0, 1000.0, 200.0)
+        expected_tiles = tile_rects(0.0, 0.0, 1000.0, 200.0, 300, 1280, 0.15)
+        assert len(expected_tiles) >= 3  # sanity: enough tiles to prove "others" survive
+
+        # get_pixmap is called once per tile; raise on tile index 1 only.
+        side_effects = [_pixmap() for _ in expected_tiles]
+        side_effects[1] = RuntimeError("pixmap render failed")
+        page.get_pixmap = MagicMock(side_effect=side_effects)
+
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 5)
+
+        seen_tiles = sorted({c["tile"] for c in result})
+        assert 1 not in seen_tiles
+        assert seen_tiles == [t for t in range(len(expected_tiles)) if t != 1]
+        # Each surviving tile still yields both extraction chunks (render
+        # failure is isolated to the one bad tile, not the whole page).
+        for t in seen_tiles:
+            tile_chunks = [c for c in result if c["tile"] == t]
+            assert {c["extraction"] for c in tile_chunks} == {"transcription", "structure"}
+
+    def test_render_failure_warns_to_stderr(self, capsys):
+        from carta.vision.router import tile_rects
+        router = SmartRouter(_cfg())
+        page = _deep_page(0.0, 0.0, 1000.0, 200.0)
+        expected_tiles = tile_rects(0.0, 0.0, 1000.0, 200.0, 300, 1280, 0.15)
+        side_effects = [_pixmap() for _ in expected_tiles]
+        side_effects[1] = RuntimeError("pixmap render failed")
+        page.get_pixmap = MagicMock(side_effect=side_effects)
+
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            router.extract_page_deep(page, 5)
+
+        err = capsys.readouterr().err
+        assert "deep render failed" in err and "page 5" in err and "tile 1" in err
+
+    def test_overlap_typo_is_clamped_not_hung(self):
+        """A config typo (tile_overlap=15, meant 0.15 i.e. 15%) must be clamped
+        by extract_page_deep BEFORE calling tile_rects (which itself raises on
+        an out-of-range overlap) — a config typo degrades to a large-but-finite
+        tile grid instead of hanging or aborting mid-drain."""
+        router = SmartRouter(_cfg(deep_scan={"dpi": 300, "tile_px": 1280, "tile_overlap": 15}))
+        page = _deep_page(0.0, 0.0, 1000.0, 800.0)
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 1)
+        assert len(result) > 0
+
+    def test_fitz_imported_once_not_per_tile(self):
+        """import fitz is hoisted above the per-tile loop (single import, not
+        re-imported on every iteration) — a multi-tile page must still work
+        correctly (this is an efficiency/style check, not a correctness one:
+        Python caches imports in sys.modules regardless, so this mainly
+        guards against a future re-introduction of the per-tile import)."""
+        router = SmartRouter(_cfg())
+        page = _deep_page(0.0, 0.0, 1000.0, 200.0)
+        with patch.object(router, "_call_ollama_vision", return_value="txt"):
+            result = router.extract_page_deep(page, 1)
+        assert len(result) > 2  # multi-tile page, more than a single tile's worth
