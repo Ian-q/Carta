@@ -41,7 +41,18 @@ gate thresholds: low=0.6  high=0.85
 0.5909091   wire gauge for lights
 ```
 
-Every value decomposes exactly: `0.5769 = 1/2 + 1/13` (rank 0 in one lane, rank 11 in the other), `0.6428 = 1/2 + 1/7`. Three consequences follow arithmetically:
+Every value decomposes exactly: `0.5769 = 1/2 + 1/13` (rank 0 in one lane, rank 11 in the other), `0.6428 = 1/2 + 1/7`.
+
+**The score is not the number that ranked the hit.** Carta runs RRF at two levels:
+
+| Layer | Where | `k` | Fuses |
+|---|---|---|---|
+| Intra-collection | Qdrant, server-side (`pipeline.py:1827`) | 2 | dense + sparse lanes |
+| Cross-collection | Python, already client-side (`pipeline.py:2490`) | 60 | doc / notes / visual |
+
+`run_search` stores each hit's *per-collection* Qdrant score at `pipeline.py:2457`, then `_rrf_merge_collections` reorders the hits but never assigns its fused score back onto them. So `hits[0]["score"]` is the intra-collection k=2 fusion, while the ordering was decided by the cross-collection k=60 fusion. The gate reads a magnitude that is both on the wrong scale *and* disconnected from the ranking it is trying to gate.
+
+Three further consequences follow arithmetically:
 
 1. A hit ranked **first** in one lane but deep in the other maxes around 0.50–0.58 — below `low_threshold`. Dropped silently, without reaching the judge. Three of the five queries above.
 2. The maximum possible score is 1.0 (rank 0 in both lanes). The *second*-best achievable combination is `1/2 + 1/3 = 0.833`, below `high_threshold`. The fast-path inject can therefore fire **only on an exact 1.0**.
@@ -73,11 +84,13 @@ The hook fails open and exits 0 on every path, so this is invisible in normal us
 
 The exception handling is narrowed in the same change. A failed query and a missing collection are currently the same code path; they must not be. A missing collection stays skippable; a query failure propagates and is reported to the caller, consistent with the `#79` precedent where a backend outage was being reported as "nothing embedded."
 
-### Component 2 — client-side fusion, in two steps
+### Component 2 — intra-collection fusion moves client-side, in two steps
 
-Fusion currently happens server-side (`qmodels.FusionQuery(fusion=qmodels.Fusion.RRF)`, `pipeline.py:1827`), so Qdrant returns only the fused score. Per-lane ranks never come back, and they are the signal both the gate and the trace need.
+Scope note: **only the intra-collection layer moves.** Cross-collection fusion (`_rrf_merge_collections`) is already client-side Python at `k=60` and is not touched by this spec, beyond Component 2c below.
 
-Moving fusion into Python replaces a working, load-bearing path, and there is currently **no eval set** to prove retrieval did not regress. So this splits.
+The dense+sparse fusion inside a collection happens server-side (`qmodels.FusionQuery(fusion=qmodels.Fusion.RRF)`, `pipeline.py:1827`), so Qdrant returns only the fused score. Per-lane ranks never come back, and they are the signal both the gate and the trace need.
+
+Moving that fusion into Python replaces a working, load-bearing path, and there is currently **no eval set** to prove retrieval did not regress. So this splits.
 
 **2a — behaviour-preserving refactor.** Query the `dense` and `bm25` lanes separately, fuse in Python with `k=2` to match Qdrant exactly. Verifiable without an eval set:
 
@@ -89,6 +102,8 @@ for q in probe_queries:
 If the orderings diverge, the refactor is wrong and it is caught immediately rather than weeks later.
 
 **2b — `k` becomes configuration, default unchanged at 2.** Moving toward Flath's standard `k=60` is a separate, deliberate, measured decision belonging to the eval work. `k` controls how sharply top ranks dominate, so changing it genuinely shifts ordering; bundling it with the refactor would alter implementation and semantics simultaneously with no instrument to detect damage.
+
+**2c — the hit carries the score that ranked it.** `_rrf_merge_collections` currently reorders hits without recording its own fused score, leaving `hit["score"]` holding the intra-collection value (`pipeline.py:2457`). It must write the cross-collection fused score and the contributing ranks onto each hit, so that any consumer reading `hit["score"]` sees the number that actually determined the ordering. This is what makes the gate and the trace read the same reality.
 
 Cost: two Qdrant round trips per search instead of one. On the hook's submit-blocking path this is real, though it sits inside the existing 3s search budget (`config.py`, `search_timeout_s`), and the lanes may be issued concurrently. The trace measures the actual cost.
 
