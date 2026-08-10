@@ -51,3 +51,6 @@ latest-log.txt
 
 .carta/carta/
 .carta/hooks/
+
+# Subagent-driven-development scratch (ledgers, briefs, review packages)
+.superpowers/
