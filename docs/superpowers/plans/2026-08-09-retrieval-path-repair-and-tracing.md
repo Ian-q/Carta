@@ -15,7 +15,7 @@
 - The hook must **fail open on every path** — every error exits 0 and lets the prompt through.
 - Instrumentation must never break search. Every trace write is wrapped and its failure swallowed.
 - Legacy unnamed-vector collections (e.g. `Elementrailer_doc`) must keep working.
-- Retrieval **ordering must not change** until Task 4. Tasks 1–3 are behaviour-preserving.
+- Retrieval **ordering must not change anywhere in this plan**. Every task is behaviour-preserving, Task 4 included: it makes `rrf_k` configurable but leaves the default at `2`. Changing the default to 60 is explicitly out of scope and belongs with the eval work. A task that alters result ordering has failed its spec.
 - Run the full suite with `python -m pytest carta/ -q` before each commit.
 - Existing test style: `unittest.mock.MagicMock` + `monkeypatch`, fakes defined inline in the test module.
 
@@ -398,7 +398,12 @@ for q in ["trailer axle load rating", "brake controller wiring", "suspension mou
     print([h["source"] for h in run_search(q, cfg)], "|", q)
 PY
 ```
-Expected: identical `source` ordering to the pre-change run. Record both outputs and diff them. **If they differ, stop — the refactor is wrong.**
+Expected: identical `source` ordering to the pre-change run. Record both outputs and diff them.
+
+**Interpreting a difference.** Qdrant's tie-break among equal RRF scores is unspecified, while `_fuse_lanes` breaks ties deterministically by `str(point.id)`. So a difference is only a real regression if the *scores* differ or a result appears/disappears. Before concluding the refactor is wrong, print the fused scores alongside the sources:
+
+- Same multiset of results, same scores, order differs **only within equal-score groups** → benign tie-break difference. Record it in the report and proceed.
+- Different scores, or a result present in one run and absent in the other → **stop, the refactor is wrong.**
 
 - [ ] **Step 7: Commit**
 
