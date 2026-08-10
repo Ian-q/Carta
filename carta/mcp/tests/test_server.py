@@ -256,27 +256,57 @@ def test_carta_search_rounds_score():
         _restore_server_functions(server, originals)
 
 
-def test_carta_search_service_unavailable():
-    """RuntimeError from _run_search_collection is skipped, not propagated."""
+def test_carta_search_skips_missing_collection():
+    """CollectionMissing from _run_search_collection is skipped, not propagated — other
+    collections may still answer."""
     server = _get_server_module()
     carta_search = server.carta_search
-    
-    def raise_runtime_error(*args, **kwargs):
-        raise RuntimeError("Qdrant down")
-    
+
+    def raise_collection_missing(*args, **kwargs):
+        raise server.CollectionMissing("test-project_doc")
+
     patches, originals = _patch_server_functions(
         server,
         _load_cfg=_TEST_CFG,
         _repo_root_from_cfg=_MOCK_REPO_ROOT,
         get_search_collections=["test-project_doc"],
-        _run_search_collection=raise_runtime_error
+        _run_search_collection=raise_collection_missing
     )
-    
+
     try:
         result = carta_search("query")
-        # When all collections fail, we return empty results (not an error)
+        # A missing collection is not an error — when all collections are missing, we
+        # return empty results (not an error).
         assert isinstance(result, list)
         assert len(result) == 0
+    finally:
+        _restore_server_functions(server, originals)
+
+
+def test_carta_search_reports_query_failure_instead_of_empty_list():
+    """QdrantQueryError from _run_search_collection propagates as an error dict rather
+    than being swallowed into an empty list — it is identical for every collection (the
+    live 400-on-named-vector bug this task fixes), so silently returning [] would mislead
+    the agent into thinking nothing is embedded."""
+    server = _get_server_module()
+    carta_search = server.carta_search
+
+    def raise_query_error(*args, **kwargs):
+        raise server.QdrantQueryError("Qdrant search failed for test-project_doc: 400 Wrong input")
+
+    patches, originals = _patch_server_functions(
+        server,
+        _load_cfg=_TEST_CFG,
+        _repo_root_from_cfg=_MOCK_REPO_ROOT,
+        get_search_collections=["test-project_doc"],
+        _run_search_collection=raise_query_error
+    )
+
+    try:
+        result = carta_search("query")
+        assert isinstance(result, dict)
+        assert result.get("error") == "service_unavailable"
+        assert "Qdrant search failed" in result.get("detail", "")
     finally:
         _restore_server_functions(server, originals)
 
@@ -713,3 +743,64 @@ def test_carta_embed_returns_busy_when_lock_held(tmp_path):
 
     assert result.get("error") == "busy"
     mock_run_embed.assert_not_called()  # must NOT write while another holds the lock
+
+
+# ---------------------------------------------------------------------------
+# Contract-faithful Qdrant fake: using= on named-vector collections (retrieval-repair #1)
+# ---------------------------------------------------------------------------
+from carta.mcp.tests.fakes import ContractFakeQdrant, NamedVectorContractError
+
+
+def _cfg():
+    return {
+        "project_name": "p",
+        "qdrant_url": "http://localhost:6333",
+        "embed": {"ollama_url": "http://localhost:11434",
+                  "ollama_model": "nomic-embed-text:latest"},
+    }
+
+
+def _point(path="docs/a.md", text="hello"):
+    p = MagicMock()
+    p.score = 0.9
+    p.payload = {"file_path": path, "text": text}
+    return p
+
+
+def test_search_named_vector_collection_returns_hits(monkeypatch):
+    server = _get_server_module()
+    fake = ContractFakeQdrant(named_vectors=True, points=[_point()])
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [0.0] * 768)
+
+    hits = server._run_search_collection("q", _cfg(), "ET-embed_doc", 5)
+
+    assert len(hits) == 1
+    assert fake.calls[-1]["using"] == "dense"
+
+
+def test_search_legacy_unnamed_collection_omits_using(monkeypatch):
+    server = _get_server_module()
+    fake = ContractFakeQdrant(named_vectors=False, points=[_point()])
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [0.0] * 768)
+
+    hits = server._run_search_collection("q", _cfg(), "Elementrailer_doc", 5)
+
+    assert len(hits) == 1
+    assert "using" not in fake.calls[-1]
+
+
+def test_query_failure_propagates_and_is_not_swallowed(monkeypatch):
+    server = _get_server_module()
+
+    class Exploding(ContractFakeQdrant):
+        def query_points(self, **kwargs):
+            raise RuntimeError("boom")
+
+    fake = Exploding(named_vectors=True)
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [0.0] * 768)
+
+    with pytest.raises(server.QdrantQueryError):
+        server._run_search_collection("q", _cfg(), "ET-embed_doc", 5)
