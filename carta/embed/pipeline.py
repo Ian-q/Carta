@@ -2273,9 +2273,14 @@ def _rrf_merge_collections(
             disables the cap; a corpus with no visual hits is unaffected either way.
 
     Returns:
-        Flat list of the original hit dicts, best-first by RRF, length <= top_n.
-        Ties (same rank across collections) break toward earlier collections, so
-        callers should pass the text collection before the visual one.
+        Flat list of the original hit dicts (mutated in place), best-first by RRF,
+        length <= top_n. Ties (same rank across collections) break toward earlier
+        collections, so callers should pass the text collection before the visual
+        one. Each hit gains `fused_score` (the RRF value that decided its order)
+        and `fused_rank` (its 0-based position in the fused order, assigned before
+        the visual cap runs — so a hit dropped by the cap never appears, but a hit
+        admitted via cap backfill keeps its pre-cap rank rather than its final
+        list position). The pre-existing `score` (intra-collection) is untouched.
     """
     scored = []
     for coll_index, hits in enumerate(per_collection):
@@ -2285,7 +2290,14 @@ def _rrf_merge_collections(
     # -rrf: higher fused score first. coll_index/rank: deterministic, text-first ties.
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
 
-    ordered = [hit for _, _, _, hit in scored]
+    ordered = []
+    for fused_rank, (rrf, _coll_index, _rank, hit) in enumerate(scored):
+        # Record the score that actually determined ordering. `score` keeps the
+        # intra-collection value; consumers that need ranking magnitude read
+        # fused_score. Gate and trace must agree on which number is which.
+        hit["fused_score"] = rrf
+        hit["fused_rank"] = fused_rank
+        ordered.append(hit)
     return _apply_visual_cap(ordered, top_n, visual_max_ratio)
 
 
