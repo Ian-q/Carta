@@ -48,6 +48,25 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
     }
 
 
+# Single space after the em dash, kept as one constant so the "no matches"
+# branch and the per-lane placeholders below can never drift into two
+# different renderings of the same message again.
+_NOT_IN_LANE = "— not in lane"
+_UNKNOWN = "—"
+
+
+def _fmt_rank(value) -> str:
+    """Render a lane rank. `0` is a real rank and must print as "0", not the
+    not-in-lane placeholder — hence `is not None`, never a truthiness check."""
+    return str(value) if value is not None else _NOT_IN_LANE
+
+
+def _fmt_value(value) -> str:
+    """Render a score/fused_rank/fused_score. A bare `None` must never leak
+    into the printed report as the literal text "None"."""
+    return str(value) if value is not None else _UNKNOWN
+
+
 def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
     """Human-readable per-stage report for documents matching `needle`.
 
@@ -59,11 +78,15 @@ def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
     `fused_rank` is reported as-is: it is assigned before the visual cap
     filters, over the whole fetch pool, so it is NOT the hit's final output
     position and must not be presented as one. FINAL is derived from the
-    hit's own index in `hits` (the list actually returned to the caller).
+    hit's own index in `hits` (the list actually returned to the caller) via
+    `enumerate`, never `hits.index(h)` — `list.index` matches the first
+    *equal* dict, which is wrong when two hits happen to compare equal.
 
     `score` (intra-collection dense+sparse RRF, k=2) and `fused_score`
     (cross-collection RRF, k=60) are distinct and labelled as such — never
-    conflated.
+    conflated. The sparse lane is labelled "bm25 rank": Carta's hybrid lane
+    is literally BM25 (see `bm25_model` in config, and "Hybrid (BM25 +
+    dense, RRF)" in CLAUDE.md) — "sparse" stays as the internal dict key only.
     """
     lines = [
         f"derived query : {query}",
@@ -75,23 +98,25 @@ def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
                if needle_lower in str(h.get("source", "")).lower()]
     if not matches:
         lines.append(f"{needle}")
-        lines.append("  sparse rank  : —  not in lane")
-        lines.append("  dense rank   : —  not in lane")
+        lines.append(f"  bm25 rank    : {_NOT_IN_LANE}")
+        lines.append(f"  dense rank   : {_NOT_IN_LANE}")
         lines.append("  FINAL        : not retrieved")
         lines.append("")
         lines.append("  → never entered retrieval: check ingestion, not ranking.")
         return "\n".join(lines)
 
-    for i, h in matches:
+    for n, (i, h) in enumerate(matches):
+        if n > 0:
+            lines.append("")   # separate multiple matched documents
         ranks = h.get("lane_ranks") or {}
         dense = ranks.get("dense")
         sparse = ranks.get("sparse")
         lines.append(str(h.get("source")))
-        lines.append(f"  sparse rank  : {sparse if sparse is not None else '— not in lane'}")
-        lines.append(f"  dense rank   : {dense if dense is not None else '— not in lane'}")
-        lines.append(f"  intra-score  : {h.get('score')}  (dense+sparse RRF, k=2)")
-        lines.append(f"  post-RRF     : fused_rank={h.get('fused_rank')}  "
-                     f"fused_score={h.get('fused_score')}  (cross-collection RRF, k=60)")
+        lines.append(f"  bm25 rank    : {_fmt_rank(sparse)}")
+        lines.append(f"  dense rank   : {_fmt_rank(dense)}")
+        lines.append(f"  intra-score  : {_fmt_value(h.get('score'))}  (dense+sparse RRF, k=2)")
+        lines.append(f"  post-RRF     : fused_rank={_fmt_value(h.get('fused_rank'))}  "
+                     f"fused_score={_fmt_value(h.get('fused_score'))}  (cross-collection RRF, k=60)")
         lines.append(f"  FINAL        : {i}  ✓ shown")
     return "\n".join(lines)
 

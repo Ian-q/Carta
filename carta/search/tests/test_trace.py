@@ -89,13 +89,56 @@ def test_format_trace_reports_stages_for_matching_doc():
     out = trace.format_trace(hits, "TOPOLOGY", "CAN termination", ["ET-embed_doc"])
     assert "TOPOLOGY.md" in out
     assert "dense rank" in out and "7" in out
-    assert "sparse rank" in out and "3" in out
+    assert "bm25 rank" in out and "3" in out
     assert "FINAL" in out
 
 
 def test_format_trace_says_not_retrieved_when_absent():
     out = trace.format_trace([], "US-11965795", "kingpin", ["ET-embed_doc"])
     assert "not retrieved" in out.lower()
+
+
+def test_format_trace_missing_and_partial_lane_ranks_render_placeholder_not_crash():
+    """Pins the `.get("lane_ranks")` contract from a display angle: a hit with
+    no `lane_ranks` key at all must not KeyError, and a hit with only one lane
+    populated must show the real rank for the present lane and the
+    not-in-lane placeholder for the absent one — not crash, not fabricate."""
+    no_lanes = [{"source": "docs/a.md", "fused_rank": 0}]
+    out = trace.format_trace(no_lanes, "a.md", "q", ["c"])
+    assert "  bm25 rank    : — not in lane" in out
+    assert "  dense rank   : — not in lane" in out
+
+    partial = [{"source": "docs/b.md", "lane_ranks": {"dense": 2}, "fused_rank": 0}]
+    out2 = trace.format_trace(partial, "b.md", "q", ["c"])
+    assert "  dense rank   : 2" in out2
+    assert "  bm25 rank    : — not in lane" in out2
+
+
+def test_format_trace_rank_zero_renders_as_zero_not_placeholder():
+    """Rank 0 is a real (best) rank, not an absence. A truthiness check on
+    the rank value would misrender it as "not in lane"; `is not None` must
+    not."""
+    hits = [{"source": "docs/c.md", "lane_ranks": {"dense": 0, "sparse": 0},
+             "fused_rank": 0}]
+    out = trace.format_trace(hits, "c.md", "q", ["c"])
+    assert "  dense rank   : 0" in out
+    assert "  bm25 rank    : 0" in out
+
+
+def test_format_trace_final_uses_list_position_not_fused_rank():
+    """`fused_rank` is assigned pre-visual-cap over the whole fetch pool and
+    is unbounded by top_n — it is NOT the hit's final output position. FINAL
+    must reflect the hit's index in the `hits` list actually returned, even
+    when that diverges sharply from `fused_rank`."""
+    hits = [
+        {"source": "docs/other1.md", "fused_rank": 5},
+        {"source": "docs/TARGET.md", "lane_ranks": {"dense": 1, "sparse": 1},
+         "fused_rank": 47, "fused_score": 0.01, "score": 0.9},
+        {"source": "docs/other2.md", "fused_rank": 9},
+    ]
+    out = trace.format_trace(hits, "TARGET", "q", ["c"])
+    assert "  FINAL        : 1  ✓ shown" in out
+    assert "fused_rank=47" in out
 
 
 def test_append_swallows_unwritable_directory(tmp_path):
