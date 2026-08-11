@@ -732,7 +732,7 @@ def test_format_trace_reports_stages_for_matching_doc():
     out = trace.format_trace(hits, "TOPOLOGY", "CAN termination", ["ET-embed_doc"])
     assert "TOPOLOGY.md" in out
     assert "dense rank" in out and "7" in out
-    assert "sparse rank" in out and "3" in out
+    assert "bm25 rank" in out and "3" in out
     assert "FINAL" in out
 
 
