@@ -836,19 +836,29 @@ def test_all_three_gate_zones_are_reachable_from_real_fusion_output():
 
 def test_gate_zone_sweep_over_random_fusions_hits_all_three_zones():
     """Same claim, swept rather than hand-picked: over randomised lane
-    configurations the real fusion + real gate produce all three zones."""
+    configurations the real fusion + real gate produce all three zones.
+
+    Empty results are EXCLUDED: `_gate_zone` returns silent for no hits at all,
+    which would let this test pass while the silent branch under test stayed
+    dead — the very defect being fixed. (Covered separately by
+    test_gate_silent_on_no_hits.)"""
     import random
     from carta.hook import hook
 
     rng = random.Random(20260809)
     seen = set()
+    nonempty = 0
     for _ in range(2000):
         ids = [f"p{i}" for i in range(6)]
         dense = [(pid, rng.random()) for pid in rng.sample(ids, rng.randint(0, 6))]
         sparse = rng.sample(ids, rng.randint(0, 6))
         hits = _fused_hits(dense, sparse)
+        if not hits:
+            continue
+        nonempty += 1
         seen.add(hook._gate_zone(hits, agree_rank=3, low=0.60, high=0.85))
 
+    assert nonempty > 1000, "sweep must actually exercise non-empty results"
     assert seen == {"inject", "judge", "silent"}, f"unreachable zone(s): {seen}"
 
 
