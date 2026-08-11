@@ -681,13 +681,24 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
 def append_trace(repo_root: Path, record: dict) -> None:
     """Append one JSONL record. Never raises — tracing must not break search."""
     try:
-        path = _trace_path(repo_root)
+        # Derive the monthly file from the RECORD's own timestamp, not from a fresh
+        # clock reading. Calling _trace_path(repo_root) bare decouples the two, so a
+        # record written across a month boundary — or by any caller that buffers
+        # before flushing — lands in a file whose name disagrees with its contents.
+        # .get() keeps this total: _trace_path falls back to now when when is None.
+        path = _trace_path(repo_root, when=record.get("ts"))
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         pass
 ```
+
+**Ruling (2026-08-11):** an earlier draft called `_trace_path(repo_root)` with no `when=`. The Task 5 review flagged it Important; the controller reproduced it (a record stamped `2026-07-31T23:59:59Z` landed in `hook-2026-08.jsonl`) and the human partner ruled the plan wrong. The snippet above is governing.
+
+Task 5's tests must also cover two cases the original Step 1 tests missed:
+- A record whose `ts` is in a **different month from the current one**, asserting the filename matches that `ts`. This must fail against the bare-call implementation.
+- A **non-empty** hits list whose top dict omits `lane_ranks` (and `fused_score`) — the actual shape produced by both visual branches and the MCP text path — asserting the record is produced with `None` rather than raising.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
