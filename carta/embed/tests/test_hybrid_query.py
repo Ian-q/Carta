@@ -23,6 +23,12 @@ def test_fuse_lanes_matches_qdrant_rrf_at_k2():
     assert fused[0]["score"] == pytest.approx(1/2 + 1/3)
     assert fused[0]["ranks"] == {"dense": 0, "sparse": 1}
 
+    # top_n must actually truncate: 4 distinct points (a,b,c,d) across the two
+    # lanes, requesting only 2 must return exactly 2 — this was previously
+    # enforced by Qdrant's server-side fusion `limit`; now it's _fuse_lanes's
+    # own `[:top_n]` slice, which had no covering test.
+    assert len(pipeline._fuse_lanes(dense, sparse, top_n=2, k=2)) == 2
+
 
 def test_fuse_lanes_admits_single_lane_hits():
     """A hit present in only one lane must still be admitted (dropping it is a
@@ -32,7 +38,7 @@ def test_fuse_lanes_admits_single_lane_hits():
     assert fused[0]["score"] == pytest.approx(1/2)
 
 
-def test_hybrid_query_uses_prefetch_and_rrf(monkeypatch):
+def test_hybrid_query_issues_two_lane_queries(monkeypatch):
     """Fusion moved client-side (see _fuse_lanes), so Qdrant's server-side
     prefetch+FusionQuery API is no longer used. This asserts the replacement
     shape: two separate query_points calls, one per lane."""

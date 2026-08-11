@@ -1803,8 +1803,9 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
 QDRANT_RRF_K = 2
 
 
-def _lane_queries(client, coll_name, query, dense_vec, prefetch_limit,
-                  bm25_model, query_filter=None):
+def _lane_queries(client: QdrantClient, coll_name: str, query: str, dense_vec: list[float],
+                  prefetch_limit: int, bm25_model: str,
+                  query_filter: Filter | None = None) -> tuple[list, list]:
     """Query the dense and sparse lanes separately and return both point lists."""
     sv = embed_sparse_query(query, model_name=bm25_model)
     dense_resp = client.query_points(
@@ -2005,6 +2006,28 @@ def _text_source(payload: dict) -> str:
     return "ocr_visual"
 
 
+def _text_hit(payload: dict, score: float, lane_ranks: dict | None) -> dict:
+    """Build a text-collection hit dict from a Qdrant point's payload.
+
+    Shared by the hybrid (per-lane ranks known) and non-hybrid/legacy
+    (``lane_ranks=None``) branches in both ``run_search`` and ``_focus_deep``,
+    so the file_path/slug fallback, the page/page_num fallback, and the
+    `_text_source` classification stay in lockstep across all four call sites
+    instead of drifting independently.
+    """
+    return {
+        "score": score,
+        "lane_ranks": lane_ranks,
+        "source": payload.get("file_path", payload.get("slug", "")),
+        "excerpt": payload.get("text", ""),
+        "type": "text",
+        "doc_type": payload.get("doc_type", ""),
+        "page": payload.get("page") or payload.get("page_num"),
+        "section_heading": payload.get("section_heading", ""),
+        "text_source": _text_source(payload),
+    }
+
+
 def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> list[dict]:
     """Return the file's distinct (section_heading, page) rows in page order — a synthetic TOC.
 
@@ -2130,17 +2153,8 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
                         query_filter=ff)
                     for entry in fused:
-                        r = entry["point"]
-                        payload = r.payload or {}
-                        coll_results.append({
-                            "score": entry["score"],
-                            "lane_ranks": entry["ranks"],
-                            "source": payload.get("file_path", payload.get("slug", "")),
-                            "excerpt": payload.get("text", ""), "type": "text",
-                            "doc_type": payload.get("doc_type", ""),
-                            "page": payload.get("page") or payload.get("page_num"),
-                            "section_heading": payload.get("section_heading", ""),
-                            "text_source": _text_source(payload)})
+                        payload = entry["point"].payload or {}
+                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"]))
                 else:
                     if is_hybrid:
                         response = client.query_points(
@@ -2152,15 +2166,7 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                             limit=limit, with_payload=True, query_filter=ff)
                     for r in response.points:
                         payload = r.payload or {}
-                        coll_results.append({
-                            "score": r.score,
-                            "lane_ranks": None,
-                            "source": payload.get("file_path", payload.get("slug", "")),
-                            "excerpt": payload.get("text", ""), "type": "text",
-                            "doc_type": payload.get("doc_type", ""),
-                            "page": payload.get("page") or payload.get("page_num"),
-                            "section_heading": payload.get("section_heading", ""),
-                            "text_source": _text_source(payload)})
+                        coll_results.append(_text_hit(payload, r.score, None))
             per_collection.append(coll_results)
         except Exception as e:
             err_str = str(e).lower()
@@ -2484,19 +2490,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
                     )
                     for entry in fused:
-                        r = entry["point"]
-                        payload = r.payload or {}
-                        coll_results.append({
-                            "score": entry["score"],
-                            "lane_ranks": entry["ranks"],
-                            "source": payload.get("file_path", payload.get("slug", "")),
-                            "excerpt": payload.get("text", ""),
-                            "type": "text",
-                            "doc_type": payload.get("doc_type", ""),
-                            "page": payload.get("page") or payload.get("page_num"),
-                            "section_heading": payload.get("section_heading", ""),
-                            "text_source": _text_source(payload),
-                        })
+                        payload = entry["point"].payload or {}
+                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"]))
                 else:
                     if is_hybrid:
                         # Hybrid collection schema but hybrid search disabled — use named dense vector
@@ -2518,17 +2513,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
 
                     for r in response.points:
                         payload = r.payload or {}
-                        coll_results.append({
-                            "score": r.score,
-                            "lane_ranks": None,
-                            "source": payload.get("file_path", payload.get("slug", "")),
-                            "excerpt": payload.get("text", ""),
-                            "type": "text",
-                            "doc_type": payload.get("doc_type", ""),
-                            "page": payload.get("page") or payload.get("page_num"),
-                            "section_heading": payload.get("section_heading", ""),
-                            "text_source": _text_source(payload),
-                        })
+                        coll_results.append(_text_hit(payload, r.score, None))
 
             per_collection.append(coll_results)
         except Exception as e:
