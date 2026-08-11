@@ -38,6 +38,24 @@ def test_fuse_lanes_admits_single_lane_hits():
     assert fused[0]["score"] == pytest.approx(1/2)
 
 
+def test_rrf_k_is_configurable_and_defaults_to_2():
+    from carta.config import DEFAULTS
+    assert DEFAULTS["search"]["hybrid"]["rrf_k"] == 2
+
+    # NOTE: dense/sparse both rank "a" then "b" (same order in both lanes) so
+    # the two points are NOT tied. The task brief's original fixture had
+    # sparse=[b, a] (opposite order), which makes a's score == b's score for
+    # *any* k (1/(k+0)+1/(k+1) == 1/(k+1)+1/(k+0)) — the top_n[0]-top_n[1]
+    # score gap is 0 at every k, so "diff shrinks as k grows" can never be
+    # observed. Kept the DEFAULTS assertion verbatim; changed only the lane
+    # ordering here so the test actually exercises the property it documents.
+    dense, sparse = [_pt("a"), _pt("b")], [_pt("a"), _pt("b")]
+    at2 = pipeline._fuse_lanes(dense, sparse, top_n=2, k=2)
+    at60 = pipeline._fuse_lanes(dense, sparse, top_n=2, k=60)
+    # k flattens the curve: score spread shrinks as k grows
+    assert (at2[0]["score"] - at2[1]["score"]) > (at60[0]["score"] - at60[1]["score"])
+
+
 def test_hybrid_query_issues_two_lane_queries(monkeypatch):
     """Fusion moved client-side (see _fuse_lanes), so Qdrant's server-side
     prefetch+FusionQuery API is no longer used. This asserts the replacement
@@ -150,7 +168,7 @@ def _patch_run_search_deps(monkeypatch, *, captured_limits,
     # response, so callers that iterate `entry["point"]` are still exercised
     # for real instead of silently iterating an empty MagicMock.
     def capturing_hybrid(client, coll_name, query, dense_vec, top_n,
-                         prefetch_limit, bm25_model):
+                         prefetch_limit, bm25_model, query_filter=None, rrf_k=2):
         captured_limits.append(top_n)
         return [{"point": p, "score": p.score, "ranks": {"dense": i, "sparse": None}}
                 for i, p in enumerate(fake_resp.points)]

@@ -48,6 +48,10 @@ DEFAULTS = {
             "enabled": True,
             "bm25_model": "Qdrant/bm25",
             "prefetch_limit": 40,
+            # Qdrant's server-side RRF used k=2; kept as the default so client-side
+            # fusion is behaviour-identical. Flath's course and most literature use
+            # 60. Changing it shifts ordering — do it against an eval, not by feel.
+            "rrf_k": 2,
         },
         "rerank": {
             "enabled": False,

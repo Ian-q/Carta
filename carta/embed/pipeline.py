@@ -2151,7 +2151,8 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                         client, coll_name, query, query_vec, limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
-                        query_filter=ff)
+                        query_filter=ff,
+                        rrf_k=hybrid_cfg.get("rrf_k", 2))
                     for entry in fused:
                         payload = entry["point"].payload or {}
                         coll_results.append(_text_hit(payload, entry["score"], entry["ranks"]))
@@ -2500,6 +2501,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         client, coll_name, query, query_vec, fetch_limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
+                        rrf_k=hybrid_cfg.get("rrf_k", 2),
                     )
                     for entry in fused:
                         payload = entry["point"].payload or {}
