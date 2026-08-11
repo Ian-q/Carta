@@ -250,6 +250,8 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
         QdrantQueryError: the Qdrant query itself failed — NOT safe to skip, since it is
             identical for every collection.
     """
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
     from carta.embed.embed import DENSE_VECTOR_NAME, collection_is_hybrid
 
     ollama_url = cfg["embed"]["ollama_url"]
@@ -281,7 +283,20 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
 
         try:
             response = client.query_points(**query_kwargs)
+        except UnexpectedResponse as e:
+            # Qdrant's real 404 signal is the status code, not the error text — the
+            # response body (embedded verbatim in str(e)) can coincidentally contain
+            # "not found" on an unrelated failure (a 500, a proxy error page, ...), which
+            # would silently misclassify a real query failure as a benign missing
+            # collection. Same pattern as collection_is_hybrid() in carta/embed/embed.py.
+            if e.status_code == 404:
+                raise CollectionMissing(collection_name) from e
+            raise QdrantQueryError(
+                f"Qdrant search failed for {collection_name}: {e}"
+            ) from e
         except Exception as e:
+            # Some transports raise a plain exception (no status_code) for a 404-ish
+            # failure. Fall back to a text match only here, never for UnexpectedResponse.
             err = str(e).lower()
             if "404" in err or "not found" in err or "doesn't exist" in err:
                 raise CollectionMissing(collection_name) from e

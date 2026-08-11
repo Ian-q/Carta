@@ -748,6 +748,8 @@ def test_carta_embed_returns_busy_when_lock_held(tmp_path):
 # ---------------------------------------------------------------------------
 # Contract-faithful Qdrant fake: using= on named-vector collections (retrieval-repair #1)
 # ---------------------------------------------------------------------------
+from qdrant_client.http.exceptions import UnexpectedResponse
+
 from carta.mcp.tests.fakes import ContractFakeQdrant, NamedVectorContractError
 
 
@@ -799,6 +801,53 @@ def test_query_failure_propagates_and_is_not_swallowed(monkeypatch):
             raise RuntimeError("boom")
 
     fake = Exploding(named_vectors=True)
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [0.0] * 768)
+
+    with pytest.raises(server.QdrantQueryError):
+        server._run_search_collection("q", _cfg(), "ET-embed_doc", 5)
+
+
+def test_run_search_collection_classifies_404_as_collection_missing(monkeypatch):
+    """A real Qdrant 404 (UnexpectedResponse with status_code=404) is the only thing
+    that should be classified as CollectionMissing — safe to skip."""
+    server = _get_server_module()
+
+    class Returns404(ContractFakeQdrant):
+        def query_points(self, **kwargs):
+            raise UnexpectedResponse(
+                status_code=404, reason_phrase="Not Found",
+                content=b'{"status":{"error":"Collection `ET-embed_doc` doesn\'t exist"}}',
+                headers=None,
+            )
+
+    fake = Returns404(named_vectors=True)
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [0.0] * 768)
+
+    with pytest.raises(server.CollectionMissing):
+        server._run_search_collection("q", _cfg(), "ET-embed_doc", 5)
+
+
+def test_run_search_collection_does_not_misclassify_500_with_not_found_in_body(monkeypatch):
+    """Regression test for the reviewer finding: qdrant_client's UnexpectedResponse.__str__()
+    embeds up to 200 bytes of the raw HTTP response body verbatim. A 500 (or any non-404
+    failure) whose body happens to contain the substring "not found" must NOT be
+    classified as CollectionMissing on that textual coincidence — only an actual 404
+    status_code counts. Misclassifying it would silently skip a real query failure,
+    reintroducing the exact "swallowed failure reported as empty results" bug this task
+    exists to eliminate."""
+    server = _get_server_module()
+
+    class Returns500(ContractFakeQdrant):
+        def query_points(self, **kwargs):
+            raise UnexpectedResponse(
+                status_code=500, reason_phrase="Internal Server Error",
+                content=b'{"status":{"error":"upstream proxy: resource not found in cache"}}',
+                headers=None,
+            )
+
+    fake = Returns500(named_vectors=True)
     monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
     monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [0.0] * 768)
 
