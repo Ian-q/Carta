@@ -83,6 +83,21 @@ def test_append_still_works_when_record_has_no_ts(tmp_path):
     assert len(files) == 1
 
 
+def test_format_trace_reports_stages_for_matching_doc():
+    hits = [{"source": "docs/CAN/TOPOLOGY.md", "lane_ranks": {"dense": 7, "sparse": 3},
+             "fused_score": 0.0161, "fused_rank": 1, "score": 0.7}]
+    out = trace.format_trace(hits, "TOPOLOGY", "CAN termination", ["ET-embed_doc"])
+    assert "TOPOLOGY.md" in out
+    assert "dense rank" in out and "7" in out
+    assert "sparse rank" in out and "3" in out
+    assert "FINAL" in out
+
+
+def test_format_trace_says_not_retrieved_when_absent():
+    out = trace.format_trace([], "US-11965795", "kingpin", ["ET-embed_doc"])
+    assert "not retrieved" in out.lower()
+
+
 def test_append_swallows_unwritable_directory(tmp_path):
     """Real OS-level failure mode (not the monkeypatched one): the repo root
     exists but has no write permission, so `.carta/traces` can't be created."""

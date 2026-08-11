@@ -48,6 +48,54 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
     }
 
 
+def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
+    """Human-readable per-stage report for documents matching `needle`.
+
+    `needle` is matched case-insensitively against each hit's `source` path.
+    A hit missing `lane_ranks` (both visual-collection branches and the MCP
+    text path produce these) renders as "not in lane", never a crash or a
+    fabricated rank 0 (see `.get("lane_ranks")` below, never `["lane_ranks"]`).
+
+    `fused_rank` is reported as-is: it is assigned before the visual cap
+    filters, over the whole fetch pool, so it is NOT the hit's final output
+    position and must not be presented as one. FINAL is derived from the
+    hit's own index in `hits` (the list actually returned to the caller).
+
+    `score` (intra-collection dense+sparse RRF, k=2) and `fused_score`
+    (cross-collection RRF, k=60) are distinct and labelled as such — never
+    conflated.
+    """
+    lines = [
+        f"derived query : {query}",
+        f"collections   : {', '.join(collections) or '(none)'}",
+        "",
+    ]
+    needle_lower = needle.lower()
+    matches = [(i, h) for i, h in enumerate(hits)
+               if needle_lower in str(h.get("source", "")).lower()]
+    if not matches:
+        lines.append(f"{needle}")
+        lines.append("  sparse rank  : —  not in lane")
+        lines.append("  dense rank   : —  not in lane")
+        lines.append("  FINAL        : not retrieved")
+        lines.append("")
+        lines.append("  → never entered retrieval: check ingestion, not ranking.")
+        return "\n".join(lines)
+
+    for i, h in matches:
+        ranks = h.get("lane_ranks") or {}
+        dense = ranks.get("dense")
+        sparse = ranks.get("sparse")
+        lines.append(str(h.get("source")))
+        lines.append(f"  sparse rank  : {sparse if sparse is not None else '— not in lane'}")
+        lines.append(f"  dense rank   : {dense if dense is not None else '— not in lane'}")
+        lines.append(f"  intra-score  : {h.get('score')}  (dense+sparse RRF, k=2)")
+        lines.append(f"  post-RRF     : fused_rank={h.get('fused_rank')}  "
+                     f"fused_score={h.get('fused_score')}  (cross-collection RRF, k=60)")
+        lines.append(f"  FINAL        : {i}  ✓ shown")
+    return "\n".join(lines)
+
+
 def append_trace(repo_root: Path, record: dict) -> None:
     """Append one JSONL record. Never raises — tracing must not break search.
 
