@@ -88,10 +88,11 @@ def test_bootstrap_updates_gitignore(tmp_path):
 
 
 def test_update_gitignore_ignores_hook_traces(tmp_path):
-    """The hook's per-invocation trace log (carta/search/trace.py) stores the
-    verbatim derived query text and must never be committed. Every project
-    Carta initialises needs .carta/traces/ ignored from day one, not just this
-    repo's own .gitignore."""
+    """The hook's per-invocation trace log stores the verbatim derived query
+    text and must never be committed. It now lives at ~/.carta/traces/<project>/
+    (carta/search/trace.py), outside every repo — this entry stays as belt and
+    braces for any project that already has an in-repo trace file from an
+    earlier build."""
     (tmp_path / ".gitignore").write_text("node_modules/\n")
     from carta.install.bootstrap import _update_gitignore
     _update_gitignore(tmp_path)

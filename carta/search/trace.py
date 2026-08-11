@@ -4,10 +4,13 @@ A retrieval miss can happen at five stages (never retrieved, one lane only,
 demoted by fusion, collapsed by dedup, dropped by the visual cap) and they are
 indistinguishable from the outside. This records which one.
 
-Two consumers: the recall hook appends JSONL for gate calibration; `carta
-search --trace` prints per-stage ranks for error analysis.
+Two consumers: the recall hook appends JSONL for gate calibration (to
+`~/.carta/traces/<project>/`, machine-level state outside every repo — see
+`_trace_path`); `carta search --trace` prints per-stage ranks for error
+analysis.
 """
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -17,9 +20,36 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _trace_path(repo_root: Path, when: Optional[str] = None) -> Path:
+# Anything outside this set is collapsed to "_" before the project name becomes
+# a directory name. `project_name` is user-controlled config interpolated into a
+# path, so path separators and traversal must not survive.
+_UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_project_name(project_name: str) -> str:
+    """Reduce a project name to one safe path component.
+
+    Leading/trailing dots are stripped so no name can become ``.``, ``..`` or a
+    hidden directory; an empty result falls back to ``unknown`` rather than
+    writing records into the traces root itself.
+    """
+    name = _UNSAFE_NAME_CHARS.sub("_", str(project_name or "").strip()).strip(".")
+    return name or "unknown"
+
+
+def _trace_path(project_name: str, when: Optional[str] = None) -> Path:
+    """Monthly trace file for one project, under machine-level carta state.
+
+    Deliberately OUTSIDE the repo (``~/.carta/traces/<project>/``, alongside
+    ``~/.carta/registry.json``). Records carry the derived query, which for
+    prompts <=500 chars is the prompt verbatim — and `.carta/` is a tracked
+    directory in carta projects, so an in-repo location would start committing
+    prompt text in every project that upgrades, whatever its .gitignore says.
+    """
+    from carta.registry import carta_home
+
     stamp = (when or _utc_now_iso())[:7]          # YYYY-MM
-    return repo_root / ".carta" / "traces" / f"hook-{stamp}.jsonl"
+    return carta_home() / "traces" / _safe_project_name(project_name) / f"hook-{stamp}.jsonl"
 
 
 def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
@@ -121,15 +151,18 @@ def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
     return "\n".join(lines)
 
 
-def append_trace(repo_root: Path, record: dict) -> None:
+def append_trace(project_name: str, record: dict) -> None:
     """Append one JSONL record. Never raises — tracing must not break search.
+
+    Takes the project name (not a repo root): the file lives under
+    ``~/.carta/traces/<project>/`` so prompt text can never land in a repo.
 
     Rotates by `record["ts"]`, not the current time, so a record written by a
     caller that buffers before flushing (or one appended right at a month
     boundary) still lands in the file matching its own timestamp.
     """
     try:
-        path = _trace_path(repo_root, when=record.get("ts"))
+        path = _trace_path(project_name, when=record.get("ts"))
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")

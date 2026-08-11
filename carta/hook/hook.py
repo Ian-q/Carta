@@ -66,9 +66,6 @@ def _run() -> None:
     try:
         cfg_path = find_config(Path.cwd())
         cfg = load_config(cfg_path)
-        # Config lives at <repo_root>/.carta/config.yaml — used below to place
-        # trace output at the real repo root without threading it through cfg.
-        repo_root = cfg_path.parent.parent
     except Exception as e:
         print(f"carta-hook: config error (fail-open): {e}", file=sys.stderr)
         sys.exit(0)
@@ -134,7 +131,7 @@ def _run() -> None:
     if zone == "judge":
         judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
 
-    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg, repo_root)
+    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg)
 
     if zone == "inject" or judge_verdict:
         _inject(hits)
@@ -190,17 +187,20 @@ def _emit_trace(
     judge_verdict: bool | None,
     started_at: float,
     search_cfg: dict,
-    repo_root: Path,
 ) -> None:
     """Append one trace record. Swallows everything — the hook must fail open.
 
-    `repo_root` and the searched `collections` are passed in explicitly rather
-    than read off the cfg dict: cfg carries only real, user-facing config keys.
-    `repo_root` is derived once in `_run` from `cfg_path.parent.parent` (config
-    lives at `<repo_root>/.carta/config.yaml`); `collections` is recomputed here
-    via `get_search_collections(search_cfg, "repo")`, the same helper `run_search`
-    uses internally, so a `ValueError` from an invalid scope is a real (if
-    unlikely) failure mode that must stay inside this function's try/except.
+    Records land in `~/.carta/traces/<project_name>/`, outside every repo: the
+    record's `query` is the prompt verbatim for prompts <=500 chars, and
+    `.carta/` inside a project is a tracked directory. `project_name` is a real
+    config key, so it is read off the cfg dict; the searched `collections` are
+    not, so they are recomputed here via `get_search_collections(search_cfg,
+    "repo")` — the same helper `run_search` uses internally, so a `ValueError`
+    from an invalid scope is a real (if unlikely) failure mode that must stay
+    inside this function's try/except.
+
+    Opt out with `proactive_recall.trace: false`; absent, tracing is on (the
+    trace IS the calibration data for the gate, issue #118).
 
     Takes `search_cfg` — the text-only, no-rerank cfg `_run` actually passed to
     `run_search` — not the project's raw `cfg`. `search_cfg` always forces
@@ -213,6 +213,8 @@ def _emit_trace(
     that value tied to the dict the search actually used, for the same reason.
     """
     try:
+        if not search_cfg.get("proactive_recall", {}).get("trace", True):
+            return
         from carta.search.scoped import get_search_collections
         from carta.search.trace import build_trace_record, append_trace
         collections = get_search_collections(search_cfg, "repo")
@@ -231,7 +233,7 @@ def _emit_trace(
             score_kind="rrf" if is_rrf else "cosine",
             rrf_k=hybrid.get("rrf_k", 2) if is_rrf else None,
         )
-        append_trace(repo_root, rec)
+        append_trace(search_cfg.get("project_name", ""), rec)
     except Exception:
         pass
 

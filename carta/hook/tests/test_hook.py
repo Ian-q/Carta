@@ -767,17 +767,17 @@ def test_hook_uses_configured_agree_rank_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _emit_trace wiring: repo_root and collections are threaded explicitly
+# _emit_trace wiring: the project name and collections are threaded explicitly
 # (not read off invented cfg["_repo_root"] / cfg["_trace_collections"] keys),
 # and trace emission must never break the hook (fail-open).
 # ---------------------------------------------------------------------------
 
-def test_hook_emits_trace_record_with_repo_root_and_collections(tmp_path):
-    """End-to-end: main() writes one trace record under <repo_root>/.carta/traces,
-    where repo_root is derived from cfg_path.parent.parent, and collections come
-    from get_search_collections(search_cfg, "repo") — the same helper run_search
-    uses, called with the SAME search_cfg run_search was actually given — not
-    from any key inside cfg, and not from the raw project cfg.
+def test_hook_emits_trace_record_under_carta_home_with_collections(tmp_path, monkeypatch):
+    """End-to-end: main() writes one trace record under
+    ~/.carta/traces/<project_name>/ (CARTA_HOME here), NOT inside the repo, and
+    collections come from get_search_collections(search_cfg, "repo") — the same
+    helper run_search uses, called with the SAME search_cfg run_search was
+    actually given — not from any key inside cfg, and not from the raw cfg.
 
     _make_cfg() deliberately leaves embed.colpali_enabled unset (auto), the
     normal case for most projects. Regression pin: the hook's own search_cfg
@@ -786,6 +786,8 @@ def test_hook_emits_trace_record_with_repo_root_and_collections(tmp_path):
     NOT the 4 you'd get from get_search_collections(cfg, ...) on the raw,
     colpali-auto project cfg. Passing the raw cfg here would claim _visual was
     searched and came up empty, when it was never queried at all."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
     hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
              "lane_ranks": {"dense": 0, "sparse": 1}}]
     cfg = _make_cfg()
@@ -799,14 +801,58 @@ def test_hook_emits_trace_record_with_repo_root_and_collections(tmp_path):
     ):
         _capture_main()
 
-    trace_files = list((tmp_path / ".carta" / "traces").glob("hook-*.jsonl"))
-    assert len(trace_files) == 1, "expected exactly one trace file under the real repo root"
+    trace_files = list((home / "traces" / "test-proj").glob("hook-*.jsonl"))
+    assert len(trace_files) == 1, "expected exactly one trace file under ~/.carta"
+    assert not (tmp_path / ".carta" / "traces").exists(), (
+        "trace records carry verbatim prompt text and must never be written "
+        "into the repo, where .carta/ is a tracked directory"
+    )
     record = json.loads(trace_files[0].read_text().strip().splitlines()[-1])
     assert record["zone"] == "inject"
     assert record["lanes"] == {"dense": 0, "sparse": 1}
     assert record["collections"] == [
         "test-proj_doc", "test-proj_notes", "test-proj_session",
     ], "must match what the hook actually searched (colpali forced off), not raw cfg"
+
+
+def test_hook_tracing_can_be_switched_off_by_config(tmp_path, monkeypatch):
+    """`proactive_recall.trace: false` must stop trace emission entirely."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["trace"] = False
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        out = _capture_main()
+
+    assert not (home / "traces").exists(), "trace: false must write nothing"
+    assert "context" in json.loads(out.strip()), "disabling the trace must not disable recall"
+
+
+def test_hook_traces_by_default_for_a_config_predating_the_key(tmp_path, monkeypatch):
+    """A config written before `proactive_recall.trace` existed has no such key;
+    the default (true) must govern rather than a KeyError or a silent off."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    assert "trace" not in cfg["proactive_recall"], "fixture must predate the key"
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        _capture_main()
+
+    assert list((home / "traces" / "test-proj").glob("hook-*.jsonl"))
 
 
 def test_hook_trace_failure_does_not_break_injection(tmp_path):
@@ -834,8 +880,16 @@ def test_emit_trace_swallows_collection_errors():
     from carta.hook.hook import _emit_trace
     cfg = _make_cfg()
     with patch("carta.search.scoped.get_search_collections", side_effect=ValueError("bad scope")):
-        _emit_trace("q", [], "silent", None, time.monotonic(), cfg, Path("/fake"))
+        _emit_trace("q", [], "silent", None, time.monotonic(), cfg)
     # Reaching here without an exception is the assertion.
+
+
+def test_emit_trace_survives_a_config_with_no_project_name():
+    """`project_name` is the trace directory. A config missing it (hand-edited,
+    or a partial load) must degrade to a placeholder directory, not raise."""
+    from carta.hook.hook import _emit_trace
+    cfg = {k: v for k, v in _make_cfg().items() if k != "project_name"}
+    _emit_trace("q", [], "silent", None, time.monotonic(), cfg)
 
 
 def test_hook_returns_within_budget_against_a_blocking_backend(tmp_path):

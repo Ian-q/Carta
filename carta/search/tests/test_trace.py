@@ -49,37 +49,79 @@ def test_record_missing_fused_score_in_nonempty_hits():
     assert rec["score"] == 0.5
 
 
-def test_append_writes_jsonl_and_creates_dir(tmp_path):
+def test_append_writes_under_carta_home_never_inside_the_repo(tmp_path, monkeypatch):
+    """Trace records hold the VERBATIM prompt for prompts <=500 chars, and
+    `.carta/` is a deliberately tracked directory in Carta projects. Writing
+    them anywhere under the repo means a `pipx upgrade` starts dropping prompt
+    text into a directory an existing project's .gitignore has never heard of.
+    They live at ~/.carta/traces/<project>/ instead — outside every repo."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
     rec = {"ts": "2026-08-09T00:00:00Z", "query": "q"}
-    trace.append_trace(tmp_path, rec)
-    files = list((tmp_path / ".carta" / "traces").glob("hook-*.jsonl"))
+    trace.append_trace("ET-embed", rec)
+
+    files = list((home / "traces" / "ET-embed").glob("hook-*.jsonl"))
     assert len(files) == 1
     assert json.loads(files[0].read_text().strip())["query"] == "q"
 
 
-def test_append_never_raises(tmp_path, monkeypatch):
+def test_trace_path_is_per_project(tmp_path, monkeypatch):
+    """Two projects on one machine must not interleave into one file."""
+    monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+    a = trace._trace_path("proj-a", when="2026-08-09T00:00:00Z")
+    b = trace._trace_path("proj-b", when="2026-08-09T00:00:00Z")
+    assert a != b
+    assert a.parent.name == "proj-a" and b.parent.name == "proj-b"
+
+
+def test_trace_path_sanitises_a_hostile_project_name(tmp_path, monkeypatch):
+    """`project_name` is user-controlled config, and it is interpolated into a
+    filesystem path. Separators and traversal must not escape the traces dir."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    path = trace._trace_path("../../etc/evil name", when="2026-08-09T00:00:00Z")
+    traces_root = (home / "traces").resolve()
+    assert path.resolve().parent.parent == traces_root
+    assert path.parent.parent == home / "traces"
+    assert "/" not in path.parent.name and path.parent.name not in (".", "..")
+
+
+def test_trace_path_survives_an_empty_project_name(tmp_path, monkeypatch):
+    """A blank or all-punctuation name must still yield one usable directory,
+    not an empty path component that writes into traces/ itself."""
+    monkeypatch.setenv("CARTA_HOME", str(tmp_path / "home"))
+    for name in ("", "   ", "..", "///"):
+        parent = trace._trace_path(name, when="2026-08-09T00:00:00Z").parent
+        assert parent.name and parent.name not in (".", "..", "traces")
+
+
+def test_append_never_raises(monkeypatch):
     """Instrumentation must never break the thing it instruments."""
     monkeypatch.setattr(trace, "_trace_path",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
-    trace.append_trace(tmp_path, {"query": "q"})   # must not raise
+    trace.append_trace("proj", {"query": "q"})   # must not raise
 
 
-def test_append_rotates_by_the_records_own_ts_not_now(tmp_path):
+def test_append_rotates_by_the_records_own_ts_not_now(tmp_path, monkeypatch):
     """The monthly file must be chosen from `record["ts"]`, not a fresh
     `_utc_now_iso()` call at append time. Matters near a month boundary, or
     for any future caller that buffers records before flushing (plausible
     for a hook deliberately built not to add latency to prompt submission)."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
     rec = {"ts": "2026-07-31T23:59:59Z", "query": "q"}
-    trace.append_trace(tmp_path, rec)
-    files = list((tmp_path / ".carta" / "traces").glob("*.jsonl"))
+    trace.append_trace("proj", rec)
+    files = list((home / "traces" / "proj").glob("*.jsonl"))
     assert [f.name for f in files] == ["hook-2026-07.jsonl"]
 
 
-def test_append_still_works_when_record_has_no_ts(tmp_path):
+def test_append_still_works_when_record_has_no_ts(tmp_path, monkeypatch):
     """append_trace must stay total even for a record lacking `ts` — falls
     back to `_trace_path`'s own now() default."""
-    trace.append_trace(tmp_path, {"query": "no ts here"})
-    files = list((tmp_path / ".carta" / "traces").glob("hook-*.jsonl"))
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    trace.append_trace("proj", {"query": "no ts here"})
+    files = list((home / "traces" / "proj").glob("hook-*.jsonl"))
     assert len(files) == 1
 
 
@@ -141,14 +183,15 @@ def test_format_trace_final_uses_list_position_not_fused_rank():
     assert "fused_rank=47" in out
 
 
-def test_append_swallows_unwritable_directory(tmp_path):
-    """Real OS-level failure mode (not the monkeypatched one): the repo root
-    exists but has no write permission, so `.carta/traces` can't be created."""
+def test_append_swallows_unwritable_directory(tmp_path, monkeypatch):
+    """Real OS-level failure mode (not the monkeypatched one): CARTA_HOME
+    exists but has no write permission, so `traces/` can't be created."""
     locked = tmp_path / "locked"
     locked.mkdir()
+    monkeypatch.setenv("CARTA_HOME", str(locked))
     os.chmod(locked, 0o500)  # read + execute, no write
     try:
-        trace.append_trace(locked, {"query": "q"})   # must not raise
-        assert not (locked / ".carta").exists()
+        trace.append_trace("proj", {"query": "q"})   # must not raise
+        assert not (locked / "traces").exists()
     finally:
         os.chmod(locked, 0o700)  # restore so tmp_path cleanup can remove it

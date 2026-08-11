@@ -3,6 +3,19 @@ import sys
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_carta_home(tmp_path_factory, monkeypatch):
+    """Point ``CARTA_HOME`` at a throwaway dir for every test.
+
+    ``~/.carta`` is machine-level carta state (the project registry, and now the
+    hook's retrieval traces). No test may read or write the developer's real
+    one — a hook test that runs ``main()`` would otherwise append a trace record
+    to the actual ``~/.carta/traces/``. Tests that care about the location set
+    ``CARTA_HOME`` themselves; this fixture only guarantees a safe default.
+    """
+    monkeypatch.setenv("CARTA_HOME", str(tmp_path_factory.mktemp("carta-home")))
+
+
 # Module cache backup for MCP test isolation
 _mcp_module_backup = {}
 
