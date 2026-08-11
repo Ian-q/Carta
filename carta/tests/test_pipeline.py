@@ -1295,9 +1295,13 @@ def test_run_search_passes_repo_root_not_dotcarta_to_graph_expansion(tmp_path):
 
 
 class TestHybridQueryFilter:
-    """_hybrid_query_collection threads an optional Qdrant filter into each prefetch lane."""
+    """_hybrid_query_collection threads an optional Qdrant filter into each lane query.
 
-    def test_query_filter_applied_to_prefetch(self):
+    Fusion moved client-side (see _fuse_lanes in carta/embed/tests/test_hybrid_query.py),
+    so the dense and sparse lanes are now two separate query_points calls rather than
+    one call with a `prefetch=[...]` list; this asserts the filter reaches both."""
+
+    def test_query_filter_applied_to_both_lanes(self):
         from unittest.mock import MagicMock, patch
         from carta.embed.pipeline import _hybrid_query_collection
         from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -1312,9 +1316,11 @@ class TestHybridQueryFilter:
                                      prefetch_limit=40, bm25_model="Qdrant/bm25",
                                      query_filter=ff)
 
-        kwargs = client.query_points.call_args.kwargs
-        prefetches = kwargs["prefetch"]
-        assert all(p.filter is ff for p in prefetches), "filter must reach every prefetch lane"
+        assert client.query_points.call_count == 2
+        calls = client.query_points.call_args_list
+        assert all(c.kwargs["query_filter"] is ff for c in calls), \
+            "filter must reach every lane query"
+        assert {c.kwargs["using"] for c in calls} == {"dense", "bm25"}
 
 
 class TestFocusSourceHelpers:

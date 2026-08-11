@@ -1,13 +1,46 @@
 from unittest.mock import MagicMock, patch
+import pytest
 from carta.embed import pipeline
 
 
+def _pt(pid, score=1.0):
+    p = MagicMock()
+    p.id = pid
+    p.score = score
+    p.payload = {"file_path": f"docs/{pid}.md", "text": pid}
+    return p
+
+
+def test_fuse_lanes_matches_qdrant_rrf_at_k2():
+    """Qdrant's server-side RRF is sum of 1/(k+rank) with k=2, rank 0-based."""
+    dense = [_pt("a"), _pt("b"), _pt("c")]
+    sparse = [_pt("b"), _pt("a"), _pt("d")]
+
+    fused = pipeline._fuse_lanes(dense, sparse, top_n=4, k=2)
+
+    # a: 1/2 + 1/3 = 0.8333 | b: 1/3 + 1/2 = 0.8333 | c: 1/4 | d: 1/4
+    assert [f["point"].id for f in fused[:2]] == ["a", "b"]
+    assert fused[0]["score"] == pytest.approx(1/2 + 1/3)
+    assert fused[0]["ranks"] == {"dense": 0, "sparse": 1}
+
+
+def test_fuse_lanes_admits_single_lane_hits():
+    """A hit present in only one lane must still be admitted (dropping it is a
+    silent recall bug), with the missing lane recorded as None."""
+    fused = pipeline._fuse_lanes([_pt("a")], [], top_n=5, k=2)
+    assert fused[0]["ranks"] == {"dense": 0, "sparse": None}
+    assert fused[0]["score"] == pytest.approx(1/2)
+
+
 def test_hybrid_query_uses_prefetch_and_rrf(monkeypatch):
-    captured = {}
+    """Fusion moved client-side (see _fuse_lanes), so Qdrant's server-side
+    prefetch+FusionQuery API is no longer used. This asserts the replacement
+    shape: two separate query_points calls, one per lane."""
+    calls = []
 
     class FakeClient:
         def query_points(self, **kwargs):
-            captured.update(kwargs)
+            calls.append(kwargs)
             resp = MagicMock()
             resp.points = []
             return resp
@@ -21,9 +54,11 @@ def test_hybrid_query_uses_prefetch_and_rrf(monkeypatch):
         dense_vec=[0.0] * 768, top_n=5, prefetch_limit=40, bm25_model="Qdrant/bm25",
     )
 
-    assert "prefetch" in captured
-    assert len(captured["prefetch"]) == 2
-    assert captured["limit"] == 5
+    assert len(calls) == 2
+    assert calls[0]["using"] == "dense"
+    assert calls[0]["limit"] == 40
+    assert calls[1]["using"] == "bm25"
+    assert calls[1]["limit"] == 40
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +139,15 @@ def _patch_run_search_deps(monkeypatch, *, captured_limits,
 
     monkeypatch.setattr(pipeline, "QdrantClient", FakeQdrantClient)
 
-    # Patch _hybrid_query_collection to capture its limit arg too
-    original_hybrid = pipeline._hybrid_query_collection
-
+    # Patch _hybrid_query_collection to capture its limit arg too. Returns the
+    # new list-of-dicts shape (see _fuse_lanes) rather than a raw Qdrant
+    # response, so callers that iterate `entry["point"]` are still exercised
+    # for real instead of silently iterating an empty MagicMock.
     def capturing_hybrid(client, coll_name, query, dense_vec, top_n,
                          prefetch_limit, bm25_model):
         captured_limits.append(top_n)
-        return fake_resp
+        return [{"point": p, "score": p.score, "ranks": {"dense": i, "sparse": None}}
+                for i, p in enumerate(fake_resp.points)]
 
     monkeypatch.setattr(pipeline, "_hybrid_query_collection", capturing_hybrid)
 

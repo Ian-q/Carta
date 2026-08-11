@@ -1797,37 +1797,73 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     return summary
 
 
+# Qdrant's server-side RRF uses k=2. Client-side fusion starts here to preserve
+# ordering exactly; see docs/superpowers/specs/2026-08-09-retrieval-path-repair-
+# and-tracing-design.md Component 2.
+QDRANT_RRF_K = 2
+
+
+def _lane_queries(client, coll_name, query, dense_vec, prefetch_limit,
+                  bm25_model, query_filter=None):
+    """Query the dense and sparse lanes separately and return both point lists."""
+    sv = embed_sparse_query(query, model_name=bm25_model)
+    dense_resp = client.query_points(
+        collection_name=coll_name, query=dense_vec, using=DENSE_VECTOR_NAME,
+        limit=prefetch_limit, query_filter=query_filter, with_payload=True,
+    )
+    sparse_resp = client.query_points(
+        collection_name=coll_name,
+        query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
+        using=SPARSE_VECTOR_NAME, limit=prefetch_limit,
+        query_filter=query_filter, with_payload=True,
+    )
+    return dense_resp.points, sparse_resp.points
+
+
+def _fuse_lanes(dense_points, sparse_points, top_n: int,
+                k: int = QDRANT_RRF_K) -> list[dict]:
+    """Reciprocal Rank Fusion over two lanes, returning ranks alongside scores.
+
+    Mirrors Qdrant's server-side RRF at k=2. A point present in only one lane is
+    admitted with the other lane recorded as None — dropping it would be a silent
+    recall bug.
+    """
+    acc: dict = {}
+    for lane, points in (("dense", dense_points), ("sparse", sparse_points)):
+        for rank, p in enumerate(points):
+            entry = acc.setdefault(
+                p.id, {"point": p, "score": 0.0,
+                       "ranks": {"dense": None, "sparse": None}})
+            entry["score"] += 1.0 / (k + rank)
+            entry["ranks"][lane] = rank
+    fused = sorted(acc.values(), key=lambda e: (-e["score"], str(e["point"].id)))
+    return fused[:top_n]
+
+
 def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
-                              prefetch_limit, bm25_model, query_filter=None):
-    """Run a hybrid BM25+dense query with Qdrant RRF fusion.
+                              prefetch_limit, bm25_model, query_filter=None,
+                              rrf_k: int = QDRANT_RRF_K):
+    """Run a hybrid BM25+dense query, fused client-side so per-lane ranks are available.
 
     Fetches `prefetch_limit` candidates from each of the dense and sparse
-    indexes, then fuses them with Reciprocal Rank Fusion and returns the
-    top `top_n` results.
+    indexes, then fuses them with Reciprocal Rank Fusion (matching Qdrant's
+    server-side RRF at k=2) and returns the top `top_n` results.
 
-    `top_n` controls the Qdrant fusion `limit` (i.e. how many fused results
-    to return).  When reranking is enabled, callers should pass `fetch_limit`
-    (= candidate_pool) here so that the reranker has a wide enough pool to
-    promote lower-ranked relevant documents.
+    `top_n` controls how many fused results are returned. When reranking is
+    enabled, callers should pass `fetch_limit` (= candidate_pool) here so that
+    the reranker has a wide enough pool to promote lower-ranked relevant
+    documents.
 
-    `query_filter` (optional) is applied to BOTH prefetch lanes so the filter
-    takes effect before fusion (used by run_focus to scope to one file).
+    `query_filter` (optional) is applied to BOTH lanes so the filter takes
+    effect before fusion (used by run_focus to scope to one file).
+
+    Returns a list of dicts: `{"point": <qdrant point>, "score": float,
+    "ranks": {"dense": int | None, "sparse": int | None}}`.
     """
-    sv = embed_sparse_query(query, model_name=bm25_model)
-    return client.query_points(
-        collection_name=coll_name,
-        prefetch=[
-            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME,
-                             limit=prefetch_limit, filter=query_filter),
-            qmodels.Prefetch(
-                query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
-                using=SPARSE_VECTOR_NAME, limit=prefetch_limit, filter=query_filter,
-            ),
-        ],
-        query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-        limit=top_n,
-        with_payload=True,
+    dense_points, sparse_points = _lane_queries(
+        client, coll_name, query, dense_vec, prefetch_limit, bm25_model, query_filter,
     )
+    return _fuse_lanes(dense_points, sparse_points, top_n, rrf_k)
 
 
 def _visual_collection_ready(client, coll_name: str) -> bool:
@@ -2088,29 +2124,43 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                 hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
                 is_hybrid = collection_is_hybrid(client, coll_name)
                 if hybrid_cfg.get("enabled", False) and is_hybrid:
-                    response = _hybrid_query_collection(
+                    fused = _hybrid_query_collection(
                         client, coll_name, query, query_vec, limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
                         query_filter=ff)
-                elif is_hybrid:
-                    response = client.query_points(
-                        collection_name=coll_name, query=query_vec, using=DENSE_VECTOR_NAME,
-                        limit=limit, with_payload=True, query_filter=ff)
+                    for entry in fused:
+                        r = entry["point"]
+                        payload = r.payload or {}
+                        coll_results.append({
+                            "score": entry["score"],
+                            "lane_ranks": entry["ranks"],
+                            "source": payload.get("file_path", payload.get("slug", "")),
+                            "excerpt": payload.get("text", ""), "type": "text",
+                            "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page") or payload.get("page_num"),
+                            "section_heading": payload.get("section_heading", ""),
+                            "text_source": _text_source(payload)})
                 else:
-                    response = client.query_points(
-                        collection_name=coll_name, query=query_vec,
-                        limit=limit, with_payload=True, query_filter=ff)
-                for r in response.points:
-                    payload = r.payload or {}
-                    coll_results.append({
-                        "score": r.score,
-                        "source": payload.get("file_path", payload.get("slug", "")),
-                        "excerpt": payload.get("text", ""), "type": "text",
-                        "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page") or payload.get("page_num"),
-                        "section_heading": payload.get("section_heading", ""),
-                        "text_source": _text_source(payload)})
+                    if is_hybrid:
+                        response = client.query_points(
+                            collection_name=coll_name, query=query_vec, using=DENSE_VECTOR_NAME,
+                            limit=limit, with_payload=True, query_filter=ff)
+                    else:
+                        response = client.query_points(
+                            collection_name=coll_name, query=query_vec,
+                            limit=limit, with_payload=True, query_filter=ff)
+                    for r in response.points:
+                        payload = r.payload or {}
+                        coll_results.append({
+                            "score": r.score,
+                            "lane_ranks": None,
+                            "source": payload.get("file_path", payload.get("slug", "")),
+                            "excerpt": payload.get("text", ""), "type": "text",
+                            "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page") or payload.get("page_num"),
+                            "section_heading": payload.get("section_heading", ""),
+                            "text_source": _text_source(payload)})
             per_collection.append(coll_results)
         except Exception as e:
             err_str = str(e).lower()
@@ -2425,44 +2475,60 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                 is_hybrid = collection_is_hybrid(client, coll_name)
 
                 if hybrid_cfg.get("enabled", False) and is_hybrid:
-                    # Hybrid BM25+dense with RRF fusion.
-                    # Pass fetch_limit as the fusion limit so the reranker
-                    # receives a full candidate_pool rather than just top_n.
-                    response = _hybrid_query_collection(
+                    # Hybrid BM25+dense, fused client-side (k=2) so per-lane ranks
+                    # are available. Pass fetch_limit as the fusion top_n so the
+                    # reranker receives a full candidate_pool rather than just top_n.
+                    fused = _hybrid_query_collection(
                         client, coll_name, query, query_vec, fetch_limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
                     )
-                elif is_hybrid:
-                    # Hybrid collection schema but hybrid search disabled — use named dense vector
-                    response = client.query_points(
-                        collection_name=coll_name,
-                        query=query_vec,
-                        using=DENSE_VECTOR_NAME,
-                        limit=fetch_limit,
-                        with_payload=True,
-                    )
+                    for entry in fused:
+                        r = entry["point"]
+                        payload = r.payload or {}
+                        coll_results.append({
+                            "score": entry["score"],
+                            "lane_ranks": entry["ranks"],
+                            "source": payload.get("file_path", payload.get("slug", "")),
+                            "excerpt": payload.get("text", ""),
+                            "type": "text",
+                            "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page") or payload.get("page_num"),
+                            "section_heading": payload.get("section_heading", ""),
+                            "text_source": _text_source(payload),
+                        })
                 else:
-                    # Legacy unnamed-dense collection
-                    response = client.query_points(
-                        collection_name=coll_name,
-                        query=query_vec,
-                        limit=fetch_limit,
-                        with_payload=True,
-                    )
-                
-                for r in response.points:
-                    payload = r.payload or {}
-                    coll_results.append({
-                        "score": r.score,
-                        "source": payload.get("file_path", payload.get("slug", "")),
-                        "excerpt": payload.get("text", ""),
-                        "type": "text",
-                        "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page") or payload.get("page_num"),
-                        "section_heading": payload.get("section_heading", ""),
-                        "text_source": _text_source(payload),
-                    })
+                    if is_hybrid:
+                        # Hybrid collection schema but hybrid search disabled — use named dense vector
+                        response = client.query_points(
+                            collection_name=coll_name,
+                            query=query_vec,
+                            using=DENSE_VECTOR_NAME,
+                            limit=fetch_limit,
+                            with_payload=True,
+                        )
+                    else:
+                        # Legacy unnamed-dense collection
+                        response = client.query_points(
+                            collection_name=coll_name,
+                            query=query_vec,
+                            limit=fetch_limit,
+                            with_payload=True,
+                        )
+
+                    for r in response.points:
+                        payload = r.payload or {}
+                        coll_results.append({
+                            "score": r.score,
+                            "lane_ranks": None,
+                            "source": payload.get("file_path", payload.get("slug", "")),
+                            "excerpt": payload.get("text", ""),
+                            "type": "text",
+                            "doc_type": payload.get("doc_type", ""),
+                            "page": payload.get("page") or payload.get("page_num"),
+                            "section_heading": payload.get("section_heading", ""),
+                            "text_source": _text_source(payload),
+                        })
 
             per_collection.append(coll_results)
         except Exception as e:
