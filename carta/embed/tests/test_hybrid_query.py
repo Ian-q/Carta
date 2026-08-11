@@ -38,6 +38,52 @@ def test_fuse_lanes_admits_single_lane_hits():
     assert fused[0]["score"] == pytest.approx(1/2)
 
 
+def test_fuse_lanes_records_the_dense_lanes_raw_cosine():
+    """The fused RRF score is a rank artifact and says nothing about relevance.
+    The dense lane's raw cosine does, and it is the only absolute relevance
+    signal the hybrid path has — so fusion must carry it through, per entry."""
+    dense = [_pt("a", score=0.81), _pt("b", score=0.42)]
+    sparse = [_pt("b", score=17.3)]
+
+    fused = {f["point"].id: f for f in pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)}
+
+    assert fused["a"]["dense_score"] == pytest.approx(0.81)
+    assert fused["b"]["dense_score"] == pytest.approx(0.42), (
+        "must be the DENSE lane's score, never the sparse lane's BM25 magnitude"
+    )
+
+
+def test_fuse_lanes_dense_score_is_none_for_a_sparse_only_hit():
+    """A hit the dense lane never returned has no cosine to report. It must be
+    None — not 0.0, which is a real (very poor) similarity and would read as
+    positive evidence of irrelevance to any consumer thresholding on it."""
+    fused = pipeline._fuse_lanes([], [_pt("only-sparse", score=9.9)], top_n=5, k=2)
+    assert fused[0]["dense_score"] is None
+    assert fused[0]["ranks"] == {"dense": None, "sparse": 0}
+
+
+def test_fuse_lanes_order_is_unaffected_by_recording_dense_score():
+    """Recording a field must not perturb retrieval. Fused order is compared
+    against an independent minimal RRF that knows nothing about dense_score,
+    over many randomised lane configurations."""
+    import random
+
+    rng = random.Random(20260809)
+    for _ in range(500):
+        ids = [f"p{i}" for i in range(8)]
+        dense = [_pt(i, score=rng.random()) for i in rng.sample(ids, rng.randint(0, 8))]
+        sparse = [_pt(i, score=rng.random() * 20) for i in rng.sample(ids, rng.randint(0, 8))]
+
+        acc: dict = {}
+        for points in (dense, sparse):
+            for rank, p in enumerate(points):
+                acc[p.id] = acc.get(p.id, 0.0) + 1.0 / (2 + rank)
+        expected = [pid for pid, _ in sorted(acc.items(), key=lambda kv: (-kv[1], str(kv[0])))][:5]
+
+        got = [f["point"].id for f in pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)]
+        assert got == expected
+
+
 def test_rrf_k_is_configurable_and_defaults_to_2():
     from carta.config import DEFAULTS
     assert DEFAULTS["search"]["hybrid"]["rrf_k"] == 2

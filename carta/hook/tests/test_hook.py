@@ -674,33 +674,79 @@ def test_search_timeout_default_registered_in_config():
 
 
 # ---------------------------------------------------------------------------
-# _gate_zone: rank-and-agreement gate (replaces absolute RRF-score gating)
+# _gate_zone: rank for AGREEMENT, dense cosine for RELEVANCE
+#
+# Rank alone cannot express irrelevance: hits[0] is the fusion argmax, so it
+# always ranks well *among the results* however bad they all are. (Concretely,
+# a dense rank-0-only hit scores 1/(2+0)=0.5 while a hit deep in both lanes
+# tops out at 1/5+1/5=0.4 — so a both-lanes-deep hit can never BE hits[0], and
+# a rank-only silent branch is dead code.) The dense lane's raw cosine is the
+# absolute signal; low_threshold was calibrated for exactly that.
 # ---------------------------------------------------------------------------
 
 def test_gate_injects_when_both_lanes_agree():
     from carta.hook import hook
-    hits = [{"lane_ranks": {"dense": 0, "sparse": 1}}]
-    assert hook._gate_zone(hits, agree_rank=3) == "inject"
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 1}, "dense_score": 0.72}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "inject"
 
 
 def test_gate_judges_when_only_one_lane_is_confident():
     from carta.hook import hook
-    hits = [{"lane_ranks": {"dense": 0, "sparse": 40}}]
-    assert hook._gate_zone(hits, agree_rank=3) == "judge"
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 40}, "dense_score": 0.72}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "judge"
 
 
 def test_gate_judges_when_hit_is_in_one_lane_only():
     """The exact case the old gate dropped: rank 0 in one lane scored ~0.5,
     below low_threshold 0.60, and never reached the judge."""
     from carta.hook import hook
-    hits = [{"lane_ranks": {"dense": 0, "sparse": None}}]
-    assert hook._gate_zone(hits, agree_rank=3) == "judge"
+    hits = [{"lane_ranks": {"dense": 0, "sparse": None}, "dense_score": 0.72}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "judge"
 
 
-def test_gate_silent_when_neither_lane_is_confident():
+def test_gate_silent_when_the_dense_cosine_is_measurably_low():
+    """The only route to silent: positive evidence of irrelevance. Ranks here
+    are as good as they get (0 in both lanes) — the cosine still says no."""
     from carta.hook import hook
-    hits = [{"lane_ranks": {"dense": 9, "sparse": 12}}]
-    assert hook._gate_zone(hits, agree_rank=3) == "silent"
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.31}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "silent"
+
+
+def test_gate_never_goes_silent_without_a_dense_score():
+    """A sparse-only top hit has no cosine to measure. It must reach the judge,
+    not be dropped — dropping it is the exact recall bug this branch fixes, and
+    it must not come back. Deep ranks in both lanes are equally not evidence."""
+    from carta.hook import hook
+    sparse_only = [{"lane_ranks": {"dense": None, "sparse": 0}}]
+    assert hook._gate_zone(sparse_only, agree_rank=3, low=0.60) == "judge"
+
+    deep_both_lanes = [{"lane_ranks": {"dense": 9, "sparse": 12}}]
+    assert hook._gate_zone(deep_both_lanes, agree_rank=3, low=0.60) == "judge"
+
+
+def test_gate_prefers_a_low_cosine_over_lane_agreement():
+    """Order matters: the relevance test runs BEFORE the agreement test, so a
+    hit that agrees perfectly across lanes but is measurably irrelevant stays
+    silent rather than injecting unvetted."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.10}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "silent"
+
+
+def test_gate_dense_score_exactly_at_low_threshold_is_not_silent():
+    """`< low` is strict, matching the legacy cosine branch: a hit exactly at
+    the threshold is not *below* it, so it is not evidence of irrelevance."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.60}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "inject"
+
+
+def test_gate_dense_score_zero_is_treated_as_a_real_score():
+    """0.0 is a real (orthogonal) cosine, not a missing value. A truthiness
+    check would skip the relevance test on exactly the least relevant hit."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.0}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "silent"
 
 
 def test_gate_silent_on_no_hits():
@@ -721,10 +767,12 @@ def test_gate_falls_back_to_score_when_lane_ranks_absent():
 def test_gate_rank_exactly_at_agree_rank_boundary_is_not_confident():
     """Ranks are 0-indexed, so agree_rank=3 covers ranks 0, 1, 2 (the top
     three). A rank of exactly 3 is 4th place and must NOT count as confident
-    — otherwise "top-3" would silently mean "top-4"."""
+    — otherwise "top-3" would silently mean "top-4". The dense_score here is
+    comfortably above low, so the relevance test cannot mask the boundary."""
     from carta.hook import hook
-    hits = [{"lane_ranks": {"dense": 3, "sparse": 3}}]
-    assert hook._gate_zone(hits, agree_rank=3) == "silent"
+    hits = [{"lane_ranks": {"dense": 3, "sparse": 3}, "dense_score": 0.80}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "judge"
+    assert hook._gate_zone(hits, agree_rank=4, low=0.60) == "inject"
 
 
 def test_gate_default_agree_rank_is_three():
@@ -733,6 +781,105 @@ def test_gate_default_agree_rank_is_three():
     from carta.hook import hook
     hits = [{"lane_ranks": {"dense": 0, "sparse": 1}}]
     assert hook._gate_zone(hits) == "inject"
+
+
+# ---------------------------------------------------------------------------
+# Reachability: all three zones must be reachable from REAL fusion output.
+# A gate with an unreachable branch is the bug being fixed here; these tests
+# use no hand-written hit dicts — every hit comes out of pipeline._fuse_lanes
+# and pipeline._text_hit, exactly as run_search builds them.
+# ---------------------------------------------------------------------------
+
+def _fused_hits(dense_specs, sparse_ids):
+    """Build lane point lists, fuse them for real, and shape real hit dicts.
+
+    dense_specs: [(id, cosine), ...] in dense-lane rank order.
+    sparse_ids:  [id, ...] in sparse-lane rank order.
+    """
+    from carta.embed import pipeline
+
+    def _pt(pid, score):
+        p = MagicMock()
+        p.id = pid
+        p.score = score
+        p.payload = {"file_path": f"docs/{pid}.md", "text": pid}
+        return p
+
+    dense = [_pt(pid, cos) for pid, cos in dense_specs]
+    sparse = [_pt(pid, 10.0) for pid in sparse_ids]
+    fused = pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)
+    return [pipeline._text_hit(e["point"].payload, e["score"], e["ranks"], e["dense_score"])
+            for e in fused]
+
+
+def test_all_three_gate_zones_are_reachable_from_real_fusion_output():
+    """inject / judge / silent must each occur for some real retrieval result.
+
+    The previous gate's silent branch was dead: hits[0] is the fusion argmax,
+    so it always ranks well among the results and "confident in neither lane"
+    could not happen. Each scenario below is a plausible retrieval, fused by
+    the real code, and the three of them cover the three zones."""
+    from carta.hook import hook
+
+    inject = _fused_hits([("a", 0.74), ("b", 0.55)], ["a", "b"])
+    judge = _fused_hits([("a", 0.71)], ["z", "y", "x", "w", "a"])
+    silent = _fused_hits([("a", 0.28), ("b", 0.21)], ["a", "b"])
+
+    zones = {
+        "inject": hook._gate_zone(inject, agree_rank=3, low=0.60, high=0.85),
+        "judge": hook._gate_zone(judge, agree_rank=3, low=0.60, high=0.85),
+        "silent": hook._gate_zone(silent, agree_rank=3, low=0.60, high=0.85),
+    }
+    assert zones == {"inject": "inject", "judge": "judge", "silent": "silent"}
+    assert set(zones.values()) == {"inject", "judge", "silent"}, "every zone reachable"
+
+
+def test_gate_zone_sweep_over_random_fusions_hits_all_three_zones():
+    """Same claim, swept rather than hand-picked: over randomised lane
+    configurations the real fusion + real gate produce all three zones."""
+    import random
+    from carta.hook import hook
+
+    rng = random.Random(20260809)
+    seen = set()
+    for _ in range(2000):
+        ids = [f"p{i}" for i in range(6)]
+        dense = [(pid, rng.random()) for pid in rng.sample(ids, rng.randint(0, 6))]
+        sparse = rng.sample(ids, rng.randint(0, 6))
+        hits = _fused_hits(dense, sparse)
+        seen.add(hook._gate_zone(hits, agree_rank=3, low=0.60, high=0.85))
+
+    assert seen == {"inject", "judge", "silent"}, f"unreachable zone(s): {seen}"
+
+
+def test_rank_alone_cannot_express_irrelevance_at_hits0():
+    """Root cause, pinned. hits[0] is the fusion argmax: a dense rank-0 hit
+    alone scores 1/(2+0)=0.5, while a hit deep in BOTH lanes tops out at
+    1/(2+3)+1/(2+3)=0.4. So the top hit's best lane rank is always shallow,
+    and any 'neither lane is confident' silent branch is dead code. If this
+    ever fails, rank-based irrelevance became viable — revisit the gate."""
+    import random
+    from carta.hook import hook
+
+    rng = random.Random(4242)
+    worst_best_rank = -1
+    for _ in range(2000):
+        ids = [f"p{i}" for i in range(8)]
+        dense = [(pid, rng.random()) for pid in rng.sample(ids, rng.randint(0, 8))]
+        sparse = rng.sample(ids, rng.randint(0, 8))
+        hits = _fused_hits(dense, sparse)
+        if not hits:
+            continue
+        ranks = [r for r in hits[0]["lane_ranks"].values() if r is not None]
+        worst_best_rank = max(worst_best_rank, min(ranks))
+
+    assert 0 <= worst_best_rank < 3, (
+        f"best lane rank at hits[0] reached {worst_best_rank}; a rank-only "
+        f"silent branch would still be unreachable at agree_rank=3"
+    )
+    # And the gate must not be silent for such a hit unless a cosine says so.
+    deep = [{"lane_ranks": {"dense": 2, "sparse": 40}}]
+    assert hook._gate_zone(deep, agree_rank=3, low=0.60) == "judge"
 
 
 # ---------------------------------------------------------------------------

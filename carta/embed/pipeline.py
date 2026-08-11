@@ -1828,15 +1828,25 @@ def _fuse_lanes(dense_points, sparse_points, top_n: int,
     Mirrors Qdrant's server-side RRF at k=2. A point present in only one lane is
     admitted with the other lane recorded as None — dropping it would be a silent
     recall bug.
+
+    Each entry also carries `dense_score`: the dense lane's RAW cosine for that
+    point, or None when the dense lane never returned it. The fused score is a
+    rank artifact whose scale depends on k and lane count and says nothing about
+    whether a result matches the query; the dense cosine is the one absolute
+    relevance measure on this path, and the recall hook's gate needs it (a rank
+    is relative to the result set, so it cannot express "all of these are bad").
+    Recording it does not affect ordering.
     """
     acc: dict = {}
     for lane, points in (("dense", dense_points), ("sparse", sparse_points)):
         for rank, p in enumerate(points):
             entry = acc.setdefault(
-                p.id, {"point": p, "score": 0.0,
+                p.id, {"point": p, "score": 0.0, "dense_score": None,
                        "ranks": {"dense": None, "sparse": None}})
             entry["score"] += 1.0 / (k + rank)
             entry["ranks"][lane] = rank
+            if lane == "dense":
+                entry["dense_score"] = p.score
     fused = sorted(acc.values(), key=lambda e: (-e["score"], str(e["point"].id)))
     return fused[:top_n]
 
@@ -1859,7 +1869,8 @@ def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
     effect before fusion (used by run_focus to scope to one file).
 
     Returns a list of dicts: `{"point": <qdrant point>, "score": float,
-    "ranks": {"dense": int | None, "sparse": int | None}}`.
+    "ranks": {"dense": int | None, "sparse": int | None},
+    "dense_score": float | None}`.
     """
     dense_points, sparse_points = _lane_queries(
         client, coll_name, query, dense_vec, prefetch_limit, bm25_model, query_filter,
@@ -2006,7 +2017,8 @@ def _text_source(payload: dict) -> str:
     return "ocr_visual"
 
 
-def _text_hit(payload: dict, score: float, lane_ranks: dict | None) -> dict:
+def _text_hit(payload: dict, score: float, lane_ranks: dict | None,
+              dense_score: float | None = None) -> dict:
     """Build a text-collection hit dict from a Qdrant point's payload.
 
     Shared by the hybrid (per-lane ranks known) and non-hybrid/legacy
@@ -2014,10 +2026,17 @@ def _text_hit(payload: dict, score: float, lane_ranks: dict | None) -> dict:
     so the file_path/slug fallback, the page/page_num fallback, and the
     `_text_source` classification stay in lockstep across all four call sites
     instead of drifting independently.
+
+    ``dense_score`` is the dense lane's raw cosine (see ``_fuse_lanes``), the
+    hybrid path's only absolute relevance signal. Like ``lane_ranks`` it is
+    optional and may be None: the legacy branches have no lane to attribute a
+    score to, and the visual and MCP producers build their hit dicts inline
+    without either key. Every consumer must therefore use ``.get()``.
     """
     return {
         "score": score,
         "lane_ranks": lane_ranks,
+        "dense_score": dense_score,
         "source": payload.get("file_path", payload.get("slug", "")),
         "excerpt": payload.get("text", ""),
         "type": "text",
@@ -2155,7 +2174,8 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                         rrf_k=hybrid_cfg.get("rrf_k", 2))
                     for entry in fused:
                         payload = entry["point"].payload or {}
-                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"]))
+                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"],
+                                                     entry["dense_score"]))
                 else:
                     if is_hybrid:
                         response = client.query_points(
@@ -2505,7 +2525,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                     )
                     for entry in fused:
                         payload = entry["point"].payload or {}
-                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"]))
+                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"],
+                                                     entry["dense_score"]))
                 else:
                     if is_hybrid:
                         # Hybrid collection schema but hybrid search disabled — use named dense vector

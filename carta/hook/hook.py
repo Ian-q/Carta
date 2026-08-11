@@ -1,17 +1,20 @@
 """carta-hook — UserPromptSubmit hook entry point.
 
 Reads stdin JSON from Claude Code, extracts the prompt, queries Qdrant via
-run_search, and routes through three zones gated on retrieval STRUCTURE
-(rank agreement across lanes), not absolute score magnitude — see
-`_gate_zone` for why: hybrid search returns RRF scores whose scale depends
-on k and lane count, so an absolute threshold on them is meaningless.
+run_search, and routes through three zones. The FUSED score is never
+thresholded — its scale depends on k and lane count, so an absolute threshold
+on it is meaningless. Instead: lane rank for agreement, the dense lane's raw
+cosine for relevance (see `_gate_zone`).
 
-  top hit ranked within agree_rank in BOTH lanes  → fast-path inject (no Ollama)
-  top hit ranked within agree_rank in NEITHER lane → noise gate (silent exit)
-  top hit confident in exactly ONE lane            → Ollama judge with timeout;
-                                                      inject on yes, skip on no
-                                                      or timeout (HOOK-05: no
-                                                      injection on timeout)
+  top hit's dense cosine < low_threshold          → noise gate (silent exit)
+  else top hit within agree_rank in BOTH lanes    → fast-path inject (no Ollama)
+  else                                            → Ollama judge with timeout;
+                                                     inject on yes, skip on no
+                                                     or timeout (HOOK-05: no
+                                                     injection on timeout)
+
+A top hit with no dense_score (sparse-only, or a producer that omits the field)
+can never be silenced — it goes to the judge.
 
 Non-hybrid (cosine-score) searches fall back to the legacy high_threshold /
 low_threshold gate, which remains valid there.
@@ -144,14 +147,29 @@ def _run() -> None:
 
 def _gate_zone(hits: list[dict], agree_rank: int = 3, low: float = 0.60,
                high: float = 0.85) -> str:
-    """Decide inject / judge / silent from retrieval STRUCTURE, not magnitude.
+    """Decide inject / judge / silent: rank for AGREEMENT, cosine for RELEVANCE.
 
     Hybrid search returns RRF scores whose scale depends on k and lane count, so
-    an absolute threshold on them is meaningless (see the 2026-08-09 spec). Rank
-    is scale-independent: "top 3 in both lanes" means the same thing at any k.
+    an absolute threshold on the FUSED score is meaningless (see the 2026-08-09
+    spec). Rank is scale-independent, and lane agreement — "top-N in both the
+    dense and the BM25 lane" — is strong evidence that a result is on topic.
+
+    Rank cannot, however, express irrelevance. A rank is relative to the result
+    set: `hits[0]` is the fusion argmax, so it always ranks well *among these
+    results* however bad they all are. (Arithmetically, a dense rank-0-only hit
+    scores 1/(2+0)=0.5 while a hit deep in both lanes tops out at 1/5+1/5=0.4,
+    so a both-lanes-deep hit can never BE `hits[0]` — a "confident in neither
+    lane" silent branch is dead code.) The dense lane's raw cosine IS an
+    absolute measure, and `low` (0.60) was calibrated for exactly that before it
+    was mistakenly applied to a fused RRF score.
+
+    Hence the order below, and its deliberate asymmetry: go silent only when we
+    can MEASURE low relevance. A sparse-only top hit carries no `dense_score`,
+    so it reaches the judge instead of being dropped — dropping it is the recall
+    bug this gate exists to fix and must not come back.
 
     Falls back to score thresholds when lane ranks are unavailable, which is the
-    non-hybrid path where the cosine calibration is still valid.
+    non-hybrid path where the cosine calibration is still valid as-is.
 
     `agree_rank` is 0-indexed like the ranks themselves: a rank is "confident"
     only when strictly less than agree_rank, so agree_rank=3 covers ranks
@@ -167,13 +185,15 @@ def _gate_zone(hits: list[dict], agree_rank: int = 3, low: float = 0.60,
             return "silent"
         return "inject" if score > high else "judge"
 
+    # `is not None`, never truthiness: 0.0 is a real (orthogonal) cosine and a
+    # rank of 0 is the BEST rank — both would be discarded by a falsy check.
+    dense_score = hits[0].get("dense_score")
+    if dense_score is not None and dense_score < low:
+        return "silent"
+
     confident = [r for r in (ranks.get("dense"), ranks.get("sparse"))
                  if r is not None and r < agree_rank]
-    if len(confident) >= 2:
-        return "inject"
-    if len(confident) == 1:
-        return "judge"
-    return "silent"
+    return "inject" if len(confident) >= 2 else "judge"
 
 
 # ---------------------------------------------------------------------------
