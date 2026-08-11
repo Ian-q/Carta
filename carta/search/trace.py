@@ -23,7 +23,7 @@ def _trace_path(repo_root: Path, when: Optional[str] = None) -> Path:
 
 
 def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
-                       judge, latency_ms: int, score_kind: str,
+                       judge: Optional[bool], latency_ms: int, score_kind: str,
                        rrf_k: Optional[int]) -> dict:
     """Build one trace record from a completed search.
 
@@ -49,9 +49,14 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
 
 
 def append_trace(repo_root: Path, record: dict) -> None:
-    """Append one JSONL record. Never raises — tracing must not break search."""
+    """Append one JSONL record. Never raises — tracing must not break search.
+
+    Rotates by `record["ts"]`, not the current time, so a record written by a
+    caller that buffers before flushing (or one appended right at a month
+    boundary) still lands in the file matching its own timestamp.
+    """
     try:
-        path = _trace_path(repo_root)
+        path = _trace_path(repo_root, when=record.get("ts"))
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
