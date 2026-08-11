@@ -42,34 +42,54 @@ def _stdin(prompt="test query"):
     return io.StringIO(json.dumps({"prompt": prompt}))
 
 
-def _capture_main():
-    """Run main() capturing stdout; return stdout string."""
+def _capture_main_full():
+    """Run main() capturing stdout; return (stdout, exit_code).
+
+    Fail-open means "exits 0", not merely "doesn't crash" — a regression to
+    sys.exit(1) anywhere in _run would still print nothing and would still
+    pass every test that only checks stdout. Callers that care about the
+    fail-open guarantee itself (not just its side effect on stdout) should
+    assert on the returned code, not just infer it from silence.
+    """
     from carta.hook.hook import main
     buf = io.StringIO()
+    code = 0
     with patch("sys.stdout", buf), patch("sys.__stdout__", buf):
         try:
             main()
-        except SystemExit:
-            pass
-    return buf.getvalue()
+        except SystemExit as e:
+            code = e.code if e.code is not None else 0
+    return buf.getvalue(), code
+
+
+def _capture_main():
+    """Run main() capturing stdout; return stdout string only.
+
+    Thin wrapper over _capture_main_full for the majority of tests that only
+    care about the injected (or absent) context block. Use
+    _capture_main_full directly when the exit code itself is under test.
+    """
+    out, _ = _capture_main_full()
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Fast-path: score > high_threshold injects immediately (HOOK-01, HOOK-02)
 # ---------------------------------------------------------------------------
 
-def test_fast_path_injects():
+def test_fast_path_injects(tmp_path):
     """Score 0.90 > 0.85 high_threshold: inject without calling Ollama."""
     hits = [_make_hit(0.90)]
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "the hook must always exit 0, even on the inject path"
     assert out.strip(), "Expected JSON output on stdout"
     data = json.loads(out.strip())
     assert "context" in data
@@ -77,13 +97,13 @@ def test_fast_path_injects():
     assert "docs/test.md" in data["context"]
 
 
-def test_fast_path_no_ollama_judge():
+def test_fast_path_no_ollama_judge(tmp_path):
     """Score > high_threshold must NOT call Ollama (performance)."""
     hits = [_make_hit(0.92)]
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post") as mock_post,
@@ -97,32 +117,34 @@ def test_fast_path_no_ollama_judge():
 # Noise gate: score < low_threshold discards silently (HOOK-03)
 # ---------------------------------------------------------------------------
 
-def test_noise_gate_no_output():
+def test_noise_gate_no_output(tmp_path):
     """Score 0.50 < 0.60 low_threshold: no stdout output."""
     hits = [_make_hit(0.50)]
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "silent zone must still exit 0"
     assert out.strip() == "", f"Expected no stdout, got: {out!r}"
 
 
-def test_no_hits_no_output():
+def test_no_hits_no_output(tmp_path):
     """Empty results: no stdout output."""
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=[]),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0
     assert out.strip() == ""
 
 
@@ -130,7 +152,7 @@ def test_no_hits_no_output():
 # Gray zone: 0.60 <= score <= 0.85, calls Ollama judge (HOOK-04)
 # ---------------------------------------------------------------------------
 
-def test_gray_zone_judge_yes_injects():
+def test_gray_zone_judge_yes_injects(tmp_path):
     """Score 0.75 in gray zone + Ollama says 'yes': inject."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -138,19 +160,20 @@ def test_gray_zone_judge_yes_injects():
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "the judge-yes inject path must still exit 0"
     assert out.strip(), "Expected JSON output"
     data = json.loads(out.strip())
     assert "context" in data
 
 
-def test_gray_zone_judge_no_discards():
+def test_gray_zone_judge_no_discards(tmp_path):
     """Score 0.75 in gray zone + Ollama says 'no': no output."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -158,17 +181,18 @@ def test_gray_zone_judge_no_discards():
     mock_resp.json.return_value = {"message": {"content": "no"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0
     assert out.strip() == ""
 
 
-def test_gray_zone_judge_yes_case_insensitive():
+def test_gray_zone_judge_yes_case_insensitive(tmp_path):
     """'Yes, it is relevant' is treated as yes (D-17 startswith)."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -176,7 +200,7 @@ def test_gray_zone_judge_yes_case_insensitive():
     mock_resp.json.return_value = {"message": {"content": "Yes, it is relevant"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
@@ -186,7 +210,7 @@ def test_gray_zone_judge_yes_case_insensitive():
     assert out.strip(), "Expected JSON output for 'Yes, it is relevant'"
 
 
-def test_gray_zone_judge_maybe_discards():
+def test_gray_zone_judge_maybe_discards(tmp_path):
     """'maybe' does NOT start with 'yes' — should discard."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -194,7 +218,7 @@ def test_gray_zone_judge_maybe_discards():
     mock_resp.json.return_value = {"message": {"content": "maybe"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
@@ -208,7 +232,7 @@ def test_gray_zone_judge_maybe_discards():
 # Judge timeout: > judge_timeout_s skips injection (HOOK-05)
 # ---------------------------------------------------------------------------
 
-def test_judge_timeout_skips_injection():
+def test_judge_timeout_skips_injection(tmp_path):
     """Ollama judge sleeping 5s with 3s timeout: skips injection (HOOK-05: no
     injection on timeout, prompt proceeds), completes within 6.5s."""
     hits = [_make_hit(0.75)]
@@ -221,7 +245,7 @@ def test_judge_timeout_skips_injection():
     t_start = time.time()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("carta.hook.hook._call_ollama_judge", side_effect=slow_judge),
@@ -240,7 +264,7 @@ def test_judge_timeout_skips_injection():
 # Chunk cap: max 5 chunks regardless of hits count (HOOK-06)
 # ---------------------------------------------------------------------------
 
-def test_proactive_recall_search_is_text_only():
+def test_proactive_recall_search_is_text_only(tmp_path):
     """The per-prompt hook must not trigger the heavy ColPali visual path.
 
     Regression: with colpali_enabled auto-default, run_search auto-searches the
@@ -257,7 +281,7 @@ def test_proactive_recall_search_is_text_only():
 
     with (
         patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_search),
     ):
@@ -269,7 +293,7 @@ def test_proactive_recall_search_is_text_only():
     )
 
 
-def test_proactive_recall_search_never_reranks():
+def test_proactive_recall_search_never_reranks(tmp_path):
     """The per-prompt hook must not pay reranker latency.
 
     Regression: hook.py forced colpali off but passed search.rerank through
@@ -287,7 +311,7 @@ def test_proactive_recall_search_never_reranks():
 
     with (
         patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_search),
     ):
@@ -302,13 +326,13 @@ def test_proactive_recall_search_never_reranks():
     assert cfg["search"]["rerank"]["enabled"] is True
 
 
-def test_chunk_cap():
+def test_chunk_cap(tmp_path):
     """8 hits at score 0.90: exactly 5 injected."""
     hits = [_make_hit(0.90, source=f"docs/doc{i}.md", excerpt=f"Excerpt {i}") for i in range(8)]
     cfg = _make_cfg(max_results=5)
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
@@ -325,17 +349,18 @@ def test_chunk_cap():
 # Fail-open: run_search raises RuntimeError (Qdrant unreachable)
 # ---------------------------------------------------------------------------
 
-def test_fail_open_on_search_error():
+def test_fail_open_on_search_error(tmp_path):
     """run_search raises RuntimeError: exit 0, no stdout."""
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=RuntimeError("Qdrant unreachable")),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "fail-open means exit 0, not just silent stdout"
     assert out.strip() == ""
 
 
@@ -346,8 +371,9 @@ def test_fail_open_on_search_error():
 def test_fail_open_invalid_json():
     """Invalid JSON stdin: exit 0, no stdout."""
     with patch("sys.stdin", io.StringIO("not valid json {")):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0
     assert out.strip() == ""
 
 
@@ -355,19 +381,20 @@ def test_fail_open_invalid_json():
 # Module disabled: proactive_recall=False exits silently
 # ---------------------------------------------------------------------------
 
-def test_module_disabled_no_output():
+def test_module_disabled_no_output(tmp_path):
     """proactive_recall module disabled in config: no output."""
     cfg = _make_cfg()
     cfg["modules"]["proactive_recall"] = False
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search") as mock_search,
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
     mock_search.assert_not_called()
+    assert code == 0
     assert out.strip() == ""
 
 
@@ -375,7 +402,7 @@ def test_module_disabled_no_output():
 # Custom config thresholds respected (HOOK-07)
 # ---------------------------------------------------------------------------
 
-def test_custom_thresholds_respected():
+def test_custom_thresholds_respected(tmp_path):
     """high=0.90, low=0.70: score 0.88 falls in gray zone with custom thresholds."""
     hits = [_make_hit(0.88)]
     cfg = _make_cfg(high=0.90, low=0.70)
@@ -383,7 +410,7 @@ def test_custom_thresholds_respected():
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
@@ -557,7 +584,7 @@ def test_judge_no_returns_false():
     assert result is False
 
 
-def test_inject_labels_note_hits():
+def test_inject_labels_note_hits(tmp_path):
     """Recalled notes are labeled with their type so Claude can tell curated memory
     from plain docs; plain docs stay unlabeled."""
     hits = [
@@ -569,7 +596,7 @@ def test_inject_labels_note_hits():
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
@@ -583,7 +610,7 @@ def test_inject_labels_note_hits():
 # Bounded search budget (issue #106)
 # ---------------------------------------------------------------------------
 
-def test_hook_passes_search_timeout_to_run_search():
+def test_hook_passes_search_timeout_to_run_search(tmp_path):
     """The configured budget must reach run_search."""
     captured = {}
 
@@ -595,7 +622,7 @@ def test_hook_passes_search_timeout_to_run_search():
     cfg["proactive_recall"]["search_timeout_s"] = 7
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_run_search),
     ):
@@ -604,7 +631,7 @@ def test_hook_passes_search_timeout_to_run_search():
     assert captured["timeout_s"] == 7
 
 
-def test_hook_search_timeout_defaults_to_3():
+def test_hook_search_timeout_defaults_to_3(tmp_path):
     """Absent config key falls back to 3s, matching judge_timeout_s."""
     captured = {}
 
@@ -616,7 +643,7 @@ def test_hook_search_timeout_defaults_to_3():
     cfg["proactive_recall"].pop("search_timeout_s", None)
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_run_search),
     ):
@@ -625,17 +652,18 @@ def test_hook_search_timeout_defaults_to_3():
     assert captured["timeout_s"] == 3
 
 
-def test_hook_still_fails_open_when_search_raises():
+def test_hook_still_fails_open_when_search_raises(tmp_path):
     """Fail-open is non-negotiable: a search error must still exit 0, silently."""
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=TimeoutError("backend down")),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "must exit 0, not just stay silent, when the search failed"
     assert out.strip() == "", "must not inject when the search failed"
 
 
@@ -718,7 +746,7 @@ def test_agree_rank_default_registered_in_config():
     assert DEFAULTS["proactive_recall"]["agree_rank"] == 3
 
 
-def test_hook_uses_configured_agree_rank_end_to_end():
+def test_hook_uses_configured_agree_rank_end_to_end(tmp_path):
     """A hit ranked 2nd in both lanes: agrees within agree_rank=5 (inject) but
     not within the default agree_rank=3... here we widen it via config and
     confirm the gate honors the configured value, not just the function
@@ -729,7 +757,7 @@ def test_hook_uses_configured_agree_rank_end_to_end():
     cfg["proactive_recall"]["agree_rank"] = 5
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
@@ -746,12 +774,22 @@ def test_hook_uses_configured_agree_rank_end_to_end():
 
 def test_hook_emits_trace_record_with_repo_root_and_collections(tmp_path):
     """End-to-end: main() writes one trace record under <repo_root>/.carta/traces,
-    where repo_root is derived from cfg_path.parent.parent, and collections
-    come from get_search_collections(cfg, "repo") — the same helper run_search
-    uses — not from any key inside cfg."""
+    where repo_root is derived from cfg_path.parent.parent, and collections come
+    from get_search_collections(search_cfg, "repo") — the same helper run_search
+    uses, called with the SAME search_cfg run_search was actually given — not
+    from any key inside cfg, and not from the raw project cfg.
+
+    _make_cfg() deliberately leaves embed.colpali_enabled unset (auto), the
+    normal case for most projects. Regression pin: the hook's own search_cfg
+    (step 6) always forces colpali_enabled=False, so the trace's collections
+    must be exactly the 3 non-visual collections the search actually covered —
+    NOT the 4 you'd get from get_search_collections(cfg, ...) on the raw,
+    colpali-auto project cfg. Passing the raw cfg here would claim _visual was
+    searched and came up empty, when it was never queried at all."""
     hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
              "lane_ranks": {"dense": 0, "sparse": 1}}]
     cfg = _make_cfg()
+    assert "colpali_enabled" not in cfg["embed"], "test fixture must stay colpali-auto"
     cfg_path = tmp_path / ".carta" / "config.yaml"
     with (
         patch("sys.stdin", _stdin("query")),
@@ -767,11 +805,11 @@ def test_hook_emits_trace_record_with_repo_root_and_collections(tmp_path):
     assert record["zone"] == "inject"
     assert record["lanes"] == {"dense": 0, "sparse": 1}
     assert record["collections"] == [
-        "test-proj_doc", "test-proj_notes", "test-proj_session", "test-proj_visual",
-    ]
+        "test-proj_doc", "test-proj_notes", "test-proj_session",
+    ], "must match what the hook actually searched (colpali forced off), not raw cfg"
 
 
-def test_hook_trace_failure_does_not_break_injection():
+def test_hook_trace_failure_does_not_break_injection(tmp_path):
     """Trace emission must never affect the hook's actual decision or crash it,
     even if append_trace itself somehow raises."""
     hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
@@ -779,7 +817,7 @@ def test_hook_trace_failure_does_not_break_injection():
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("carta.search.trace.append_trace", side_effect=RuntimeError("disk full")),
@@ -800,7 +838,7 @@ def test_emit_trace_swallows_collection_errors():
     # Reaching here without an exception is the assertion.
 
 
-def test_hook_returns_within_budget_against_a_blocking_backend():
+def test_hook_returns_within_budget_against_a_blocking_backend(tmp_path):
     """The whole point: a backend that hangs must not hang the prompt.
 
     Without the budget this blocks for the full 60s embed timeout. run_search is
@@ -819,12 +857,13 @@ def test_hook_returns_within_budget_against_a_blocking_backend():
     start = time.monotonic()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=blocking_run_search),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
     elapsed = time.monotonic() - start
 
+    assert code == 0, "must exit 0 even when the backend hangs"
     assert out.strip() == "", "must not inject when the backend is unreachable"
     assert elapsed < 5, f"hook took {elapsed:.1f}s; budget was 1s"

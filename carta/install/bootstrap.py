@@ -400,6 +400,9 @@ def _update_gitignore(project_root: Path) -> None:
         ".carta/hooks/",
         ".carta/visual_cache/",
         ".carta/update-check.json",
+        # Per-invocation hook calibration data (carta/search/trace.py). Contains
+        # the verbatim derived query text, so it must never be committed.
+        ".carta/traces/",
     ]
     existing_lines = gitignore.read_text().splitlines() if gitignore.exists() else []
     parent_globs = {".carta/", ".carta/*"}

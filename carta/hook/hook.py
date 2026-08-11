@@ -87,6 +87,12 @@ def _run() -> None:
     agree_rank = pr.get("agree_rank", 3)
 
     # 5. Extract query
+    # started_at captures from here, not just before run_search: for prompts
+    # >500 chars, _extract_query makes its own Ollama call (up to 4s) that can
+    # dominate the latency the hook adds to prompt submission. Starting the
+    # clock after it would make that cost invisible in the trace record used
+    # for calibration (issue #118).
+    started_at = time.monotonic()
     query = _extract_query(prompt, cfg)
 
     # 6. Search — text-only, never reranked. Proactive recall fires on every
@@ -109,7 +115,6 @@ def _run() -> None:
             "rerank": {**cfg.get("search", {}).get("rerank", {}), "enabled": False},
         },
     }
-    started_at = time.monotonic()
     try:
         hits = run_search(query, search_cfg, timeout_s=search_timeout_s)
     except Exception as e:
@@ -129,7 +134,7 @@ def _run() -> None:
     if zone == "judge":
         judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
 
-    _emit_trace(query, hits, zone, judge_verdict, started_at, cfg, repo_root)
+    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg, repo_root)
 
     if zone == "inject" or judge_verdict:
         _inject(hits)
@@ -184,7 +189,7 @@ def _emit_trace(
     zone: str,
     judge_verdict: bool | None,
     started_at: float,
-    cfg: dict,
+    search_cfg: dict,
     repo_root: Path,
 ) -> None:
     """Append one trace record. Swallows everything — the hook must fail open.
@@ -193,23 +198,38 @@ def _emit_trace(
     than read off the cfg dict: cfg carries only real, user-facing config keys.
     `repo_root` is derived once in `_run` from `cfg_path.parent.parent` (config
     lives at `<repo_root>/.carta/config.yaml`); `collections` is recomputed here
-    via `get_search_collections(cfg, "repo")`, the same helper `run_search` uses
-    internally, so a `ValueError` from an invalid scope is a real (if unlikely)
-    failure mode that must stay inside this function's try/except.
+    via `get_search_collections(search_cfg, "repo")`, the same helper `run_search`
+    uses internally, so a `ValueError` from an invalid scope is a real (if
+    unlikely) failure mode that must stay inside this function's try/except.
+
+    Takes `search_cfg` — the text-only, no-rerank cfg `_run` actually passed to
+    `run_search` — not the project's raw `cfg`. `search_cfg` always forces
+    `colpali_enabled: False` (step 6), so `get_search_collections` always
+    excludes `_visual` from the traced list too, matching what was actually
+    queried. Passing raw `cfg` here would report `_visual` as searched for any
+    project that hasn't itself opted out of ColPali, even though the hook never
+    queries it — a false "searched and missed" reading of a collection that was
+    never touched. Deriving `score_kind`/`rrf_k` from the same `search_cfg` keeps
+    that value tied to the dict the search actually used, for the same reason.
     """
     try:
         from carta.search.scoped import get_search_collections
         from carta.search.trace import build_trace_record, append_trace
-        collections = get_search_collections(cfg, "repo")
-        hybrid = cfg.get("search", {}).get("hybrid", {})
-        hybrid_enabled = hybrid.get("enabled", True)
+        collections = get_search_collections(search_cfg, "repo")
+        hybrid = search_cfg.get("search", {}).get("hybrid", {})
+        # Hybrid can be enabled project-wide yet a legacy (non-named-vector)
+        # collection still returns a plain cosine score with no lane_ranks.
+        # `_gate_zone` already distinguishes these two worlds by lane_ranks
+        # presence, not the cfg flag — use the same signal here, so a legacy
+        # trace line never claims score_kind="rrf" alongside lanes=null.
+        is_rrf = bool(hits and hits[0].get("lane_ranks"))
         rec = build_trace_record(
             query=query,
             collections=collections,
             hits=hits, zone=zone, judge=judge_verdict,
             latency_ms=int((time.monotonic() - started_at) * 1000),
-            score_kind="rrf" if hybrid_enabled else "cosine",
-            rrf_k=hybrid.get("rrf_k", 2) if hybrid_enabled else None,
+            score_kind="rrf" if is_rrf else "cosine",
+            rrf_k=hybrid.get("rrf_k", 2) if is_rrf else None,
         )
         append_trace(repo_root, rec)
     except Exception:
