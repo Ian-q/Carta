@@ -645,6 +645,161 @@ def test_search_timeout_default_registered_in_config():
     assert DEFAULTS["proactive_recall"]["search_timeout_s"] == 3
 
 
+# ---------------------------------------------------------------------------
+# _gate_zone: rank-and-agreement gate (replaces absolute RRF-score gating)
+# ---------------------------------------------------------------------------
+
+def test_gate_injects_when_both_lanes_agree():
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 1}}]
+    assert hook._gate_zone(hits, agree_rank=3) == "inject"
+
+
+def test_gate_judges_when_only_one_lane_is_confident():
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 40}}]
+    assert hook._gate_zone(hits, agree_rank=3) == "judge"
+
+
+def test_gate_judges_when_hit_is_in_one_lane_only():
+    """The exact case the old gate dropped: rank 0 in one lane scored ~0.5,
+    below low_threshold 0.60, and never reached the judge."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": None}}]
+    assert hook._gate_zone(hits, agree_rank=3) == "judge"
+
+
+def test_gate_silent_when_neither_lane_is_confident():
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 9, "sparse": 12}}]
+    assert hook._gate_zone(hits, agree_rank=3) == "silent"
+
+
+def test_gate_silent_on_no_hits():
+    from carta.hook import hook
+    assert hook._gate_zone([], agree_rank=3) == "silent"
+
+
+def test_gate_falls_back_to_score_when_lane_ranks_absent():
+    """Non-hybrid collections return cosine scores and no lane ranks; the old
+    thresholds remain correct there."""
+    from carta.hook import hook
+    assert hook._gate_zone([{"score": 0.9}], agree_rank=3,
+                           low=0.6, high=0.85) == "inject"
+    assert hook._gate_zone([{"score": 0.5}], agree_rank=3,
+                           low=0.6, high=0.85) == "silent"
+
+
+def test_gate_rank_exactly_at_agree_rank_boundary_is_not_confident():
+    """Ranks are 0-indexed, so agree_rank=3 covers ranks 0, 1, 2 (the top
+    three). A rank of exactly 3 is 4th place and must NOT count as confident
+    — otherwise "top-3" would silently mean "top-4"."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 3, "sparse": 3}}]
+    assert hook._gate_zone(hits, agree_rank=3) == "silent"
+
+
+def test_gate_default_agree_rank_is_three():
+    """A config predating the agree_rank key must still behave sanely: the
+    function's own default (not a KeyError) governs."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 1}}]
+    assert hook._gate_zone(hits) == "inject"
+
+
+# ---------------------------------------------------------------------------
+# agree_rank config wiring (Step 5): default registered, respected end to end
+# ---------------------------------------------------------------------------
+
+def test_agree_rank_default_registered_in_config():
+    """The key must exist in DEFAULTS so `carta init` writes it and a config
+    predating this feature still gets a sane value via the deep-merge."""
+    from carta.config import DEFAULTS
+    assert DEFAULTS["proactive_recall"]["agree_rank"] == 3
+
+
+def test_hook_uses_configured_agree_rank_end_to_end():
+    """A hit ranked 2nd in both lanes: agrees within agree_rank=5 (inject) but
+    not within the default agree_rank=3... here we widen it via config and
+    confirm the gate honors the configured value, not just the function
+    default."""
+    hits = [{"score": 0.5, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 4, "sparse": 4}}]
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["agree_rank"] = 5
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        out = _capture_main()
+
+    assert out.strip(), "rank 4 < configured agree_rank=5 in both lanes should inject"
+
+
+# ---------------------------------------------------------------------------
+# _emit_trace wiring: repo_root and collections are threaded explicitly
+# (not read off invented cfg["_repo_root"] / cfg["_trace_collections"] keys),
+# and trace emission must never break the hook (fail-open).
+# ---------------------------------------------------------------------------
+
+def test_hook_emits_trace_record_with_repo_root_and_collections(tmp_path):
+    """End-to-end: main() writes one trace record under <repo_root>/.carta/traces,
+    where repo_root is derived from cfg_path.parent.parent, and collections
+    come from get_search_collections(cfg, "repo") — the same helper run_search
+    uses — not from any key inside cfg."""
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=cfg_path),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        _capture_main()
+
+    trace_files = list((tmp_path / ".carta" / "traces").glob("hook-*.jsonl"))
+    assert len(trace_files) == 1, "expected exactly one trace file under the real repo root"
+    record = json.loads(trace_files[0].read_text().strip().splitlines()[-1])
+    assert record["zone"] == "inject"
+    assert record["lanes"] == {"dense": 0, "sparse": 1}
+    assert record["collections"] == [
+        "test-proj_doc", "test-proj_notes", "test-proj_session", "test-proj_visual",
+    ]
+
+
+def test_hook_trace_failure_does_not_break_injection():
+    """Trace emission must never affect the hook's actual decision or crash it,
+    even if append_trace itself somehow raises."""
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+        patch("carta.search.trace.append_trace", side_effect=RuntimeError("disk full")),
+    ):
+        out = _capture_main()
+
+    data = json.loads(out.strip())
+    assert "context" in data, "trace failure must not prevent injection"
+
+
+def test_emit_trace_swallows_collection_errors():
+    """_emit_trace must not raise even if get_search_collections raises —
+    it must be called inside the trace's exception guard, not outside it."""
+    from carta.hook.hook import _emit_trace
+    cfg = _make_cfg()
+    with patch("carta.search.scoped.get_search_collections", side_effect=ValueError("bad scope")):
+        _emit_trace("q", [], "silent", None, time.monotonic(), cfg, Path("/fake"))
+    # Reaching here without an exception is the assertion.
+
+
 def test_hook_returns_within_budget_against_a_blocking_backend():
     """The whole point: a backend that hangs must not hang the prompt.
 

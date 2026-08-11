@@ -1,12 +1,20 @@
 """carta-hook — UserPromptSubmit hook entry point.
 
 Reads stdin JSON from Claude Code, extracts the prompt, queries Qdrant via
-run_search, and routes through three score zones:
+run_search, and routes through three zones gated on retrieval STRUCTURE
+(rank agreement across lanes), not absolute score magnitude — see
+`_gate_zone` for why: hybrid search returns RRF scores whose scale depends
+on k and lane count, so an absolute threshold on them is meaningless.
 
-  score > high_threshold  → fast-path inject (no Ollama)
-  score < low_threshold   → noise gate (silent exit)
-  gray zone               → Ollama judge with timeout; inject on yes,
-                            skip on no or timeout (HOOK-05: no injection on timeout)
+  top hit ranked within agree_rank in BOTH lanes  → fast-path inject (no Ollama)
+  top hit ranked within agree_rank in NEITHER lane → noise gate (silent exit)
+  top hit confident in exactly ONE lane            → Ollama judge with timeout;
+                                                      inject on yes, skip on no
+                                                      or timeout (HOOK-05: no
+                                                      injection on timeout)
+
+Non-hybrid (cosine-score) searches fall back to the legacy high_threshold /
+low_threshold gate, which remains valid there.
 
 All paths exit 0 (the prompt always proceeds unblocked). stdout is reserved for
 the JSON context block.
@@ -16,6 +24,7 @@ All diagnostic output goes to stderr.
 import concurrent.futures
 import json
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -57,6 +66,9 @@ def _run() -> None:
     try:
         cfg_path = find_config(Path.cwd())
         cfg = load_config(cfg_path)
+        # Config lives at <repo_root>/.carta/config.yaml — used below to place
+        # trace output at the real repo root without threading it through cfg.
+        repo_root = cfg_path.parent.parent
     except Exception as e:
         print(f"carta-hook: config error (fail-open): {e}", file=sys.stderr)
         sys.exit(0)
@@ -72,6 +84,7 @@ def _run() -> None:
     max_results = pr.get("max_results", 5)
     judge_timeout_s = pr.get("judge_timeout_s", 3)
     search_timeout_s = pr.get("search_timeout_s", 3)
+    agree_rank = pr.get("agree_rank", 3)
 
     # 5. Extract query
     query = _extract_query(prompt, cfg)
@@ -96,6 +109,7 @@ def _run() -> None:
             "rerank": {**cfg.get("search", {}).get("rerank", {}), "enabled": False},
         },
     }
+    started_at = time.monotonic()
     try:
         hits = run_search(query, search_cfg, timeout_s=search_timeout_s)
     except Exception as e:
@@ -105,21 +119,101 @@ def _run() -> None:
     # 7. Cap results
     hits = hits[:max_results]
 
-    # 8. Noise gate
-    if not hits or hits[0]["score"] < low_threshold:
-        sys.exit(0)
+    # 8. Gate on retrieval structure
+    zone = _gate_zone(
+        hits,
+        agree_rank=agree_rank,
+        low=low_threshold, high=high_threshold,
+    )
+    judge_verdict = None
+    if zone == "judge":
+        judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
 
-    # 9. Fast-path inject
-    if hits[0]["score"] > high_threshold:
-        _inject(hits)
-        return
+    _emit_trace(query, hits, zone, judge_verdict, started_at, cfg, repo_root)
 
-    # 10. Gray zone — call Ollama judge with timeout
-    verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
-    if verdict:
+    if zone == "inject" or judge_verdict:
         _inject(hits)
-    else:
-        sys.exit(0)
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Rank-and-agreement gate (replaces absolute RRF-score gating)
+# ---------------------------------------------------------------------------
+
+def _gate_zone(hits: list[dict], agree_rank: int = 3, low: float = 0.60,
+               high: float = 0.85) -> str:
+    """Decide inject / judge / silent from retrieval STRUCTURE, not magnitude.
+
+    Hybrid search returns RRF scores whose scale depends on k and lane count, so
+    an absolute threshold on them is meaningless (see the 2026-08-09 spec). Rank
+    is scale-independent: "top 3 in both lanes" means the same thing at any k.
+
+    Falls back to score thresholds when lane ranks are unavailable, which is the
+    non-hybrid path where the cosine calibration is still valid.
+
+    `agree_rank` is 0-indexed like the ranks themselves: a rank is "confident"
+    only when strictly less than agree_rank, so agree_rank=3 covers ranks
+    0, 1, 2 (the top three) and a rank of exactly 3 (4th place) does not count.
+    """
+    if not hits:
+        return "silent"
+
+    ranks = hits[0].get("lane_ranks")
+    if not ranks:
+        score = hits[0].get("score")
+        if score is None or score < low:
+            return "silent"
+        return "inject" if score > high else "judge"
+
+    confident = [r for r in (ranks.get("dense"), ranks.get("sparse"))
+                 if r is not None and r < agree_rank]
+    if len(confident) >= 2:
+        return "inject"
+    if len(confident) == 1:
+        return "judge"
+    return "silent"
+
+
+# ---------------------------------------------------------------------------
+# Trace emission (calibration data for the gate above; issue #118)
+# ---------------------------------------------------------------------------
+
+def _emit_trace(
+    query: str,
+    hits: list[dict],
+    zone: str,
+    judge_verdict: bool | None,
+    started_at: float,
+    cfg: dict,
+    repo_root: Path,
+) -> None:
+    """Append one trace record. Swallows everything — the hook must fail open.
+
+    `repo_root` and the searched `collections` are passed in explicitly rather
+    than read off the cfg dict: cfg carries only real, user-facing config keys.
+    `repo_root` is derived once in `_run` from `cfg_path.parent.parent` (config
+    lives at `<repo_root>/.carta/config.yaml`); `collections` is recomputed here
+    via `get_search_collections(cfg, "repo")`, the same helper `run_search` uses
+    internally, so a `ValueError` from an invalid scope is a real (if unlikely)
+    failure mode that must stay inside this function's try/except.
+    """
+    try:
+        from carta.search.scoped import get_search_collections
+        from carta.search.trace import build_trace_record, append_trace
+        collections = get_search_collections(cfg, "repo")
+        hybrid = cfg.get("search", {}).get("hybrid", {})
+        hybrid_enabled = hybrid.get("enabled", True)
+        rec = build_trace_record(
+            query=query,
+            collections=collections,
+            hits=hits, zone=zone, judge=judge_verdict,
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            score_kind="rrf" if hybrid_enabled else "cosine",
+            rrf_k=hybrid.get("rrf_k", 2) if hybrid_enabled else None,
+        )
+        append_trace(repo_root, rec)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

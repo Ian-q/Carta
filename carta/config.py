@@ -152,6 +152,10 @@ DEFAULTS = {
         "judge_timeout_s": 3,
         "search_timeout_s": 3,      # wall-clock budget for the recall search (#106)
         "ollama_model": "qwen3.5:0.8b",
+        # Top-N in BOTH lanes -> inject; in ONE lane -> judge; neither -> silent.
+        # Placeholder value: calibrate against .carta/traces + issue #118 usage
+        # labels rather than by feel.
+        "agree_rank": 3,
     },
     "hooks": {
         "stale_scan": {
