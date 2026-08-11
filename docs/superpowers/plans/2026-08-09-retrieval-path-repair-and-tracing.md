@@ -187,9 +187,25 @@ Replace the `client.query_points(...)` block in `_run_search_collection`:
     if collection_is_hybrid(client, collection_name):
         query_kwargs["using"] = DENSE_VECTOR_NAME
 
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
     try:
         response = client.query_points(**query_kwargs)
+    except UnexpectedResponse as e:
+        # Classify on status_code, NOT on message text. UnexpectedResponse.__str__
+        # embeds up to 200 bytes of the raw HTTP body, so a 500 or a proxy error
+        # page whose body happens to contain "not found" would be misread as a
+        # missing collection and silently skipped — reintroducing the exact
+        # swallow this task exists to remove. Mirrors collection_is_hybrid
+        # (carta/embed/embed.py:179-181).
+        if getattr(e, "status_code", None) == 404:
+            raise CollectionMissing(collection_name) from e
+        raise QdrantQueryError(
+            f"Qdrant search failed for {collection_name}: {e}"
+        ) from e
     except Exception as e:
+        # Non-UnexpectedResponse transports may carry no status_code; fall back to
+        # message text for those only.
         err = str(e).lower()
         if "404" in err or "not found" in err or "doesn't exist" in err:
             raise CollectionMissing(collection_name) from e
@@ -197,6 +213,8 @@ Replace the `client.query_points(...)` block in `_run_search_collection`:
             f"Qdrant search failed for {collection_name}: {e}"
         ) from e
 ```
+
+**Ruling (2026-08-10):** an earlier draft of this step classified on message substring alone. The Task 1 review flagged it as Important and the human partner ruled the plan wrong; the snippet above is the governing version. Task 1's tests must include a regression case: `UnexpectedResponse(status_code=500)` whose body text contains "not found" must raise `QdrantQueryError`, not `CollectionMissing`.
 
 - [ ] **Step 6: Narrow the swallow at the call site**
 
