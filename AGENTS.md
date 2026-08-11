@@ -33,9 +33,9 @@ pip install -e .
 ## Project Structure
 
 - Python 3.10+ semantic memory sidecar for Claude Code (Qdrant vectors, Ollama embeddings)
-- **CLI** (`carta <cmd>`, or `python -m carta <cmd>`): `init`, `scan`, `embed` (`--visual` / `--repair`), `search`, `focus`, `audit`, `doctor`, `eval`, `remember`, `status`, `statusline`, `export`, `import`, `update`
+- **CLI** (`carta <cmd>`, or `python -m carta <cmd>`): `init`, `scan`, `embed` (`--visual` / `--repair`), `search` (`--trace`), `focus`, `audit`, `doctor`, `eval`, `remember`, `status`, `statusline`, `export`, `import`, `update`
 - **MCP** (`carta-mcp`, stdio): `carta_search`, `carta_focus`, `carta_embed`, `carta_scan`, `carta_remember`
-- **Hook** (`carta-hook` + `carta/hooks/*.sh`): pre-prompt proactive recall, three-zone gate (high→inject, low→silent, gray→Ollama judge), fail-open
+- **Hook** (`carta-hook` + `carta/hooks/*.sh`): pre-prompt proactive recall, three-zone gate on the top hit — dense cosine below `low_threshold`→silent, else both lanes within `agree_rank`→inject, else→Ollama judge (legacy cosine thresholds still apply to non-hybrid collections); fail-open. Traces to `~/.carta/traces/<project>/`
 - **Modules** (`carta/`): `embed/` `search/` `scanner/` `audit/` `eval/` `vision/` `mcp/` `hook/` `memory/` `install/` `update/` `ui/`
 - Tests in `carta/tests/` and `carta/*/tests/`
 - **Which command?** `carta scan` / `/doc-audit` = doc structure; `carta audit` / `carta doctor` = embed-data integrity & environment; `carta eval` = retrieval quality (see the "Which audit command?" table in README)

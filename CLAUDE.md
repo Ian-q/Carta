@@ -145,7 +145,7 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 | `init` | Bootstrap Carta in a repo (config, collections, skills, hook) |
 | `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
 | `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair` re-embeds damaged points. `.xlsx`/`.csv` sources embed text-bearing cells only (frame names + notes; numerics stay out), mirrored to `.carta/companions/` |
-| `search` | Hybrid (BM25 + dense, RRF) semantic search |
+| `search` | Hybrid (BM25 + dense, RRF) semantic search. `--trace <substring>` reports per-stage ranks (bm25 / dense / fused / final) for matching paths — which stage lost a result |
 | `focus` | Deep retrieval scoped to **one file**: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `search` (locate → go deep) |
 | `audit` | Embed-pipeline **data integrity** check → JSON |
 | `doctor` | Diagnose environment (Qdrant/Ollama/models); `--fix` auto-installs |
@@ -164,9 +164,26 @@ Claude-initiated tools: `carta_search`, `carta_focus`, `carta_embed`, `carta_sca
 
 ### Hook — `carta-hook` (+ `carta/hooks/*.sh`)
 
-Pre-prompt-submit proactive recall with a three-zone relevance gate: score >
-`high_threshold` → inject; score < `low_threshold` → silent; gray zone → small
-Ollama judge. All paths exit 0 (fail-open). Logic in `carta/hook/hook.py`.
+Pre-prompt-submit proactive recall with a three-zone gate on the **top hit**.
+On the hybrid path it reads two different signals — **lane rank for agreement,
+the dense lane's raw cosine for relevance** — and never thresholds the fused
+RRF score, whose scale depends on `rrf_k` and lane count:
+
+1. `dense_score` present and **< `low_threshold`** → **silent** (the only route
+   to silent: measured irrelevance). A top hit with no `dense_score` — e.g.
+   BM25-only — is never silenced.
+2. else top hit within **`agree_rank`** (default 3, 0-indexed) in **both** lanes
+   → **inject**, no Ollama call.
+3. else → small **Ollama judge**; inject on yes, silent on no or timeout.
+
+Non-hybrid (plain cosine, no lane ranks) collections fall back to the legacy
+`low_threshold` / `high_threshold` gate, which is still calibrated for them.
+All paths exit 0 (fail-open). Logic in `carta/hook/hook.py`.
+
+Each invocation appends one JSONL calibration record to
+`~/.carta/traces/<project_name>/hook-YYYY-MM.jsonl` — machine-level state
+outside every repo, because the record holds the derived query (the prompt
+verbatim for prompts ≤500 chars). Disable with `proactive_recall.trace: false`.
 
 A second, opt-in hook — `carta hook` — installs a managed git `pre-push` (or
 `pre-commit`) shim that scans changed docs and warns when a section has been
