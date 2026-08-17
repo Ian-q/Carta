@@ -18,11 +18,39 @@ def test_record_captures_lane_ranks_and_zone():
     assert "ts" in rec
 
 
+def test_record_captures_the_dense_score_the_gate_decides_on():
+    """`low_threshold` gates `dense_score` (see hook._gate_zone), so a trace
+    that omits it cannot explain — or re-tune — its own `zone`. The record must
+    carry the number that actually made the decision, not just its neighbours."""
+    hits = [{"source": "docs/a.md", "score": 0.7, "fused_score": 0.016,
+             "fused_rank": 0, "lane_ranks": {"dense": 0, "sparse": 4},
+             "dense_score": 0.41}]
+    rec = trace.build_trace_record(
+        query="q", collections=["c"], hits=hits, zone="silent", judge=None,
+        latency_ms=12, score_kind="rrf", rrf_k=2)
+    assert rec["dense_score"] == 0.41
+
+
 def test_record_handles_zero_hits():
     rec = trace.build_trace_record(
         query="q", collections=[], hits=[], zone="silent", judge=None,
         latency_ms=8, score_kind="rrf", rrf_k=2)
     assert rec["lanes"] is None and rec["score"] is None
+    assert rec["dense_score"] is None
+
+
+def test_record_missing_dense_score_round_trips_as_null():
+    """`dense_score` is as optional as `lane_ranks`: both visual branches and
+    the MCP text path omit it entirely, and legacy cosine hits never have one.
+    None is a legitimate value that must be RECORDED as null — dropping the key
+    would make "absent" indistinguishable from "an older schema" downstream."""
+    hits = [{"source": "docs/a.md", "score": 0.5, "lane_ranks": {"dense": None, "sparse": 0}}]
+    rec = trace.build_trace_record(
+        query="q", collections=["c"], hits=hits, zone="judge", judge=True,
+        latency_ms=5, score_kind="rrf", rrf_k=2)
+    assert "dense_score" in rec
+    assert rec["dense_score"] is None
+    assert json.loads(json.dumps(rec))["dense_score"] is None
 
 
 def test_record_missing_lane_ranks_in_nonempty_hits():
@@ -133,6 +161,36 @@ def test_format_trace_reports_stages_for_matching_doc():
     assert "dense rank" in out and "7" in out
     assert "bm25 rank" in out and "3" in out
     assert "FINAL" in out
+
+
+def test_format_trace_shows_the_dense_cosine_labelled_as_a_cosine():
+    """`carta search --trace` must show the value the hook gates on. Labelled
+    unambiguously: this branch's whole history is score types being conflated,
+    so the line must not read as another RRF number."""
+    hits = [{"source": "docs/a.md", "lane_ranks": {"dense": 2, "sparse": 3},
+             "dense_score": 0.71, "score": 0.7, "fused_rank": 0, "fused_score": 0.0161}]
+    out = trace.format_trace(hits, "a.md", "q", ["c"])
+    assert "  dense cosine : 0.71  (raw dense-lane similarity, not an RRF score)" in out
+
+
+def test_format_trace_absent_dense_score_renders_the_placeholder():
+    """A sparse-only hit (and every visual/MCP hit) has no cosine. It must
+    render as the same "—" placeholder the other optional values use — never
+    the literal text "None", never a fabricated 0.0."""
+    hits = [{"source": "docs/b.md", "lane_ranks": {"dense": None, "sparse": 0},
+             "fused_rank": 0}]
+    out = trace.format_trace(hits, "b.md", "q", ["c"])
+    assert "  dense cosine : —  (raw dense-lane similarity, not an RRF score)" in out
+    assert "None" not in out
+
+
+def test_format_trace_dense_cosine_zero_renders_as_zero_not_placeholder():
+    """0.0 is a real (orthogonal) similarity — the most decisive "silent" there
+    is. A truthiness check in the formatter would hide exactly that case."""
+    hits = [{"source": "docs/c.md", "lane_ranks": {"dense": 0, "sparse": 0},
+             "dense_score": 0.0, "fused_rank": 0}]
+    out = trace.format_trace(hits, "c.md", "q", ["c"])
+    assert "  dense cosine : 0.0  (raw dense-lane similarity, not an RRF score)" in out
 
 
 def test_format_trace_says_not_retrieved_when_absent():

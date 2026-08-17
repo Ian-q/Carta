@@ -59,6 +59,22 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
 
     `query` is the DERIVED query (post `_extract_query`), never the raw prompt.
     `zone` is one of "silent" | "judge" | "inject".
+
+    Three score-shaped fields, deliberately distinct — this instrument exists
+    because they were conflated once already:
+
+      `score`        intra-collection dense+sparse RRF (a rank artifact)
+      `fused_score`  cross-collection RRF (also a rank artifact)
+      `dense_score`  the dense lane's RAW cosine — the ONLY absolute relevance
+                     measure here, and the number `hook._gate_zone` compares
+                     against `low_threshold` to decide "silent"
+
+    Without `dense_score` a record could not explain its own `zone`, which is
+    the whole point of the file (#118). It is as optional as `lane_ranks` —
+    both visual branches and the MCP text path omit it, legacy cosine hits
+    never have one — so it is read with `.get()` and recorded as null rather
+    than dropped: an absent key would be indistinguishable from an older
+    schema to anything reading these files later.
     """
     top = hits[0] if hits else None
     return {
@@ -70,6 +86,7 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
         "lanes": top.get("lane_ranks") if top else None,
         "score": top.get("score") if top else None,
         "fused_score": top.get("fused_score") if top else None,
+        "dense_score": top.get("dense_score") if top else None,
         "score_kind": score_kind,
         "rrf_k": rrf_k,
         "zone": zone,
@@ -112,11 +129,17 @@ def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
     `enumerate`, never `hits.index(h)` — `list.index` matches the first
     *equal* dict, which is wrong when two hits happen to compare equal.
 
-    `score` (intra-collection dense+sparse RRF, k=2) and `fused_score`
-    (cross-collection RRF, k=60) are distinct and labelled as such — never
-    conflated. The sparse lane is labelled "bm25 rank": Carta's hybrid lane
-    is literally BM25 (see `bm25_model` in config, and "Hybrid (BM25 +
-    dense, RRF)" in CLAUDE.md) — "sparse" stays as the internal dict key only.
+    `score` (intra-collection dense+sparse RRF, k=2), `fused_score`
+    (cross-collection RRF, k=60) and `dense_score` (the dense lane's raw
+    cosine) are three different numbers and are labelled as three different
+    numbers — never conflated. `dense_score` is the one the recall hook gates
+    on, so it is shown even though it takes no part in ordering; like the other
+    optional fields it renders as the "—" placeholder when absent (a
+    sparse-only hit, or any visual/MCP hit, has no cosine to report).
+
+    The sparse lane is labelled "bm25 rank": Carta's hybrid lane is literally
+    BM25 (see `bm25_model` in config, and "Hybrid (BM25 + dense, RRF)" in
+    CLAUDE.md) — "sparse" stays as the internal dict key only.
     """
     lines = [
         f"derived query : {query}",
@@ -144,6 +167,8 @@ def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
         lines.append(str(h.get("source")))
         lines.append(f"  bm25 rank    : {_fmt_rank(sparse)}")
         lines.append(f"  dense rank   : {_fmt_rank(dense)}")
+        lines.append(f"  dense cosine : {_fmt_value(h.get('dense_score'))}  "
+                     f"(raw dense-lane similarity, not an RRF score)")
         lines.append(f"  intra-score  : {_fmt_value(h.get('score'))}  (dense+sparse RRF, k=2)")
         lines.append(f"  post-RRF     : fused_rank={_fmt_value(h.get('fused_rank'))}  "
                      f"fused_score={_fmt_value(h.get('fused_score'))}  (cross-collection RRF, k=60)")

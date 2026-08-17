@@ -946,7 +946,7 @@ def test_hook_emits_trace_record_under_carta_home_with_collections(tmp_path, mon
     home = tmp_path / "home"
     monkeypatch.setenv("CARTA_HOME", str(home))
     hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
-             "lane_ranks": {"dense": 0, "sparse": 1}}]
+             "lane_ranks": {"dense": 0, "sparse": 1}, "dense_score": 0.73}]
     cfg = _make_cfg()
     assert "colpali_enabled" not in cfg["embed"], "test fixture must stay colpali-auto"
     cfg_path = tmp_path / ".carta" / "config.yaml"
@@ -967,6 +967,10 @@ def test_hook_emits_trace_record_under_carta_home_with_collections(tmp_path, mon
     record = json.loads(trace_files[0].read_text().strip().splitlines()[-1])
     assert record["zone"] == "inject"
     assert record["lanes"] == {"dense": 0, "sparse": 1}
+    assert record["dense_score"] == 0.73, (
+        "the record must carry the number low_threshold gates on, or the zone "
+        "it reports cannot be re-derived or re-tuned from the trace file"
+    )
     assert record["collections"] == [
         "test-proj_doc", "test-proj_notes", "test-proj_session",
     ], "must match what the hook actually searched (colpali forced off), not raw cfg"
