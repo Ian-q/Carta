@@ -48,6 +48,10 @@ DEFAULTS = {
             "enabled": True,
             "bm25_model": "Qdrant/bm25",
             "prefetch_limit": 40,
+            # Qdrant's server-side RRF used k=2; kept as the default so client-side
+            # fusion is behaviour-identical. Flath's course and most literature use
+            # 60. Changing it shifts ordering — do it against an eval, not by feel.
+            "rrf_k": 2,
         },
         "rerank": {
             "enabled": False,
@@ -148,6 +152,16 @@ DEFAULTS = {
         "judge_timeout_s": 3,
         "search_timeout_s": 3,      # wall-clock budget for the recall search (#106)
         "ollama_model": "qwen3.5:0.8b",
+        # Measurably-low dense cosine (< low_threshold) -> silent; else top-N in
+        # BOTH lanes -> inject; otherwise -> judge.
+        # Placeholder value: calibrate against ~/.carta/traces + issue #118 usage
+        # labels rather than by feel.
+        "agree_rank": 3,
+        # Append one JSONL record per hook invocation to
+        # ~/.carta/traces/<project>/hook-YYYY-MM.jsonl (never inside the repo).
+        # The record holds the derived query, which for prompts <=500 chars is
+        # the prompt verbatim — set false to switch that off.
+        "trace": True,
     },
     "hooks": {
         "stale_scan": {

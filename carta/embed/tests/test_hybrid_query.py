@@ -1,13 +1,116 @@
 from unittest.mock import MagicMock, patch
+import pytest
 from carta.embed import pipeline
 
 
-def test_hybrid_query_uses_prefetch_and_rrf(monkeypatch):
-    captured = {}
+def _pt(pid, score=1.0):
+    p = MagicMock()
+    p.id = pid
+    p.score = score
+    p.payload = {"file_path": f"docs/{pid}.md", "text": pid}
+    return p
+
+
+def test_fuse_lanes_matches_qdrant_rrf_at_k2():
+    """Qdrant's server-side RRF is sum of 1/(k+rank) with k=2, rank 0-based."""
+    dense = [_pt("a"), _pt("b"), _pt("c")]
+    sparse = [_pt("b"), _pt("a"), _pt("d")]
+
+    fused = pipeline._fuse_lanes(dense, sparse, top_n=4, k=2)
+
+    # a: 1/2 + 1/3 = 0.8333 | b: 1/3 + 1/2 = 0.8333 | c: 1/4 | d: 1/4
+    assert [f["point"].id for f in fused[:2]] == ["a", "b"]
+    assert fused[0]["score"] == pytest.approx(1/2 + 1/3)
+    assert fused[0]["ranks"] == {"dense": 0, "sparse": 1}
+
+    # top_n must actually truncate: 4 distinct points (a,b,c,d) across the two
+    # lanes, requesting only 2 must return exactly 2 — this was previously
+    # enforced by Qdrant's server-side fusion `limit`; now it's _fuse_lanes's
+    # own `[:top_n]` slice, which had no covering test.
+    assert len(pipeline._fuse_lanes(dense, sparse, top_n=2, k=2)) == 2
+
+
+def test_fuse_lanes_admits_single_lane_hits():
+    """A hit present in only one lane must still be admitted (dropping it is a
+    silent recall bug), with the missing lane recorded as None."""
+    fused = pipeline._fuse_lanes([_pt("a")], [], top_n=5, k=2)
+    assert fused[0]["ranks"] == {"dense": 0, "sparse": None}
+    assert fused[0]["score"] == pytest.approx(1/2)
+
+
+def test_fuse_lanes_records_the_dense_lanes_raw_cosine():
+    """The fused RRF score is a rank artifact and says nothing about relevance.
+    The dense lane's raw cosine does, and it is the only absolute relevance
+    signal the hybrid path has — so fusion must carry it through, per entry."""
+    dense = [_pt("a", score=0.81), _pt("b", score=0.42)]
+    sparse = [_pt("b", score=17.3)]
+
+    fused = {f["point"].id: f for f in pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)}
+
+    assert fused["a"]["dense_score"] == pytest.approx(0.81)
+    assert fused["b"]["dense_score"] == pytest.approx(0.42), (
+        "must be the DENSE lane's score, never the sparse lane's BM25 magnitude"
+    )
+
+
+def test_fuse_lanes_dense_score_is_none_for_a_sparse_only_hit():
+    """A hit the dense lane never returned has no cosine to report. It must be
+    None — not 0.0, which is a real (very poor) similarity and would read as
+    positive evidence of irrelevance to any consumer thresholding on it."""
+    fused = pipeline._fuse_lanes([], [_pt("only-sparse", score=9.9)], top_n=5, k=2)
+    assert fused[0]["dense_score"] is None
+    assert fused[0]["ranks"] == {"dense": None, "sparse": 0}
+
+
+def test_fuse_lanes_order_is_unaffected_by_recording_dense_score():
+    """Recording a field must not perturb retrieval. Fused order is compared
+    against an independent minimal RRF that knows nothing about dense_score,
+    over many randomised lane configurations."""
+    import random
+
+    rng = random.Random(20260809)
+    for _ in range(500):
+        ids = [f"p{i}" for i in range(8)]
+        dense = [_pt(i, score=rng.random()) for i in rng.sample(ids, rng.randint(0, 8))]
+        sparse = [_pt(i, score=rng.random() * 20) for i in rng.sample(ids, rng.randint(0, 8))]
+
+        acc: dict = {}
+        for points in (dense, sparse):
+            for rank, p in enumerate(points):
+                acc[p.id] = acc.get(p.id, 0.0) + 1.0 / (2 + rank)
+        expected = [pid for pid, _ in sorted(acc.items(), key=lambda kv: (-kv[1], str(kv[0])))][:5]
+
+        got = [f["point"].id for f in pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)]
+        assert got == expected
+
+
+def test_rrf_k_is_configurable_and_defaults_to_2():
+    from carta.config import DEFAULTS
+    assert DEFAULTS["search"]["hybrid"]["rrf_k"] == 2
+
+    # NOTE: dense/sparse both rank "a" then "b" (same order in both lanes) so
+    # the two points are NOT tied. The task brief's original fixture had
+    # sparse=[b, a] (opposite order), which makes a's score == b's score for
+    # *any* k (1/(k+0)+1/(k+1) == 1/(k+1)+1/(k+0)) — the top_n[0]-top_n[1]
+    # score gap is 0 at every k, so "diff shrinks as k grows" can never be
+    # observed. Kept the DEFAULTS assertion verbatim; changed only the lane
+    # ordering here so the test actually exercises the property it documents.
+    dense, sparse = [_pt("a"), _pt("b")], [_pt("a"), _pt("b")]
+    at2 = pipeline._fuse_lanes(dense, sparse, top_n=2, k=2)
+    at60 = pipeline._fuse_lanes(dense, sparse, top_n=2, k=60)
+    # k flattens the curve: score spread shrinks as k grows
+    assert (at2[0]["score"] - at2[1]["score"]) > (at60[0]["score"] - at60[1]["score"])
+
+
+def test_hybrid_query_issues_two_lane_queries(monkeypatch):
+    """Fusion moved client-side (see _fuse_lanes), so Qdrant's server-side
+    prefetch+FusionQuery API is no longer used. This asserts the replacement
+    shape: two separate query_points calls, one per lane."""
+    calls = []
 
     class FakeClient:
         def query_points(self, **kwargs):
-            captured.update(kwargs)
+            calls.append(kwargs)
             resp = MagicMock()
             resp.points = []
             return resp
@@ -21,9 +124,11 @@ def test_hybrid_query_uses_prefetch_and_rrf(monkeypatch):
         dense_vec=[0.0] * 768, top_n=5, prefetch_limit=40, bm25_model="Qdrant/bm25",
     )
 
-    assert "prefetch" in captured
-    assert len(captured["prefetch"]) == 2
-    assert captured["limit"] == 5
+    assert len(calls) == 2
+    assert calls[0]["using"] == "dense"
+    assert calls[0]["limit"] == 40
+    assert calls[1]["using"] == "bm25"
+    assert calls[1]["limit"] == 40
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +209,15 @@ def _patch_run_search_deps(monkeypatch, *, captured_limits,
 
     monkeypatch.setattr(pipeline, "QdrantClient", FakeQdrantClient)
 
-    # Patch _hybrid_query_collection to capture its limit arg too
-    original_hybrid = pipeline._hybrid_query_collection
-
+    # Patch _hybrid_query_collection to capture its limit arg too. Returns the
+    # new list-of-dicts shape (see _fuse_lanes) rather than a raw Qdrant
+    # response, so callers that iterate `entry["point"]` are still exercised
+    # for real instead of silently iterating an empty MagicMock.
     def capturing_hybrid(client, coll_name, query, dense_vec, top_n,
-                         prefetch_limit, bm25_model):
+                         prefetch_limit, bm25_model, query_filter=None, rrf_k=2):
         captured_limits.append(top_n)
-        return fake_resp
+        return [{"point": p, "score": p.score, "ranks": {"dense": i, "sparse": None}}
+                for i, p in enumerate(fake_resp.points)]
 
     monkeypatch.setattr(pipeline, "_hybrid_query_collection", capturing_hybrid)
 

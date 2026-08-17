@@ -1797,37 +1797,85 @@ def run_embed(repo_root: Path, cfg: dict, verbose: bool = False, progress=None) 
     return summary
 
 
+# Qdrant's server-side RRF uses k=2. Client-side fusion starts here to preserve
+# ordering exactly; see docs/superpowers/specs/2026-08-09-retrieval-path-repair-
+# and-tracing-design.md Component 2.
+QDRANT_RRF_K = 2
+
+
+def _lane_queries(client: QdrantClient, coll_name: str, query: str, dense_vec: list[float],
+                  prefetch_limit: int, bm25_model: str,
+                  query_filter: Filter | None = None) -> tuple[list, list]:
+    """Query the dense and sparse lanes separately and return both point lists."""
+    sv = embed_sparse_query(query, model_name=bm25_model)
+    dense_resp = client.query_points(
+        collection_name=coll_name, query=dense_vec, using=DENSE_VECTOR_NAME,
+        limit=prefetch_limit, query_filter=query_filter, with_payload=True,
+    )
+    sparse_resp = client.query_points(
+        collection_name=coll_name,
+        query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
+        using=SPARSE_VECTOR_NAME, limit=prefetch_limit,
+        query_filter=query_filter, with_payload=True,
+    )
+    return dense_resp.points, sparse_resp.points
+
+
+def _fuse_lanes(dense_points, sparse_points, top_n: int,
+                k: int = QDRANT_RRF_K) -> list[dict]:
+    """Reciprocal Rank Fusion over two lanes, returning ranks alongside scores.
+
+    Mirrors Qdrant's server-side RRF at k=2. A point present in only one lane is
+    admitted with the other lane recorded as None — dropping it would be a silent
+    recall bug.
+
+    Each entry also carries `dense_score`: the dense lane's RAW cosine for that
+    point, or None when the dense lane never returned it. The fused score is a
+    rank artifact whose scale depends on k and lane count and says nothing about
+    whether a result matches the query; the dense cosine is the one absolute
+    relevance measure on this path, and the recall hook's gate needs it (a rank
+    is relative to the result set, so it cannot express "all of these are bad").
+    Recording it does not affect ordering.
+    """
+    acc: dict = {}
+    for lane, points in (("dense", dense_points), ("sparse", sparse_points)):
+        for rank, p in enumerate(points):
+            entry = acc.setdefault(
+                p.id, {"point": p, "score": 0.0, "dense_score": None,
+                       "ranks": {"dense": None, "sparse": None}})
+            entry["score"] += 1.0 / (k + rank)
+            entry["ranks"][lane] = rank
+            if lane == "dense":
+                entry["dense_score"] = p.score
+    fused = sorted(acc.values(), key=lambda e: (-e["score"], str(e["point"].id)))
+    return fused[:top_n]
+
+
 def _hybrid_query_collection(client, coll_name, query, dense_vec, top_n,
-                              prefetch_limit, bm25_model, query_filter=None):
-    """Run a hybrid BM25+dense query with Qdrant RRF fusion.
+                              prefetch_limit, bm25_model, query_filter=None,
+                              rrf_k: int = QDRANT_RRF_K):
+    """Run a hybrid BM25+dense query, fused client-side so per-lane ranks are available.
 
     Fetches `prefetch_limit` candidates from each of the dense and sparse
-    indexes, then fuses them with Reciprocal Rank Fusion and returns the
-    top `top_n` results.
+    indexes, then fuses them with Reciprocal Rank Fusion (matching Qdrant's
+    server-side RRF at k=2) and returns the top `top_n` results.
 
-    `top_n` controls the Qdrant fusion `limit` (i.e. how many fused results
-    to return).  When reranking is enabled, callers should pass `fetch_limit`
-    (= candidate_pool) here so that the reranker has a wide enough pool to
-    promote lower-ranked relevant documents.
+    `top_n` controls how many fused results are returned. When reranking is
+    enabled, callers should pass `fetch_limit` (= candidate_pool) here so that
+    the reranker has a wide enough pool to promote lower-ranked relevant
+    documents.
 
-    `query_filter` (optional) is applied to BOTH prefetch lanes so the filter
-    takes effect before fusion (used by run_focus to scope to one file).
+    `query_filter` (optional) is applied to BOTH lanes so the filter takes
+    effect before fusion (used by run_focus to scope to one file).
+
+    Returns a list of dicts: `{"point": <qdrant point>, "score": float,
+    "ranks": {"dense": int | None, "sparse": int | None},
+    "dense_score": float | None}`.
     """
-    sv = embed_sparse_query(query, model_name=bm25_model)
-    return client.query_points(
-        collection_name=coll_name,
-        prefetch=[
-            qmodels.Prefetch(query=dense_vec, using=DENSE_VECTOR_NAME,
-                             limit=prefetch_limit, filter=query_filter),
-            qmodels.Prefetch(
-                query=qmodels.SparseVector(indices=sv.indices, values=sv.values),
-                using=SPARSE_VECTOR_NAME, limit=prefetch_limit, filter=query_filter,
-            ),
-        ],
-        query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-        limit=top_n,
-        with_payload=True,
+    dense_points, sparse_points = _lane_queries(
+        client, coll_name, query, dense_vec, prefetch_limit, bm25_model, query_filter,
     )
+    return _fuse_lanes(dense_points, sparse_points, top_n, rrf_k)
 
 
 def _visual_collection_ready(client, coll_name: str) -> bool:
@@ -1969,6 +2017,36 @@ def _text_source(payload: dict) -> str:
     return "ocr_visual"
 
 
+def _text_hit(payload: dict, score: float, lane_ranks: dict | None,
+              dense_score: float | None = None) -> dict:
+    """Build a text-collection hit dict from a Qdrant point's payload.
+
+    Shared by the hybrid (per-lane ranks known) and non-hybrid/legacy
+    (``lane_ranks=None``) branches in both ``run_search`` and ``_focus_deep``,
+    so the file_path/slug fallback, the page/page_num fallback, and the
+    `_text_source` classification stay in lockstep across all four call sites
+    instead of drifting independently.
+
+    ``dense_score`` is the dense lane's raw cosine (see ``_fuse_lanes``), the
+    hybrid path's only absolute relevance signal. Like ``lane_ranks`` it is
+    optional and may be None: the legacy branches have no lane to attribute a
+    score to, and the visual and MCP producers build their hit dicts inline
+    without either key. Every consumer must therefore use ``.get()``.
+    """
+    return {
+        "score": score,
+        "lane_ranks": lane_ranks,
+        "dense_score": dense_score,
+        "source": payload.get("file_path", payload.get("slug", "")),
+        "excerpt": payload.get("text", ""),
+        "type": "text",
+        "doc_type": payload.get("doc_type", ""),
+        "page": payload.get("page") or payload.get("page_num"),
+        "section_heading": payload.get("section_heading", ""),
+        "text_source": _text_source(payload),
+    }
+
+
 def _focus_outline(client, collections: list[str], ff: Filter, source: str) -> list[dict]:
     """Return the file's distinct (section_heading, page) rows in page order — a synthetic TOC.
 
@@ -2088,29 +2166,28 @@ def _focus_deep(client, collections: list[str], ff: Filter, query: str,
                 hybrid_cfg = cfg.get("search", {}).get("hybrid", {})
                 is_hybrid = collection_is_hybrid(client, coll_name)
                 if hybrid_cfg.get("enabled", False) and is_hybrid:
-                    response = _hybrid_query_collection(
+                    fused = _hybrid_query_collection(
                         client, coll_name, query, query_vec, limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
-                        query_filter=ff)
-                elif is_hybrid:
-                    response = client.query_points(
-                        collection_name=coll_name, query=query_vec, using=DENSE_VECTOR_NAME,
-                        limit=limit, with_payload=True, query_filter=ff)
+                        query_filter=ff,
+                        rrf_k=hybrid_cfg.get("rrf_k", 2))
+                    for entry in fused:
+                        payload = entry["point"].payload or {}
+                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"],
+                                                     entry["dense_score"]))
                 else:
-                    response = client.query_points(
-                        collection_name=coll_name, query=query_vec,
-                        limit=limit, with_payload=True, query_filter=ff)
-                for r in response.points:
-                    payload = r.payload or {}
-                    coll_results.append({
-                        "score": r.score,
-                        "source": payload.get("file_path", payload.get("slug", "")),
-                        "excerpt": payload.get("text", ""), "type": "text",
-                        "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page") or payload.get("page_num"),
-                        "section_heading": payload.get("section_heading", ""),
-                        "text_source": _text_source(payload)})
+                    if is_hybrid:
+                        response = client.query_points(
+                            collection_name=coll_name, query=query_vec, using=DENSE_VECTOR_NAME,
+                            limit=limit, with_payload=True, query_filter=ff)
+                    else:
+                        response = client.query_points(
+                            collection_name=coll_name, query=query_vec,
+                            limit=limit, with_payload=True, query_filter=ff)
+                    for r in response.points:
+                        payload = r.payload or {}
+                        coll_results.append(_text_hit(payload, r.score, None))
             per_collection.append(coll_results)
         except Exception as e:
             err_str = str(e).lower()
@@ -2217,9 +2294,14 @@ def _rrf_merge_collections(
             disables the cap; a corpus with no visual hits is unaffected either way.
 
     Returns:
-        Flat list of the original hit dicts, best-first by RRF, length <= top_n.
-        Ties (same rank across collections) break toward earlier collections, so
-        callers should pass the text collection before the visual one.
+        Flat list of the original hit dicts (mutated in place), best-first by RRF,
+        length <= top_n. Ties (same rank across collections) break toward earlier
+        collections, so callers should pass the text collection before the visual
+        one. Each hit gains `fused_score` (the RRF value that decided its order)
+        and `fused_rank` (its 0-based position in the fused order, assigned before
+        the visual cap runs — so a hit dropped by the cap never appears, but a hit
+        admitted via cap backfill keeps its pre-cap rank rather than its final
+        list position). The pre-existing `score` (intra-collection) is untouched.
     """
     scored = []
     for coll_index, hits in enumerate(per_collection):
@@ -2229,7 +2311,14 @@ def _rrf_merge_collections(
     # -rrf: higher fused score first. coll_index/rank: deterministic, text-first ties.
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
 
-    ordered = [hit for _, _, _, hit in scored]
+    ordered = []
+    for fused_rank, (rrf, _coll_index, _rank, hit) in enumerate(scored):
+        # Record the score that actually determined ordering. `score` keeps the
+        # intra-collection value; consumers that need ranking magnitude read
+        # fused_score. Gate and trace must agree on which number is which.
+        hit["fused_score"] = rrf
+        hit["fused_rank"] = fused_rank
+        ordered.append(hit)
     return _apply_visual_cap(ordered, top_n, visual_max_ratio)
 
 
@@ -2425,44 +2514,41 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                 is_hybrid = collection_is_hybrid(client, coll_name)
 
                 if hybrid_cfg.get("enabled", False) and is_hybrid:
-                    # Hybrid BM25+dense with RRF fusion.
-                    # Pass fetch_limit as the fusion limit so the reranker
-                    # receives a full candidate_pool rather than just top_n.
-                    response = _hybrid_query_collection(
+                    # Hybrid BM25+dense, fused client-side (k=2) so per-lane ranks
+                    # are available. Pass fetch_limit as the fusion top_n so the
+                    # reranker receives a full candidate_pool rather than just top_n.
+                    fused = _hybrid_query_collection(
                         client, coll_name, query, query_vec, fetch_limit,
                         prefetch_limit=hybrid_cfg.get("prefetch_limit", 40),
                         bm25_model=hybrid_cfg.get("bm25_model", "Qdrant/bm25"),
+                        rrf_k=hybrid_cfg.get("rrf_k", 2),
                     )
-                elif is_hybrid:
-                    # Hybrid collection schema but hybrid search disabled — use named dense vector
-                    response = client.query_points(
-                        collection_name=coll_name,
-                        query=query_vec,
-                        using=DENSE_VECTOR_NAME,
-                        limit=fetch_limit,
-                        with_payload=True,
-                    )
+                    for entry in fused:
+                        payload = entry["point"].payload or {}
+                        coll_results.append(_text_hit(payload, entry["score"], entry["ranks"],
+                                                     entry["dense_score"]))
                 else:
-                    # Legacy unnamed-dense collection
-                    response = client.query_points(
-                        collection_name=coll_name,
-                        query=query_vec,
-                        limit=fetch_limit,
-                        with_payload=True,
-                    )
-                
-                for r in response.points:
-                    payload = r.payload or {}
-                    coll_results.append({
-                        "score": r.score,
-                        "source": payload.get("file_path", payload.get("slug", "")),
-                        "excerpt": payload.get("text", ""),
-                        "type": "text",
-                        "doc_type": payload.get("doc_type", ""),
-                        "page": payload.get("page") or payload.get("page_num"),
-                        "section_heading": payload.get("section_heading", ""),
-                        "text_source": _text_source(payload),
-                    })
+                    if is_hybrid:
+                        # Hybrid collection schema but hybrid search disabled — use named dense vector
+                        response = client.query_points(
+                            collection_name=coll_name,
+                            query=query_vec,
+                            using=DENSE_VECTOR_NAME,
+                            limit=fetch_limit,
+                            with_payload=True,
+                        )
+                    else:
+                        # Legacy unnamed-dense collection
+                        response = client.query_points(
+                            collection_name=coll_name,
+                            query=query_vec,
+                            limit=fetch_limit,
+                            with_payload=True,
+                        )
+
+                    for r in response.points:
+                        payload = r.payload or {}
+                        coll_results.append(_text_hit(payload, r.score, None))
 
             per_collection.append(coll_results)
         except Exception as e:

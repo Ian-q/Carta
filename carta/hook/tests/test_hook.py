@@ -42,34 +42,54 @@ def _stdin(prompt="test query"):
     return io.StringIO(json.dumps({"prompt": prompt}))
 
 
-def _capture_main():
-    """Run main() capturing stdout; return stdout string."""
+def _capture_main_full():
+    """Run main() capturing stdout; return (stdout, exit_code).
+
+    Fail-open means "exits 0", not merely "doesn't crash" — a regression to
+    sys.exit(1) anywhere in _run would still print nothing and would still
+    pass every test that only checks stdout. Callers that care about the
+    fail-open guarantee itself (not just its side effect on stdout) should
+    assert on the returned code, not just infer it from silence.
+    """
     from carta.hook.hook import main
     buf = io.StringIO()
+    code = 0
     with patch("sys.stdout", buf), patch("sys.__stdout__", buf):
         try:
             main()
-        except SystemExit:
-            pass
-    return buf.getvalue()
+        except SystemExit as e:
+            code = e.code if e.code is not None else 0
+    return buf.getvalue(), code
+
+
+def _capture_main():
+    """Run main() capturing stdout; return stdout string only.
+
+    Thin wrapper over _capture_main_full for the majority of tests that only
+    care about the injected (or absent) context block. Use
+    _capture_main_full directly when the exit code itself is under test.
+    """
+    out, _ = _capture_main_full()
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Fast-path: score > high_threshold injects immediately (HOOK-01, HOOK-02)
 # ---------------------------------------------------------------------------
 
-def test_fast_path_injects():
+def test_fast_path_injects(tmp_path):
     """Score 0.90 > 0.85 high_threshold: inject without calling Ollama."""
     hits = [_make_hit(0.90)]
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "the hook must always exit 0, even on the inject path"
     assert out.strip(), "Expected JSON output on stdout"
     data = json.loads(out.strip())
     assert "context" in data
@@ -77,13 +97,13 @@ def test_fast_path_injects():
     assert "docs/test.md" in data["context"]
 
 
-def test_fast_path_no_ollama_judge():
+def test_fast_path_no_ollama_judge(tmp_path):
     """Score > high_threshold must NOT call Ollama (performance)."""
     hits = [_make_hit(0.92)]
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post") as mock_post,
@@ -97,32 +117,34 @@ def test_fast_path_no_ollama_judge():
 # Noise gate: score < low_threshold discards silently (HOOK-03)
 # ---------------------------------------------------------------------------
 
-def test_noise_gate_no_output():
+def test_noise_gate_no_output(tmp_path):
     """Score 0.50 < 0.60 low_threshold: no stdout output."""
     hits = [_make_hit(0.50)]
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "silent zone must still exit 0"
     assert out.strip() == "", f"Expected no stdout, got: {out!r}"
 
 
-def test_no_hits_no_output():
+def test_no_hits_no_output(tmp_path):
     """Empty results: no stdout output."""
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=[]),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0
     assert out.strip() == ""
 
 
@@ -130,7 +152,7 @@ def test_no_hits_no_output():
 # Gray zone: 0.60 <= score <= 0.85, calls Ollama judge (HOOK-04)
 # ---------------------------------------------------------------------------
 
-def test_gray_zone_judge_yes_injects():
+def test_gray_zone_judge_yes_injects(tmp_path):
     """Score 0.75 in gray zone + Ollama says 'yes': inject."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -138,19 +160,20 @@ def test_gray_zone_judge_yes_injects():
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "the judge-yes inject path must still exit 0"
     assert out.strip(), "Expected JSON output"
     data = json.loads(out.strip())
     assert "context" in data
 
 
-def test_gray_zone_judge_no_discards():
+def test_gray_zone_judge_no_discards(tmp_path):
     """Score 0.75 in gray zone + Ollama says 'no': no output."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -158,17 +181,18 @@ def test_gray_zone_judge_no_discards():
     mock_resp.json.return_value = {"message": {"content": "no"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0
     assert out.strip() == ""
 
 
-def test_gray_zone_judge_yes_case_insensitive():
+def test_gray_zone_judge_yes_case_insensitive(tmp_path):
     """'Yes, it is relevant' is treated as yes (D-17 startswith)."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -176,7 +200,7 @@ def test_gray_zone_judge_yes_case_insensitive():
     mock_resp.json.return_value = {"message": {"content": "Yes, it is relevant"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
@@ -186,7 +210,7 @@ def test_gray_zone_judge_yes_case_insensitive():
     assert out.strip(), "Expected JSON output for 'Yes, it is relevant'"
 
 
-def test_gray_zone_judge_maybe_discards():
+def test_gray_zone_judge_maybe_discards(tmp_path):
     """'maybe' does NOT start with 'yes' — should discard."""
     hits = [_make_hit(0.75)]
     cfg = _make_cfg()
@@ -194,7 +218,7 @@ def test_gray_zone_judge_maybe_discards():
     mock_resp.json.return_value = {"message": {"content": "maybe"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
@@ -208,7 +232,7 @@ def test_gray_zone_judge_maybe_discards():
 # Judge timeout: > judge_timeout_s skips injection (HOOK-05)
 # ---------------------------------------------------------------------------
 
-def test_judge_timeout_skips_injection():
+def test_judge_timeout_skips_injection(tmp_path):
     """Ollama judge sleeping 5s with 3s timeout: skips injection (HOOK-05: no
     injection on timeout, prompt proceeds), completes within 6.5s."""
     hits = [_make_hit(0.75)]
@@ -221,7 +245,7 @@ def test_judge_timeout_skips_injection():
     t_start = time.time()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("carta.hook.hook._call_ollama_judge", side_effect=slow_judge),
@@ -240,7 +264,7 @@ def test_judge_timeout_skips_injection():
 # Chunk cap: max 5 chunks regardless of hits count (HOOK-06)
 # ---------------------------------------------------------------------------
 
-def test_proactive_recall_search_is_text_only():
+def test_proactive_recall_search_is_text_only(tmp_path):
     """The per-prompt hook must not trigger the heavy ColPali visual path.
 
     Regression: with colpali_enabled auto-default, run_search auto-searches the
@@ -257,7 +281,7 @@ def test_proactive_recall_search_is_text_only():
 
     with (
         patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_search),
     ):
@@ -269,7 +293,7 @@ def test_proactive_recall_search_is_text_only():
     )
 
 
-def test_proactive_recall_search_never_reranks():
+def test_proactive_recall_search_never_reranks(tmp_path):
     """The per-prompt hook must not pay reranker latency.
 
     Regression: hook.py forced colpali off but passed search.rerank through
@@ -287,7 +311,7 @@ def test_proactive_recall_search_never_reranks():
 
     with (
         patch("sys.stdin", _stdin("how do I configure the embed pipeline")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_search),
     ):
@@ -302,13 +326,13 @@ def test_proactive_recall_search_never_reranks():
     assert cfg["search"]["rerank"]["enabled"] is True
 
 
-def test_chunk_cap():
+def test_chunk_cap(tmp_path):
     """8 hits at score 0.90: exactly 5 injected."""
     hits = [_make_hit(0.90, source=f"docs/doc{i}.md", excerpt=f"Excerpt {i}") for i in range(8)]
     cfg = _make_cfg(max_results=5)
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
@@ -325,17 +349,18 @@ def test_chunk_cap():
 # Fail-open: run_search raises RuntimeError (Qdrant unreachable)
 # ---------------------------------------------------------------------------
 
-def test_fail_open_on_search_error():
+def test_fail_open_on_search_error(tmp_path):
     """run_search raises RuntimeError: exit 0, no stdout."""
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=RuntimeError("Qdrant unreachable")),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "fail-open means exit 0, not just silent stdout"
     assert out.strip() == ""
 
 
@@ -346,8 +371,9 @@ def test_fail_open_on_search_error():
 def test_fail_open_invalid_json():
     """Invalid JSON stdin: exit 0, no stdout."""
     with patch("sys.stdin", io.StringIO("not valid json {")):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0
     assert out.strip() == ""
 
 
@@ -355,19 +381,20 @@ def test_fail_open_invalid_json():
 # Module disabled: proactive_recall=False exits silently
 # ---------------------------------------------------------------------------
 
-def test_module_disabled_no_output():
+def test_module_disabled_no_output(tmp_path):
     """proactive_recall module disabled in config: no output."""
     cfg = _make_cfg()
     cfg["modules"]["proactive_recall"] = False
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search") as mock_search,
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
     mock_search.assert_not_called()
+    assert code == 0
     assert out.strip() == ""
 
 
@@ -375,7 +402,7 @@ def test_module_disabled_no_output():
 # Custom config thresholds respected (HOOK-07)
 # ---------------------------------------------------------------------------
 
-def test_custom_thresholds_respected():
+def test_custom_thresholds_respected(tmp_path):
     """high=0.90, low=0.70: score 0.88 falls in gray zone with custom thresholds."""
     hits = [_make_hit(0.88)]
     cfg = _make_cfg(high=0.90, low=0.70)
@@ -383,7 +410,7 @@ def test_custom_thresholds_respected():
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
         patch("requests.post", return_value=mock_resp),
@@ -557,7 +584,7 @@ def test_judge_no_returns_false():
     assert result is False
 
 
-def test_inject_labels_note_hits():
+def test_inject_labels_note_hits(tmp_path):
     """Recalled notes are labeled with their type so Claude can tell curated memory
     from plain docs; plain docs stay unlabeled."""
     hits = [
@@ -569,7 +596,7 @@ def test_inject_labels_note_hits():
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", return_value=hits),
     ):
@@ -583,7 +610,7 @@ def test_inject_labels_note_hits():
 # Bounded search budget (issue #106)
 # ---------------------------------------------------------------------------
 
-def test_hook_passes_search_timeout_to_run_search():
+def test_hook_passes_search_timeout_to_run_search(tmp_path):
     """The configured budget must reach run_search."""
     captured = {}
 
@@ -595,7 +622,7 @@ def test_hook_passes_search_timeout_to_run_search():
     cfg["proactive_recall"]["search_timeout_s"] = 7
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_run_search),
     ):
@@ -604,7 +631,7 @@ def test_hook_passes_search_timeout_to_run_search():
     assert captured["timeout_s"] == 7
 
 
-def test_hook_search_timeout_defaults_to_3():
+def test_hook_search_timeout_defaults_to_3(tmp_path):
     """Absent config key falls back to 3s, matching judge_timeout_s."""
     captured = {}
 
@@ -616,7 +643,7 @@ def test_hook_search_timeout_defaults_to_3():
     cfg["proactive_recall"].pop("search_timeout_s", None)
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=fake_run_search),
     ):
@@ -625,17 +652,18 @@ def test_hook_search_timeout_defaults_to_3():
     assert captured["timeout_s"] == 3
 
 
-def test_hook_still_fails_open_when_search_raises():
+def test_hook_still_fails_open_when_search_raises(tmp_path):
     """Fail-open is non-negotiable: a search error must still exit 0, silently."""
     cfg = _make_cfg()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=TimeoutError("backend down")),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
 
+    assert code == 0, "must exit 0, not just stay silent, when the search failed"
     assert out.strip() == "", "must not inject when the search failed"
 
 
@@ -645,7 +673,387 @@ def test_search_timeout_default_registered_in_config():
     assert DEFAULTS["proactive_recall"]["search_timeout_s"] == 3
 
 
-def test_hook_returns_within_budget_against_a_blocking_backend():
+# ---------------------------------------------------------------------------
+# _gate_zone: rank for AGREEMENT, dense cosine for RELEVANCE
+#
+# Rank alone cannot express irrelevance: hits[0] is the fusion argmax, so it
+# always ranks well *among the results* however bad they all are. (Concretely,
+# a dense rank-0-only hit scores 1/(2+0)=0.5 while a hit deep in both lanes
+# tops out at 1/5+1/5=0.4 — so a both-lanes-deep hit can never BE hits[0], and
+# a rank-only silent branch is dead code.) The dense lane's raw cosine is the
+# absolute signal; low_threshold was calibrated for exactly that.
+# ---------------------------------------------------------------------------
+
+def test_gate_injects_when_both_lanes_agree():
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 1}, "dense_score": 0.72}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "inject"
+
+
+def test_gate_judges_when_only_one_lane_is_confident():
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 40}, "dense_score": 0.72}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "judge"
+
+
+def test_gate_judges_when_hit_is_in_one_lane_only():
+    """The exact case the old gate dropped: rank 0 in one lane scored ~0.5,
+    below low_threshold 0.60, and never reached the judge."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": None}, "dense_score": 0.72}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "judge"
+
+
+def test_gate_silent_when_the_dense_cosine_is_measurably_low():
+    """The only route to silent: positive evidence of irrelevance. Ranks here
+    are as good as they get (0 in both lanes) — the cosine still says no."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.31}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "silent"
+
+
+def test_gate_never_goes_silent_without_a_dense_score():
+    """A sparse-only top hit has no cosine to measure. It must reach the judge,
+    not be dropped — dropping it is the exact recall bug this branch fixes, and
+    it must not come back. Deep ranks in both lanes are equally not evidence."""
+    from carta.hook import hook
+    sparse_only = [{"lane_ranks": {"dense": None, "sparse": 0}}]
+    assert hook._gate_zone(sparse_only, agree_rank=3, low=0.60) == "judge"
+
+    deep_both_lanes = [{"lane_ranks": {"dense": 9, "sparse": 12}}]
+    assert hook._gate_zone(deep_both_lanes, agree_rank=3, low=0.60) == "judge"
+
+
+def test_gate_prefers_a_low_cosine_over_lane_agreement():
+    """Order matters: the relevance test runs BEFORE the agreement test, so a
+    hit that agrees perfectly across lanes but is measurably irrelevant stays
+    silent rather than injecting unvetted."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.10}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "silent"
+
+
+def test_gate_dense_score_exactly_at_low_threshold_is_not_silent():
+    """`< low` is strict, matching the legacy cosine branch: a hit exactly at
+    the threshold is not *below* it, so it is not evidence of irrelevance."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.60}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "inject"
+
+
+def test_gate_dense_score_zero_is_treated_as_a_real_score():
+    """0.0 is a real (orthogonal) cosine, not a missing value. A truthiness
+    check would skip the relevance test on exactly the least relevant hit."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 0}, "dense_score": 0.0}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "silent"
+
+
+def test_gate_silent_on_no_hits():
+    from carta.hook import hook
+    assert hook._gate_zone([], agree_rank=3) == "silent"
+
+
+def test_gate_falls_back_to_score_when_lane_ranks_absent():
+    """Non-hybrid collections return cosine scores and no lane ranks; the old
+    thresholds remain correct there."""
+    from carta.hook import hook
+    assert hook._gate_zone([{"score": 0.9}], agree_rank=3,
+                           low=0.6, high=0.85) == "inject"
+    assert hook._gate_zone([{"score": 0.5}], agree_rank=3,
+                           low=0.6, high=0.85) == "silent"
+
+
+def test_gate_rank_exactly_at_agree_rank_boundary_is_not_confident():
+    """Ranks are 0-indexed, so agree_rank=3 covers ranks 0, 1, 2 (the top
+    three). A rank of exactly 3 is 4th place and must NOT count as confident
+    — otherwise "top-3" would silently mean "top-4". The dense_score here is
+    comfortably above low, so the relevance test cannot mask the boundary."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 3, "sparse": 3}, "dense_score": 0.80}]
+    assert hook._gate_zone(hits, agree_rank=3, low=0.60) == "judge"
+    assert hook._gate_zone(hits, agree_rank=4, low=0.60) == "inject"
+
+
+def test_gate_default_agree_rank_is_three():
+    """A config predating the agree_rank key must still behave sanely: the
+    function's own default (not a KeyError) governs."""
+    from carta.hook import hook
+    hits = [{"lane_ranks": {"dense": 0, "sparse": 1}}]
+    assert hook._gate_zone(hits) == "inject"
+
+
+# ---------------------------------------------------------------------------
+# Reachability: all three zones must be reachable from REAL fusion output.
+# A gate with an unreachable branch is the bug being fixed here; these tests
+# use no hand-written hit dicts — every hit comes out of pipeline._fuse_lanes
+# and pipeline._text_hit, exactly as run_search builds them.
+# ---------------------------------------------------------------------------
+
+def _fused_hits(dense_specs, sparse_ids):
+    """Build lane point lists, fuse them for real, and shape real hit dicts.
+
+    dense_specs: [(id, cosine), ...] in dense-lane rank order.
+    sparse_ids:  [id, ...] in sparse-lane rank order.
+    """
+    from carta.embed import pipeline
+
+    def _pt(pid, score):
+        p = MagicMock()
+        p.id = pid
+        p.score = score
+        p.payload = {"file_path": f"docs/{pid}.md", "text": pid}
+        return p
+
+    dense = [_pt(pid, cos) for pid, cos in dense_specs]
+    sparse = [_pt(pid, 10.0) for pid in sparse_ids]
+    fused = pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)
+    return [pipeline._text_hit(e["point"].payload, e["score"], e["ranks"], e["dense_score"])
+            for e in fused]
+
+
+def test_all_three_gate_zones_are_reachable_from_real_fusion_output():
+    """inject / judge / silent must each occur for some real retrieval result.
+
+    The previous gate's silent branch was dead: hits[0] is the fusion argmax,
+    so it always ranks well among the results and "confident in neither lane"
+    could not happen. Each scenario below is a plausible retrieval, fused by
+    the real code, and the three of them cover the three zones."""
+    from carta.hook import hook
+
+    inject = _fused_hits([("a", 0.74), ("b", 0.55)], ["a", "b"])
+    judge = _fused_hits([("a", 0.71)], ["z", "y", "x", "w", "a"])
+    silent = _fused_hits([("a", 0.28), ("b", 0.21)], ["a", "b"])
+
+    zones = {
+        "inject": hook._gate_zone(inject, agree_rank=3, low=0.60, high=0.85),
+        "judge": hook._gate_zone(judge, agree_rank=3, low=0.60, high=0.85),
+        "silent": hook._gate_zone(silent, agree_rank=3, low=0.60, high=0.85),
+    }
+    assert zones == {"inject": "inject", "judge": "judge", "silent": "silent"}
+    assert set(zones.values()) == {"inject", "judge", "silent"}, "every zone reachable"
+
+
+def test_gate_zone_sweep_over_random_fusions_hits_all_three_zones():
+    """Same claim, swept rather than hand-picked: over randomised lane
+    configurations the real fusion + real gate produce all three zones.
+
+    Empty results are EXCLUDED: `_gate_zone` returns silent for no hits at all,
+    which would let this test pass while the silent branch under test stayed
+    dead — the very defect being fixed. (Covered separately by
+    test_gate_silent_on_no_hits.)"""
+    import random
+    from carta.hook import hook
+
+    rng = random.Random(20260809)
+    seen = set()
+    nonempty = 0
+    for _ in range(2000):
+        ids = [f"p{i}" for i in range(6)]
+        dense = [(pid, rng.random()) for pid in rng.sample(ids, rng.randint(0, 6))]
+        sparse = rng.sample(ids, rng.randint(0, 6))
+        hits = _fused_hits(dense, sparse)
+        if not hits:
+            continue
+        nonempty += 1
+        seen.add(hook._gate_zone(hits, agree_rank=3, low=0.60, high=0.85))
+
+    assert nonempty > 1000, "sweep must actually exercise non-empty results"
+    assert seen == {"inject", "judge", "silent"}, f"unreachable zone(s): {seen}"
+
+
+def test_rank_alone_cannot_express_irrelevance_at_hits0():
+    """Root cause, pinned. hits[0] is the fusion argmax: a dense rank-0 hit
+    alone scores 1/(2+0)=0.5, while a hit deep in BOTH lanes tops out at
+    1/(2+3)+1/(2+3)=0.4. So the top hit's best lane rank is always shallow,
+    and any 'neither lane is confident' silent branch is dead code. If this
+    ever fails, rank-based irrelevance became viable — revisit the gate."""
+    import random
+    from carta.hook import hook
+
+    rng = random.Random(4242)
+    worst_best_rank = -1
+    for _ in range(2000):
+        ids = [f"p{i}" for i in range(8)]
+        dense = [(pid, rng.random()) for pid in rng.sample(ids, rng.randint(0, 8))]
+        sparse = rng.sample(ids, rng.randint(0, 8))
+        hits = _fused_hits(dense, sparse)
+        if not hits:
+            continue
+        ranks = [r for r in hits[0]["lane_ranks"].values() if r is not None]
+        worst_best_rank = max(worst_best_rank, min(ranks))
+
+    assert 0 <= worst_best_rank < 3, (
+        f"best lane rank at hits[0] reached {worst_best_rank}; a rank-only "
+        f"silent branch would still be unreachable at agree_rank=3"
+    )
+    # And the gate must not be silent for such a hit unless a cosine says so.
+    deep = [{"lane_ranks": {"dense": 2, "sparse": 40}}]
+    assert hook._gate_zone(deep, agree_rank=3, low=0.60) == "judge"
+
+
+# ---------------------------------------------------------------------------
+# agree_rank config wiring (Step 5): default registered, respected end to end
+# ---------------------------------------------------------------------------
+
+def test_agree_rank_default_registered_in_config():
+    """The key must exist in DEFAULTS so `carta init` writes it and a config
+    predating this feature still gets a sane value via the deep-merge."""
+    from carta.config import DEFAULTS
+    assert DEFAULTS["proactive_recall"]["agree_rank"] == 3
+
+
+def test_hook_uses_configured_agree_rank_end_to_end(tmp_path):
+    """A hit ranked 2nd in both lanes: agrees within agree_rank=5 (inject) but
+    not within the default agree_rank=3... here we widen it via config and
+    confirm the gate honors the configured value, not just the function
+    default."""
+    hits = [{"score": 0.5, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 4, "sparse": 4}}]
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["agree_rank"] = 5
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        out = _capture_main()
+
+    assert out.strip(), "rank 4 < configured agree_rank=5 in both lanes should inject"
+
+
+# ---------------------------------------------------------------------------
+# _emit_trace wiring: the project name and collections are threaded explicitly
+# (not read off invented cfg["_repo_root"] / cfg["_trace_collections"] keys),
+# and trace emission must never break the hook (fail-open).
+# ---------------------------------------------------------------------------
+
+def test_hook_emits_trace_record_under_carta_home_with_collections(tmp_path, monkeypatch):
+    """End-to-end: main() writes one trace record under
+    ~/.carta/traces/<project_name>/ (CARTA_HOME here), NOT inside the repo, and
+    collections come from get_search_collections(search_cfg, "repo") — the same
+    helper run_search uses, called with the SAME search_cfg run_search was
+    actually given — not from any key inside cfg, and not from the raw cfg.
+
+    _make_cfg() deliberately leaves embed.colpali_enabled unset (auto), the
+    normal case for most projects. Regression pin: the hook's own search_cfg
+    (step 6) always forces colpali_enabled=False, so the trace's collections
+    must be exactly the 3 non-visual collections the search actually covered —
+    NOT the 4 you'd get from get_search_collections(cfg, ...) on the raw,
+    colpali-auto project cfg. Passing the raw cfg here would claim _visual was
+    searched and came up empty, when it was never queried at all."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}, "dense_score": 0.73}]
+    cfg = _make_cfg()
+    assert "colpali_enabled" not in cfg["embed"], "test fixture must stay colpali-auto"
+    cfg_path = tmp_path / ".carta" / "config.yaml"
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=cfg_path),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        _capture_main()
+
+    trace_files = list((home / "traces" / "test-proj").glob("hook-*.jsonl"))
+    assert len(trace_files) == 1, "expected exactly one trace file under ~/.carta"
+    assert not (tmp_path / ".carta" / "traces").exists(), (
+        "trace records carry verbatim prompt text and must never be written "
+        "into the repo, where .carta/ is a tracked directory"
+    )
+    record = json.loads(trace_files[0].read_text().strip().splitlines()[-1])
+    assert record["zone"] == "inject"
+    assert record["lanes"] == {"dense": 0, "sparse": 1}
+    assert record["dense_score"] == 0.73, (
+        "the record must carry the number low_threshold gates on, or the zone "
+        "it reports cannot be re-derived or re-tuned from the trace file"
+    )
+    assert record["collections"] == [
+        "test-proj_doc", "test-proj_notes", "test-proj_session",
+    ], "must match what the hook actually searched (colpali forced off), not raw cfg"
+
+
+def test_hook_tracing_can_be_switched_off_by_config(tmp_path, monkeypatch):
+    """`proactive_recall.trace: false` must stop trace emission entirely."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    cfg["proactive_recall"]["trace"] = False
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        out = _capture_main()
+
+    assert not (home / "traces").exists(), "trace: false must write nothing"
+    assert "context" in json.loads(out.strip()), "disabling the trace must not disable recall"
+
+
+def test_hook_traces_by_default_for_a_config_predating_the_key(tmp_path, monkeypatch):
+    """A config written before `proactive_recall.trace` existed has no such key;
+    the default (true) must govern rather than a KeyError or a silent off."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CARTA_HOME", str(home))
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    assert "trace" not in cfg["proactive_recall"], "fixture must predate the key"
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+    ):
+        _capture_main()
+
+    assert list((home / "traces" / "test-proj").glob("hook-*.jsonl"))
+
+
+def test_hook_trace_failure_does_not_break_injection(tmp_path):
+    """Trace emission must never affect the hook's actual decision or crash it,
+    even if append_trace itself somehow raises."""
+    hits = [{"score": 0.90, "source": "docs/test.md", "excerpt": "text",
+             "lane_ranks": {"dense": 0, "sparse": 1}}]
+    cfg = _make_cfg()
+    with (
+        patch("sys.stdin", _stdin("query")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
+        patch("carta.hook.hook.load_config", return_value=cfg),
+        patch("carta.hook.hook.run_search", return_value=hits),
+        patch("carta.search.trace.append_trace", side_effect=RuntimeError("disk full")),
+    ):
+        out = _capture_main()
+
+    data = json.loads(out.strip())
+    assert "context" in data, "trace failure must not prevent injection"
+
+
+def test_emit_trace_swallows_collection_errors():
+    """_emit_trace must not raise even if get_search_collections raises —
+    it must be called inside the trace's exception guard, not outside it."""
+    from carta.hook.hook import _emit_trace
+    cfg = _make_cfg()
+    with patch("carta.search.scoped.get_search_collections", side_effect=ValueError("bad scope")):
+        _emit_trace("q", [], "silent", None, time.monotonic(), cfg)
+    # Reaching here without an exception is the assertion.
+
+
+def test_emit_trace_survives_a_config_with_no_project_name():
+    """`project_name` is the trace directory. A config missing it (hand-edited,
+    or a partial load) must degrade to a placeholder directory, not raise."""
+    from carta.hook.hook import _emit_trace
+    cfg = {k: v for k, v in _make_cfg().items() if k != "project_name"}
+    _emit_trace("q", [], "silent", None, time.monotonic(), cfg)
+
+
+def test_hook_returns_within_budget_against_a_blocking_backend(tmp_path):
     """The whole point: a backend that hangs must not hang the prompt.
 
     Without the budget this blocks for the full 60s embed timeout. run_search is
@@ -664,12 +1072,13 @@ def test_hook_returns_within_budget_against_a_blocking_backend():
     start = time.monotonic()
     with (
         patch("sys.stdin", _stdin("query")),
-        patch("carta.hook.hook.find_config", return_value=Path("/fake/.carta/config.yaml")),
+        patch("carta.hook.hook.find_config", return_value=tmp_path / ".carta" / "config.yaml"),
         patch("carta.hook.hook.load_config", return_value=cfg),
         patch("carta.hook.hook.run_search", side_effect=blocking_run_search),
     ):
-        out = _capture_main()
+        out, code = _capture_main_full()
     elapsed = time.monotonic() - start
 
+    assert code == 0, "must exit 0 even when the backend hangs"
     assert out.strip() == "", "must not inject when the backend is unreachable"
     assert elapsed < 5, f"hook took {elapsed:.1f}s; budget was 1s"

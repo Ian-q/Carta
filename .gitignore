@@ -37,6 +37,7 @@ build/
 .carta/scan-results.json
 .carta/embed-status.json
 .carta/visual_cache/
+.carta/traces/
 
 # Design source files
 *.afdesign
@@ -51,3 +52,6 @@ latest-log.txt
 
 .carta/carta/
 .carta/hooks/
+
+# Subagent-driven-development scratch (ledgers, briefs, review packages)
+.superpowers/
