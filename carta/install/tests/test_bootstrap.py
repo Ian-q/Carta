@@ -87,6 +87,19 @@ def test_bootstrap_updates_gitignore(tmp_path):
     assert ".carta/scan-results.json" in content
 
 
+def test_update_gitignore_ignores_hook_traces(tmp_path):
+    """The hook's per-invocation trace log stores the verbatim derived query
+    text and must never be committed. It now lives at ~/.carta/traces/<project>/
+    (carta/search/trace.py), outside every repo — this entry stays as belt and
+    braces for any project that already has an in-repo trace file from an
+    earlier build."""
+    (tmp_path / ".gitignore").write_text("node_modules/\n")
+    from carta.install.bootstrap import _update_gitignore
+    _update_gitignore(tmp_path)
+    content = (tmp_path / ".gitignore").read_text()
+    assert ".carta/traces/" in content
+
+
 def test_bootstrap_appends_claude_md(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# My Project\n")
     from carta.install.bootstrap import run_bootstrap

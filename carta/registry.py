@@ -16,14 +16,20 @@ from pathlib import Path
 SCHEMA = 1  # on-disk registry shape; bump when the structure changes
 
 
-def _carta_home() -> Path:
+def carta_home() -> Path:
+    """Machine-level carta state directory (``~/.carta``; ``CARTA_HOME`` overrides).
+
+    Public because it is not registry-specific: anything that must live outside
+    every repo (the registry, the hook's retrieval traces) resolves through it,
+    so there is exactly one definition of where machine-level state lives.
+    """
     override = os.environ.get("CARTA_HOME")
     return Path(override) if override else Path.home() / ".carta"
 
 
 def registry_path() -> Path:
     """Return the path to the registry JSON file."""
-    return _carta_home() / "registry.json"
+    return carta_home() / "registry.json"
 
 
 def _read_raw() -> dict:

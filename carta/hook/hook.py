@@ -1,12 +1,23 @@
 """carta-hook — UserPromptSubmit hook entry point.
 
 Reads stdin JSON from Claude Code, extracts the prompt, queries Qdrant via
-run_search, and routes through three score zones:
+run_search, and routes through three zones. The FUSED score is never
+thresholded — its scale depends on k and lane count, so an absolute threshold
+on it is meaningless. Instead: lane rank for agreement, the dense lane's raw
+cosine for relevance (see `_gate_zone`).
 
-  score > high_threshold  → fast-path inject (no Ollama)
-  score < low_threshold   → noise gate (silent exit)
-  gray zone               → Ollama judge with timeout; inject on yes,
-                            skip on no or timeout (HOOK-05: no injection on timeout)
+  top hit's dense cosine < low_threshold          → noise gate (silent exit)
+  else top hit within agree_rank in BOTH lanes    → fast-path inject (no Ollama)
+  else                                            → Ollama judge with timeout;
+                                                     inject on yes, skip on no
+                                                     or timeout (HOOK-05: no
+                                                     injection on timeout)
+
+A top hit with no dense_score (sparse-only, or a producer that omits the field)
+can never be silenced — it goes to the judge.
+
+Non-hybrid (cosine-score) searches fall back to the legacy high_threshold /
+low_threshold gate, which remains valid there.
 
 All paths exit 0 (the prompt always proceeds unblocked). stdout is reserved for
 the JSON context block.
@@ -16,6 +27,7 @@ All diagnostic output goes to stderr.
 import concurrent.futures
 import json
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -72,8 +84,15 @@ def _run() -> None:
     max_results = pr.get("max_results", 5)
     judge_timeout_s = pr.get("judge_timeout_s", 3)
     search_timeout_s = pr.get("search_timeout_s", 3)
+    agree_rank = pr.get("agree_rank", 3)
 
     # 5. Extract query
+    # started_at captures from here, not just before run_search: for prompts
+    # >500 chars, _extract_query makes its own Ollama call (up to 4s) that can
+    # dominate the latency the hook adds to prompt submission. Starting the
+    # clock after it would make that cost invisible in the trace record used
+    # for calibration (issue #118).
+    started_at = time.monotonic()
     query = _extract_query(prompt, cfg)
 
     # 6. Search — text-only, never reranked. Proactive recall fires on every
@@ -105,21 +124,138 @@ def _run() -> None:
     # 7. Cap results
     hits = hits[:max_results]
 
-    # 8. Noise gate
-    if not hits or hits[0]["score"] < low_threshold:
-        sys.exit(0)
+    # 8. Gate on retrieval structure
+    zone = _gate_zone(
+        hits,
+        agree_rank=agree_rank,
+        low=low_threshold, high=high_threshold,
+    )
+    judge_verdict = None
+    if zone == "judge":
+        judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
 
-    # 9. Fast-path inject
-    if hits[0]["score"] > high_threshold:
-        _inject(hits)
-        return
+    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg)
 
-    # 10. Gray zone — call Ollama judge with timeout
-    verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
-    if verdict:
+    if zone == "inject" or judge_verdict:
         _inject(hits)
-    else:
-        sys.exit(0)
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Rank-and-agreement gate (replaces absolute RRF-score gating)
+# ---------------------------------------------------------------------------
+
+def _gate_zone(hits: list[dict], agree_rank: int = 3, low: float = 0.60,
+               high: float = 0.85) -> str:
+    """Decide inject / judge / silent: rank for AGREEMENT, cosine for RELEVANCE.
+
+    Hybrid search returns RRF scores whose scale depends on k and lane count, so
+    an absolute threshold on the FUSED score is meaningless (see the 2026-08-09
+    spec). Rank is scale-independent, and lane agreement — "top-N in both the
+    dense and the BM25 lane" — is strong evidence that a result is on topic.
+
+    Rank cannot, however, express irrelevance. A rank is relative to the result
+    set: `hits[0]` is the fusion argmax, so it always ranks well *among these
+    results* however bad they all are. (Arithmetically, a dense rank-0-only hit
+    scores 1/(2+0)=0.5 while a hit deep in both lanes tops out at 1/5+1/5=0.4,
+    so a both-lanes-deep hit can never BE `hits[0]` — a "confident in neither
+    lane" silent branch is dead code.) The dense lane's raw cosine IS an
+    absolute measure, and `low` (0.60) was calibrated for exactly that before it
+    was mistakenly applied to a fused RRF score.
+
+    Hence the order below, and its deliberate asymmetry: go silent only when we
+    can MEASURE low relevance. A sparse-only top hit carries no `dense_score`,
+    so it reaches the judge instead of being dropped — dropping it is the recall
+    bug this gate exists to fix and must not come back.
+
+    Falls back to score thresholds when lane ranks are unavailable, which is the
+    non-hybrid path where the cosine calibration is still valid as-is.
+
+    `agree_rank` is 0-indexed like the ranks themselves: a rank is "confident"
+    only when strictly less than agree_rank, so agree_rank=3 covers ranks
+    0, 1, 2 (the top three) and a rank of exactly 3 (4th place) does not count.
+    """
+    if not hits:
+        return "silent"
+
+    ranks = hits[0].get("lane_ranks")
+    if not ranks:
+        score = hits[0].get("score")
+        if score is None or score < low:
+            return "silent"
+        return "inject" if score > high else "judge"
+
+    # `is not None`, never truthiness: 0.0 is a real (orthogonal) cosine and a
+    # rank of 0 is the BEST rank — both would be discarded by a falsy check.
+    dense_score = hits[0].get("dense_score")
+    if dense_score is not None and dense_score < low:
+        return "silent"
+
+    confident = [r for r in (ranks.get("dense"), ranks.get("sparse"))
+                 if r is not None and r < agree_rank]
+    return "inject" if len(confident) >= 2 else "judge"
+
+
+# ---------------------------------------------------------------------------
+# Trace emission (calibration data for the gate above; issue #118)
+# ---------------------------------------------------------------------------
+
+def _emit_trace(
+    query: str,
+    hits: list[dict],
+    zone: str,
+    judge_verdict: bool | None,
+    started_at: float,
+    search_cfg: dict,
+) -> None:
+    """Append one trace record. Swallows everything — the hook must fail open.
+
+    Records land in `~/.carta/traces/<project_name>/`, outside every repo: the
+    record's `query` is the prompt verbatim for prompts <=500 chars, and
+    `.carta/` inside a project is a tracked directory. `project_name` is a real
+    config key, so it is read off the cfg dict; the searched `collections` are
+    not, so they are recomputed here via `get_search_collections(search_cfg,
+    "repo")` — the same helper `run_search` uses internally, so a `ValueError`
+    from an invalid scope is a real (if unlikely) failure mode that must stay
+    inside this function's try/except.
+
+    Opt out with `proactive_recall.trace: false`; absent, tracing is on (the
+    trace IS the calibration data for the gate, issue #118).
+
+    Takes `search_cfg` — the text-only, no-rerank cfg `_run` actually passed to
+    `run_search` — not the project's raw `cfg`. `search_cfg` always forces
+    `colpali_enabled: False` (step 6), so `get_search_collections` always
+    excludes `_visual` from the traced list too, matching what was actually
+    queried. Passing raw `cfg` here would report `_visual` as searched for any
+    project that hasn't itself opted out of ColPali, even though the hook never
+    queries it — a false "searched and missed" reading of a collection that was
+    never touched. Deriving `score_kind`/`rrf_k` from the same `search_cfg` keeps
+    that value tied to the dict the search actually used, for the same reason.
+    """
+    try:
+        if not search_cfg.get("proactive_recall", {}).get("trace", True):
+            return
+        from carta.search.scoped import get_search_collections
+        from carta.search.trace import build_trace_record, append_trace
+        collections = get_search_collections(search_cfg, "repo")
+        hybrid = search_cfg.get("search", {}).get("hybrid", {})
+        # Hybrid can be enabled project-wide yet a legacy (non-named-vector)
+        # collection still returns a plain cosine score with no lane_ranks.
+        # `_gate_zone` already distinguishes these two worlds by lane_ranks
+        # presence, not the cfg flag — use the same signal here, so a legacy
+        # trace line never claims score_kind="rrf" alongside lanes=null.
+        is_rrf = bool(hits and hits[0].get("lane_ranks"))
+        rec = build_trace_record(
+            query=query,
+            collections=collections,
+            hits=hits, zone=zone, judge=judge_verdict,
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            score_kind="rrf" if is_rrf else "cosine",
+            rrf_k=hybrid.get("rrf_k", 2) if is_rrf else None,
+        )
+        append_trace(search_cfg.get("project_name", ""), rec)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

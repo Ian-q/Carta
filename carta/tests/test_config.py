@@ -72,6 +72,17 @@ def test_proactive_recall_defaults(tmp_path):
     assert "ollama_judge" not in pr
 
 
+def test_trace_defaults_on(tmp_path):
+    """Hook tracing is on by default (it is the calibration data for the gate),
+    and a config predating the key inherits that default via the deep-merge
+    rather than KeyErroring or silently disabling itself."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump(MINIMAL_CONFIG))
+    assert load_config(cfg_path)["proactive_recall"]["trace"] is True
+    from carta.config import DEFAULTS
+    assert DEFAULTS["proactive_recall"]["trace"] is True
+
+
 class TestVisionThresholdDefaults:
     def test_vision_text_min_chars_default(self):
         from carta.config import DEFAULTS

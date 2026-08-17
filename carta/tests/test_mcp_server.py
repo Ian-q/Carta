@@ -227,8 +227,8 @@ class TestSearchAnchors:
         client = MagicMock(); client.query_points.return_value = resp
         cfg = {"qdrant_url": "http://localhost:6333",
                "embed": {"ollama_url": "x", "ollama_model": "m"}}
-        with patch("qdrant_client.QdrantClient", return_value=client), \
-             patch("carta.embed.embed.get_embedding", return_value=[0.0] * 768):
+        with patch.object(server, "QdrantClient", return_value=client), \
+             patch.object(server, "get_embedding", return_value=[0.0] * 768):
             hits = server._run_search_collection("gyro", cfg, "p_doc", 5)
         assert hits[0]["page"] == 47
         assert hits[0]["section_heading"] == "6.3 Gyro"
@@ -278,8 +278,8 @@ class TestSearchAnchors:
         resp = MagicMock(); resp.points = [point]
         client = MagicMock(); client.query_points.return_value = resp
         cfg = {"qdrant_url": "http://localhost:6333", "embed": {"ollama_url": "x", "ollama_model": "m"}}
-        with patch("qdrant_client.QdrantClient", return_value=client), \
-             patch("carta.embed.embed.get_embedding", return_value=[0.0] * 768):
+        with patch.object(server, "QdrantClient", return_value=client), \
+             patch.object(server, "get_embedding", return_value=[0.0] * 768):
             hits = server._run_search_collection("32mhz", cfg, "p_doc", 5)
         assert hits[0]["text_source"] == "ocr_visual"   # MCP path now classifies the tier
         assert hits[0]["page"] == 3                       # page resolved from page_num
@@ -300,7 +300,7 @@ class TestCartaSearchEmbeddingOutage:
         with patch.object(server, "_load_cfg", return_value=cfg), \
              patch.object(server, "_repo_root_from_cfg", return_value=Path("/fake")), \
              patch("carta.mcp.server.get_search_collections", return_value=["p_doc"]), \
-             patch("carta.embed.embed.get_embedding",
+             patch.object(server, "get_embedding",
                    side_effect=RuntimeError("Ollama embedding failed (500): CUDA error ...")):
             result = server.carta_search("CAN bus miswire", top_k=5)
 

@@ -6,6 +6,8 @@ recall to 0. The fix fuses by rank (RRF across collections), which is scale-free
 """
 from unittest.mock import MagicMock
 
+import pytest
+
 from carta.embed.pipeline import _rrf_merge_collections
 
 
@@ -108,6 +110,23 @@ def test_ratio_zero_excludes_visual_when_text_fills_pool():
     merged = _rrf_merge_collections([text, visual], top_n=5, visual_max_ratio=0.0)
     assert all(m["type"] == "text" for m in merged)
     assert [m["source"] for m in merged] == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_merge_writes_fused_score_and_rank_onto_hits():
+    """The cross-collection fusion decides ordering, so its score must be on the
+    hit. Before this, hits carried the intra-collection score, which did not
+    determine their rank."""
+    import carta.embed.pipeline as pipeline
+
+    a = {"source": "a.md", "score": 0.9}
+    b = {"source": "b.md", "score": 0.1}
+    out = pipeline._rrf_merge_collections([[a], [b]], top_n=2, k=60)
+
+    assert out[0]["fused_rank"] == 0
+    assert out[1]["fused_rank"] == 1
+    assert out[0]["fused_score"] == pytest.approx(1.0 / 61)
+    # intra-collection score preserved, not clobbered
+    assert out[0]["score"] == 0.9
 
 
 def test_run_search_forwards_configured_visual_max_ratio(monkeypatch, tmp_path):

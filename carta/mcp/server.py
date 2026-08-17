@@ -13,9 +13,11 @@ import sys
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from qdrant_client import QdrantClient
 from typing import Literal, Optional, Union
 
 from carta.config import find_config, load_config, ConfigError
+from carta.embed.embed import get_embedding
 from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S, _text_source
 from carta.embed.lock import embed_lock, EmbedLockHeld
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
@@ -130,9 +132,9 @@ def carta_search(
                 # surface it instead of swallowing it into empty results, which would be
                 # reported to the agent as "no results / nothing embedded" (#79).
                 raise
-            except RuntimeError:
-                # A single collection is missing or its Qdrant query failed — skip it.
-                pass
+            except CollectionMissing:
+                # This collection does not exist yet — other collections may still answer.
+                continue
 
         # Sort by score descending and take top_k
         all_results.sort(key=lambda x: x["score"], reverse=True)
@@ -221,6 +223,14 @@ class QueryEmbeddingError(RuntimeError):
     as an error instead of swallowing it into empty results (#79)."""
 
 
+class CollectionMissing(Exception):
+    """The collection does not exist. Safe to skip — other collections may still answer."""
+
+
+class QdrantQueryError(Exception):
+    """The query itself failed. NOT safe to skip — it is identical for every collection."""
+
+
 def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: int) -> list[dict]:
     """Search a single collection for chunks semantically similar to query.
 
@@ -236,10 +246,13 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
 
     Raises:
         QueryEmbeddingError: the query could not be embedded (embedding-backend outage).
-        RuntimeError: the Qdrant query for this collection failed.
+        CollectionMissing: the collection does not exist — safe for the caller to skip.
+        QdrantQueryError: the Qdrant query itself failed — NOT safe to skip, since it is
+            identical for every collection.
     """
-    from qdrant_client import QdrantClient
-    from carta.embed.embed import get_embedding
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    from carta.embed.embed import DENSE_VECTOR_NAME, collection_is_hybrid
 
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"]["ollama_model"]
@@ -256,17 +269,41 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
     try:
-    
+
+        query_kwargs = {
+            "collection_name": collection_name,
+            "query": query_vec,
+            "limit": top_n,
+            "with_payload": True,
+        }
+        # Named-vector (hybrid-schema) collections REQUIRE `using=`; Qdrant 400s without
+        # it. Legacy unnamed-dense collections reject `using=`, so it must be omitted.
+        if collection_is_hybrid(client, collection_name):
+            query_kwargs["using"] = DENSE_VECTOR_NAME
+
         try:
-            response = client.query_points(
-                collection_name=collection_name,
-                query=query_vec,
-                limit=top_n,
-                with_payload=True,
-            )
+            response = client.query_points(**query_kwargs)
+        except UnexpectedResponse as e:
+            # Qdrant's real 404 signal is the status code, not the error text — the
+            # response body (embedded verbatim in str(e)) can coincidentally contain
+            # "not found" on an unrelated failure (a 500, a proxy error page, ...), which
+            # would silently misclassify a real query failure as a benign missing
+            # collection. Same pattern as collection_is_hybrid() in carta/embed/embed.py.
+            if e.status_code == 404:
+                raise CollectionMissing(collection_name) from e
+            raise QdrantQueryError(
+                f"Qdrant search failed for {collection_name}: {e}"
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"Qdrant search failed for {collection_name}: {e}") from e
-    
+            # Some transports raise a plain exception (no status_code) for a 404-ish
+            # failure. Fall back to a text match only here, never for UnexpectedResponse.
+            err = str(e).lower()
+            if "404" in err or "not found" in err or "doesn't exist" in err:
+                raise CollectionMissing(collection_name) from e
+            raise QdrantQueryError(
+                f"Qdrant search failed for {collection_name}: {e}"
+            ) from e
+
         hits = []
         for r in response.points:
             payload = r.payload or {}

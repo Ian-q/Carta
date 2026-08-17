@@ -1225,6 +1225,62 @@ class TestRunSearchDocType:
         assert results and results[0]["doc_type"] == "quirk"
 
 
+class TestRunSearchDenseScore:
+    """`dense_score` is the hook gate's only absolute relevance signal on the
+    hybrid path (the fused RRF score is a rank artifact). It must survive the
+    whole run_search path onto the returned hit dicts."""
+
+    def _cfg(self, hybrid: bool):
+        return {"project_name": "p", "qdrant_url": "http://localhost:6333",
+                "embed": {"ollama_url": "u", "ollama_model": "m", "colpali_enabled": False},
+                "search": {"top_n": 5, "hybrid": {"enabled": hybrid}},
+                "modules": {"doc_search": True}}
+
+    @staticmethod
+    def _point(score, path):
+        from unittest.mock import MagicMock
+        p = MagicMock()
+        p.id = path
+        p.score = score
+        p.payload = {"file_path": path, "text": "alpha"}
+        return p
+
+    def test_hybrid_hits_carry_the_dense_lane_cosine(self):
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        dense = [self._point(0.77, "docs/a.md")]
+        sparse = [self._point(14.2, "docs/a.md")]
+        with patch("carta.embed.pipeline.QdrantClient", return_value=MagicMock()), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=True), \
+             patch("carta.embed.pipeline._lane_queries", return_value=(dense, sparse)), \
+             patch("carta.search.scoped.get_search_collections", return_value=["p_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("q", self._cfg(hybrid=True))
+
+        assert results and results[0]["dense_score"] == pytest.approx(0.77)
+        assert results[0]["lane_ranks"] == {"dense": 0, "sparse": 0}
+
+    def test_non_hybrid_hits_have_no_dense_score(self):
+        """The legacy cosine path already gates on `score`; leaving dense_score
+        None keeps the gate's non-hybrid fallback branch the one that runs."""
+        from unittest.mock import patch, MagicMock
+        from carta.embed.pipeline import run_search
+
+        client = MagicMock()
+        client.query_points.return_value = MagicMock(points=[self._point(0.9, "docs/a.md")])
+        with patch("carta.embed.pipeline.QdrantClient", return_value=client), \
+             patch("carta.embed.pipeline.get_embedding", return_value=[0.0] * 768), \
+             patch("carta.embed.pipeline.collection_is_hybrid", return_value=False), \
+             patch("carta.search.scoped.get_search_collections", return_value=["p_doc"]), \
+             patch("carta.embed.pipeline.find_config", return_value="/fake/.carta/config.yaml"):
+            results = run_search("q", self._cfg(hybrid=False))
+
+        assert results and results[0]["dense_score"] is None
+        assert results[0]["lane_ranks"] is None
+
+
 class TestRunEmbedExtractionFailedSummary:
     """Files flagged extraction_failed must not count as embedded in the summary."""
 
@@ -1295,9 +1351,13 @@ def test_run_search_passes_repo_root_not_dotcarta_to_graph_expansion(tmp_path):
 
 
 class TestHybridQueryFilter:
-    """_hybrid_query_collection threads an optional Qdrant filter into each prefetch lane."""
+    """_hybrid_query_collection threads an optional Qdrant filter into each lane query.
 
-    def test_query_filter_applied_to_prefetch(self):
+    Fusion moved client-side (see _fuse_lanes in carta/embed/tests/test_hybrid_query.py),
+    so the dense and sparse lanes are now two separate query_points calls rather than
+    one call with a `prefetch=[...]` list; this asserts the filter reaches both."""
+
+    def test_query_filter_applied_to_both_lanes(self):
         from unittest.mock import MagicMock, patch
         from carta.embed.pipeline import _hybrid_query_collection
         from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -1312,9 +1372,11 @@ class TestHybridQueryFilter:
                                      prefetch_limit=40, bm25_model="Qdrant/bm25",
                                      query_filter=ff)
 
-        kwargs = client.query_points.call_args.kwargs
-        prefetches = kwargs["prefetch"]
-        assert all(p.filter is ff for p in prefetches), "filter must reach every prefetch lane"
+        assert client.query_points.call_count == 2
+        calls = client.query_points.call_args_list
+        assert all(c.kwargs["query_filter"] is ff for c in calls), \
+            "filter must reach every lane query"
+        assert {c.kwargs["using"] for c in calls} == {"dense", "bm25"}
 
 
 class TestFocusSourceHelpers:

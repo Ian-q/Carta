@@ -400,6 +400,11 @@ def _update_gitignore(project_root: Path) -> None:
         ".carta/hooks/",
         ".carta/visual_cache/",
         ".carta/update-check.json",
+        # Belt and braces. Hook traces now live at ~/.carta/traces/<project>/
+        # (carta/search/trace.py), outside every repo, precisely because they
+        # contain the verbatim derived query text — but a project that ran an
+        # earlier build may already have one of these on disk.
+        ".carta/traces/",
     ]
     existing_lines = gitignore.read_text().splitlines() if gitignore.exists() else []
     parent_globs = {".carta/", ".carta/*"}

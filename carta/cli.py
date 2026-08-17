@@ -303,6 +303,14 @@ def cmd_search(args):
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if getattr(args, "trace", None):
+        from carta.search.trace import format_trace
+        from carta.search.scoped import get_search_collections
+        print(format_trace(results, args.trace, query,
+                           get_search_collections(cfg, "repo")))
+        print()
+
     if not results:
         print(
             "No results found. If nothing is embedded yet, run `carta embed` first; "
@@ -1177,6 +1185,11 @@ def main():
             "After returning semantic results, also return docs linked via related: "
             "within N hops of each result (default: 0 = no graph expansion)"
         ),
+    )
+    search_p.add_argument(
+        "--trace", metavar="SUBSTRING",
+        help="Print per-stage retrieval ranks for documents whose path matches "
+             "SUBSTRING. Diagnoses which stage lost a result.",
     )
 
     flag_p = sub.add_parser(
