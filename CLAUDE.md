@@ -134,6 +134,34 @@ This project uses the **Superpowers** skill flow. Invoke skills before acting (s
 
 Retrieval-quality changes are validated against the ET-embed eval corpus — see the eval workflow in auto-memory (`project_et-embed-eval-workflow`).
 
+## Tracking conventions
+
+**Where each fact lives.** Issues + [Project #4](https://github.com/users/Ian-q/projects/4) own
+status, size, area, and sequencing. [`docs/ROADMAP.md`](docs/ROADMAP.md) owns how subsystems relate
+and why approaches were taken or abandoned — it holds **no** per-issue status, deliberately. A
+sentence that would become false when an issue closes belongs on the board, not in the ROADMAP.
+
+**When you open an issue,** add it to the board and set `Area` (Retrieval / Vision/OCR / Hooks /
+Docs / Infra / Embed) and `Size` (S/M/L/XL). Add a `blocked by` dependency only where sequencing is
+genuine:
+
+```bash
+gh project item-add 4 --owner Ian-q --url https://github.com/Ian-q/Carta/issues/<N>
+gh api --method POST repos/Ian-q/Carta/issues/<blocked>/dependencies/blocked_by -F issue_id=<blocker_rest_id>
+```
+
+**Trap when editing the `Area` field:** `updateProjectV2Field`'s `singleSelectOptions` **replaces the
+entire option list**, and GitHub **reissues every option id** — not just the added one. Always send
+all options, and always re-read the ids from the mutation's own response afterwards. Any id you
+recorded earlier (including in a plan) is dead.
+
+**Always write `Closes #N` in PR bodies.** #79 and #80 shipped in PR #91 and sat open for two months
+because the PR named them in its title but declared no closing reference.
+
+There is no automated board linter (ET-embed's `roadmap_watchdog.py` was deliberately not ported —
+its checks are date-derived and Carta carries no dates). These conventions are the only thing
+keeping the board honest.
+
 ## Carta surface — authoritative reference
 
 > Hand-maintained and authoritative for the current Carta surface.
