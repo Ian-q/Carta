@@ -20,6 +20,37 @@
 - Bash scripts must be `chmod +x` and always `exit 0` when run as a hook. A hook that aborts must not disrupt a session.
 - **`docs/ROADMAP.md` may not contain per-issue status.** Any sentence that becomes false when an issue closes belongs on the board.
 
+## Amendments — executed 2026-08-29
+
+Tasks 2, 3 and 4 are **done**. Task 1 (session board) is **not started** — it is tooling rather
+than reconciliation, and was out of scope for the session that ran the rest.
+
+The plan was written 2026-07-18 and executed six weeks later. What differed:
+
+1. **Every `Area` option id was reissued, not just `Embed`.** Step 3 warned the mutation *may*
+   reissue ids; it reissued all six. The Global Constraints list above is therefore **dead** for
+   Area. Current ids: Retrieval `6f1129e8`, Vision/OCR `898cc082`, Hooks `6d43168a`, Docs
+   `56816906`, Infra `b528da79`, Embed `4493d68c`. Status and Size ids were untouched and remain
+   correct. Nothing was orphaned only because no board item had ever had `Area` set — with items
+   using it, this would have silently blanked them. Re-read ids from the mutation response, always.
+2. **#79 was already closed** by the time Task 2 ran. **#80 was still open and verified delivered**
+   against PR #91's diff (`cmd_import` registers the project via `carta.registry.register_project`
+   and stamps a terminal `embed-status.json` through `StatusWriter`; covered by
+   `test_cmd_import_registers_project`), then closed with that evidence.
+3. **The backfill table grew from 14 to 24 rows.** Ten issues were filed after the plan was
+   written and were assigned areas/sizes at execution time: #106 Infra/L, #107 Retrieval/L,
+   #115 Vision/OCR/S, #116 Infra/M, #117 Infra/M, #118 Hooks/L, #119 Embed/L, #120 Retrieval/M,
+   #121 Hooks/S, #122 Retrieval/M. `Area` was also set on the two pre-existing Done items
+   (#78 Embed, #10 Hooks), which predate the field.
+4. **Task 3's ROADMAP text was written forward.** The literal block in Task 3 still declared
+   v0.14.0 current; the file now reflects v0.16.1 plus the unreleased #123 retrieval-path repair,
+   and the gantt was extended through v0.15.0/v0.16.0/v0.16.1/#123. New design-rationale entries
+   were added for the score-scale lesson, the rank-vs-cosine gate, the unreachable-branch trap, and
+   the hook's per-prompt latency budget.
+5. **Task 4 shipped without its session-board section**, which documents `.claude/hooks/active-board.sh`
+   and `tools/session-task.sh` — Task 1 artifacts that do not exist. Documenting absent tooling is
+   the same drift this plan removes. Add that section when Task 1 lands.
+
 ---
 
 ### Task 1: Port the cross-worktree session board
@@ -334,7 +365,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Consumes: nothing from earlier tasks.
 - Produces: board state that Task 3 and Task 4 describe in prose. No code artifacts.
 
-- [ ] **Step 1: Verify #79 and #80 were actually delivered**
+- [x] **Step 1: Verify #79 and #80 were actually delivered**
 
 PR #91's title claims both, but it merged with no closing references. Read the diff before closing anything — the title is not evidence.
 
@@ -346,7 +377,7 @@ Confirm two behaviours are present in the diff: a query-embedding failure surfac
 
 If either is absent, **stop and report** rather than closing that issue — leave it open, set its board fields in Step 4, and note the gap.
 
-- [ ] **Step 2: Close the delivered issues**
+- [x] **Step 2: Close the delivered issues**
 
 Only for those confirmed in Step 1:
 
@@ -364,7 +395,7 @@ gh issue view 80 --json state --jq .state
 
 Expected: `CLOSED` twice.
 
-- [ ] **Step 3: Add the `Embed` option to the Area field**
+- [x] **Step 3: Add the `Embed` option to the Area field**
 
 **Trap:** `singleSelectOptions` **replaces the entire option list**. Passing only `Embed` silently destroys the other five and orphans every item using them. All six must be sent.
 
@@ -391,7 +422,7 @@ mutation {
 
 Expected: six options returned. **Record the printed option ids** — the mutation may reissue them, so the `Embed` id (and possibly others) must be read from this output rather than assumed from the Global Constraints list.
 
-- [ ] **Step 4: Backfill every open issue with its fields**
+- [x] **Step 4: Backfill every open issue with its fields**
 
 Re-read the Area option ids from Step 3's output, then run:
 
@@ -443,7 +474,7 @@ Hooks `edb641ba`, Vision/OCR `c41ee99c`, Retrieval `d57a6c32`.
 
 Notes: #76 and #19 are already on the board, so `item-add` returns their existing item id rather than creating a duplicate — this is idempotent. #79 and #80 are omitted because Step 2 closed them; if Step 1 found either undelivered, add it here with `AREA_RETRIEVAL:SIZE_S` (#79) or `AREA_INFRA:SIZE_S` (#80).
 
-- [ ] **Step 5: Add the two dependencies**
+- [x] **Step 5: Add the two dependencies**
 
 ```bash
 gh api --method POST repos/Ian-q/Carta/issues/98/dependencies/blocked_by -F issue_id=4818222202
@@ -459,7 +490,7 @@ gh api repos/Ian-q/Carta/issues/89/dependencies/blocked_by --jq '.[].number'
 
 Expected: `97` from each.
 
-- [ ] **Step 6: Verify the board**
+- [x] **Step 6: Verify the board**
 
 ```bash
 gh project item-list 4 --owner Ian-q --format json --limit 60 | python3 -c "
@@ -480,7 +511,7 @@ for n in sorted(want&set(got)): print(' ',n,got[n])
 
 Expected: `missing: none` and `missing area/size: none`. Assert per-issue presence, not a total count — closed items (#78, #10, and now #79/#80) remain on the board.
 
-- [ ] **Step 7: No commit**
+- [x] **Step 7: No commit**
 
 This task changed no files. Confirm:
 
@@ -501,7 +532,7 @@ Expected: empty.
 - Consumes: the board state from Task 2 (referenced by link, never restated).
 - Produces: a ROADMAP with no per-issue status. Task 4 links to it.
 
-- [ ] **Step 1: Replace the file**
+- [x] **Step 1: Replace the file**
 
 Write `docs/ROADMAP.md`:
 
@@ -602,7 +633,7 @@ gantt
 > `docs/superpowers/{specs,plans}/` frontmatter (`date` / `status`) as the corpus grows.
 ```
 
-- [ ] **Step 2: Verify no status leaked back in**
+- [x] **Step 2: Verify no status leaked back in**
 
 Run:
 
@@ -623,7 +654,7 @@ grep -cE 'Now / Next / Later|not live work|:active,' docs/ROADMAP.md
 
 Expected: `0`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/ROADMAP.md
@@ -647,7 +678,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Consumes: `tools/session-task.sh` call forms from Task 1; the board state from Task 2; the ROADMAP division of labor from Task 3.
 - Produces: nothing consumed by later tasks — this is the final task.
 
-- [ ] **Step 1: Insert the two sections**
+- [x] **Step 1: Insert the two sections**
 
 Insert immediately before the line `## Carta surface — authoritative reference`:
 
@@ -701,7 +732,7 @@ start is already claimed by another worktree, **stop and ask the human** rather 
 anyway or silently picking something else.
 ```
 
-- [ ] **Step 2: Verify placement and that nothing was clobbered**
+- [x] **Step 2: Verify placement and that nothing was clobbered**
 
 Run:
 
@@ -720,7 +751,7 @@ grep -c '^| `init` |' CLAUDE.md
 
 Expected: `1`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add CLAUDE.md
