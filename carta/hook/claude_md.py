@@ -78,6 +78,13 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
     findings: list = []
     judge_calls = 0
     judge_errors = 0
+    # Coverage caveats. `carta claude-md check` emits this dict as JSON and the
+    # /claude-md-sync skill stops on empty findings — without these it cannot tell
+    # a synced CLAUDE.md from one whose scan ran out of judge budget partway
+    # through. A large CLAUDE.md is joined into one document here, so exceeding
+    # max_judge_calls is routine rather than exotic.
+    skipped_overflow = 0
+    candidates_truncated = 0
     if to_scan:
         scan_text = "\n\n".join(s["text"] for s in to_scan)
         result = run_stale_scan(
@@ -87,6 +94,8 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
         findings = result.findings
         judge_calls = result.judge_calls
         judge_errors = result.judge_errors
+        skipped_overflow = result.skipped_overflow
+        candidates_truncated = getattr(result, "candidates_truncated", 0)
 
     return {
         "scanned": True,
@@ -95,6 +104,8 @@ def scan_claude_md(repo_root: Path, cfg: dict, *, search_fn=None, judge_fn=None)
         "skipped_unchanged": skipped_unchanged,
         "judge_calls": judge_calls,
         "judge_errors": judge_errors,
+        "skipped_overflow": skipped_overflow,
+        "candidates_truncated": candidates_truncated,
     }
 
 

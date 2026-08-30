@@ -35,25 +35,65 @@ class StaleScanResult:
     judge_calls: int = 0
     skipped_overflow: int = 0
     judge_errors: int = 0   # judge calls that returned None (timeout/error) — fail-open, but tracked
-    # Candidates that were retrieved and fused but cut by run_search's top_n
-    # before the gate could see them. This scan passes no depth override, so a
-    # superseding doc ranked below top_n cannot be reported at ANY threshold —
-    # and a missed warning is invisible by construction. Counting it makes the
-    # ceiling measurable; #121 owns lifting it. 0 when search_fn is injected,
-    # since an injected function carries no stage data to measure.
+    # Candidates retrieved and fused but cut by run_search's top_n before the gate
+    # could see them — a ceiling no threshold can recover from, and invisible
+    # without counting, since a missed warning looks exactly like no warning.
+    # The scan now searches to `candidate_depth` (30) rather than inheriting
+    # search.top_n (5), so this should normally be 0; a non-zero value means even
+    # 30 is too shallow for this corpus. 0 when search_fn is injected, since an
+    # injected function carries no stage data to measure.
     candidates_truncated: int = 0
 
 
 def _search_cfg(cfg: dict) -> dict:
-    """Text-only search config: no ColPali, no rerank — the prompt-hook latency pattern."""
+    """Text-only search config: no ColPali, no rerank — the prompt-hook latency pattern.
+
+    `top_n` is raised to `hooks.stale_scan.candidate_depth` (30). Without it the
+    scan inherited `search.top_n` (5), and a superseding document fused at rank
+    6-29 was retrieved, embedded and ranked — then truncated away before any
+    threshold could see it. A gate cannot recover what the search already dropped,
+    so the relevance floor alone would have been tuned against a ceiling (#121).
+    Judge cost is unaffected: one call per chunk regardless of depth.
+    """
+    depth = cfg.get("hooks", {}).get("stale_scan", {}).get("candidate_depth", 30)
     return {
         **cfg,
         "embed": {**cfg.get("embed", {}), "colpali_enabled": False},
         "search": {
             **cfg.get("search", {}),
+            "top_n": depth,
             "rerank": {**cfg.get("search", {}).get("rerank", {}), "enabled": False},
         },
     }
+
+
+def _candidate_is_plausible(hit: dict, dense_floor: float) -> bool:
+    """Is this candidate worth an Ollama judge call?
+
+    A cheap cost throttle, NOT a precision instrument — the judge is the precision
+    instrument (#84). Skip only on MEASURED irrelevance: a dense cosine below the
+    floor. The asymmetry is load-bearing:
+
+    * A hit with no `dense_score` — BM25-only on a hybrid collection — cannot be
+      measurably irrelevant, so it is judged, never silenced. Dropping it is the
+      recall bug this replaces, and supersession frequently turns on a shared
+      identifier that only the sparse lane matches.
+    * `score` is NOT consulted on the hybrid path. It is intra-collection RRF, a
+      rank statistic whose scale depends on `rrf_k` and lane count; comparing it
+      to a cosine threshold is the original defect.
+
+    Deliberately NOT ported from the recall hook's `_gate_zone`: its lane-agreement
+    clause. Agreement is evidence of topicality, which is what proactive recall
+    wants. Supersession wants the CONTRADICTING document, which often agrees in one
+    lane only.
+    """
+    dense = hit.get("dense_score")
+    if dense is not None:
+        return dense >= dense_floor
+    if hit.get("lane_ranks"):
+        return True                      # hybrid, sparse-only — nothing to measure
+    score = hit.get("score")             # legacy non-hybrid collection: a real cosine
+    return score is not None and score >= dense_floor
 
 
 def _in_doc_scope(rel_path: str, cfg: dict, repo_root: Path) -> bool:
@@ -240,7 +280,9 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
         judge_fn = lambda section_text, candidate: _stale_judge(section_text, candidate, cfg)  # noqa: E731
 
     sc = cfg.get("hooks", {}).get("stale_scan", {})
-    threshold = sc.get("candidate_threshold", 0.65)
+    # `candidate_threshold` is deliberately NOT read: it gated fused RRF output as
+    # though it were a cosine (#121). See config.py for the deprecation note.
+    dense_floor = sc.get("candidate_dense_threshold", 0.55)
     max_judge_calls = sc.get("max_judge_calls", 30)
     max_tokens = cfg.get("embed", {}).get("chunking", {}).get("max_tokens", 400)
 
@@ -255,14 +297,23 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
             except Exception:
                 continue  # fail open for this section
             hits = [h for h in (hits or []) if h.get("source") != doc.path]
-            if not hits or (hits[0].get("score") or 0.0) < threshold:
+            # Take the best PLAUSIBLE candidate in fused order rather than gating
+            # on hits[0] alone. hits[0] is the cross-collection argmax by
+            # `fused_score`, but `score` is intra-collection — so gating on hits[0]
+            # discarded better candidates sitting right behind it. Fused order is
+            # the retrieval system's own ranking and is kept; this only skips past
+            # candidates measured irrelevant. Still one judge call per chunk.
+            candidate = next(
+                (h for h in hits if _candidate_is_plausible(h, dense_floor)), None
+            )
+            if candidate is None:
                 continue
             if result.judge_calls >= max_judge_calls:
                 result.skipped_overflow += 1
                 continue
             result.judge_calls += 1
             try:
-                verdict = judge_fn(chunk["text"], hits[0])
+                verdict = judge_fn(chunk["text"], candidate)
             except Exception:
                 verdict = None
             if verdict is None:
@@ -272,9 +323,9 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
                     file=doc.path,
                     section=chunk.get("section_heading", ""),
                     snippet=chunk["text"][:160],
-                    candidate_path=hits[0].get("source", ""),
-                    candidate_score=hits[0].get("score") or 0.0,
-                    candidate_excerpt=hits[0].get("excerpt", ""),
+                    candidate_path=candidate.get("source", ""),
+                    candidate_score=candidate.get("score") or 0.0,
+                    candidate_excerpt=candidate.get("excerpt", ""),
                 ))
     result.candidates_truncated = sum(truncated)
     return result
