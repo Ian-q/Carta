@@ -253,3 +253,45 @@ def test_append_swallows_unwritable_directory(tmp_path, monkeypatch):
         assert not (locked / "traces").exists()
     finally:
         os.chmod(locked, 0o700)  # restore so tmp_path cleanup can remove it
+
+
+# ---------------------------------------------------------------------------
+# Stage attribution (#122): a document that WAS retrieved and then narrowed out
+# must not be reported as an ingestion problem.
+# ---------------------------------------------------------------------------
+
+def test_retrieved_but_truncated_doc_is_not_blamed_on_ingestion():
+    """A doc fused at rank 7 with top_n 5 was retrieved, embedded and ranked —
+    it lost at a ranking stage. Reporting "never entered retrieval: check
+    ingestion" sends the operator to the embed pipeline for a ranking loss,
+    which is the confidently-wrong diagnosis this trace exists to eliminate."""
+    target = {"source": "docs/TARGET.md", "lane_ranks": {"dense": 7, "sparse": 12},
+              "dense_score": 0.61, "fused_rank": 7, "fused_score": 0.0125}
+    stages = {
+        "retrieved": [target],
+        "fused": [target],
+        "post_dedupe": [target],
+        "final": [],
+    }
+    out = trace.format_trace([], "TARGET", "q", ["c"], stages=stages)
+    assert "never entered retrieval" not in out, (
+        f"ranking-stage loss blamed on ingestion:\n{out}"
+    )
+    assert "TARGET" in out
+    # The evidence that it WAS retrieved must be shown, not withheld.
+    assert "7" in out
+
+
+def test_doc_absent_from_every_stage_still_reports_never_retrieved():
+    """The genuine ingestion case must keep its clear diagnosis."""
+    stages = {"retrieved": [], "fused": [], "post_dedupe": [], "final": []}
+    out = trace.format_trace([], "US-11965795", "kingpin", ["c"], stages=stages)
+    assert "never entered retrieval" in out
+
+
+def test_without_stage_data_the_trace_does_not_assert_an_ingestion_cause():
+    """With no stages passed, format_trace cannot distinguish "never retrieved"
+    from "retrieved then dropped" — so it must not claim it can."""
+    out = trace.format_trace([], "US-11965795", "kingpin", ["c"])
+    assert "never entered retrieval: check ingestion, not ranking." not in out
+    assert "not retrieved" in out.lower()
