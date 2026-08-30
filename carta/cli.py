@@ -973,6 +973,17 @@ def _print_stale_result(result, scfg):
             f"hooks.stale_scan.judge_timeout_s or check the Ollama judge model.",
             file=sys.stderr,
         )
+    # Coverage caveats print regardless of whether anything was found. They say the
+    # scan did not look everywhere — which matters MOST when it reports nothing,
+    # since a budget-exhausted scan and a clean one are otherwise byte-identical.
+    if result.skipped_overflow:
+        print(f"  ({result.skipped_overflow} more section(s) not checked — max_judge_calls cap)", file=sys.stderr)
+    if getattr(result, "candidates_truncated", 0):
+        print(
+            f"  ({result.candidates_truncated} retrieved candidate(s) never reached the "
+            f"judge — cut by search depth before the gate)",
+            file=sys.stderr,
+        )
     if not result.findings:
         return
     print(f"carta stale-scan: scanned {result.scanned} doc(s)...", file=sys.stderr)
@@ -986,14 +997,6 @@ def _print_stale_result(result, scfg):
         )
         if f.section and f.section != "(intro)":
             print(f"     Run: /doc-search \"{f.section.lstrip('# ').strip()}\"", file=sys.stderr)
-    if result.skipped_overflow:
-        print(f"  ({result.skipped_overflow} more section(s) not checked — max_judge_calls cap)", file=sys.stderr)
-    if getattr(result, "candidates_truncated", 0):
-        print(
-            f"  ({result.candidates_truncated} retrieved candidate(s) never reached the "
-            f"judge — cut by search top_n before the gate; see #121)",
-            file=sys.stderr,
-        )
     if not scfg.get("block_on_stale", False):
         print("  (warn-only; set hooks.stale_scan.block_on_stale: true to fail)", file=sys.stderr)
 

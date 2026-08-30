@@ -167,7 +167,25 @@ DEFAULTS = {
         "stale_scan": {
             "enabled": True,
             "block_on_stale": False,
+            # DEPRECATED and ignored since the RRF-scale fix (#121). It gated
+            # run_search's fused RRF output — sum of 1/(k+rank), k=2 — as though it
+            # were a cosine, so a hit ranked FIRST in one lane maxed at 0.5 and was
+            # dropped before the judge. Left accepted-but-inert so existing configs
+            # do not silently keep a mis-scaled value; use candidate_dense_threshold.
             "candidate_threshold": 0.65,
+            # Relevance floor on the DENSE lane's raw cosine — an absolute measure,
+            # unlike a rank statistic. 0.55 is deliberately below the recall hook's
+            # 0.60 for the identical measurement: a missed supersession is invisible
+            # and this feature is warn-only, so it errs toward reaching the judge.
+            # Uncalibrated, like the hook's own values; max_judge_calls is the real
+            # cost bound.
+            "candidate_dense_threshold": 0.55,
+            # Fused-result depth for the supersession search. Explicit and deeper
+            # than search.top_n (5): a superseding doc fused at rank 6-29 was
+            # retrieved and then truncated away before any threshold could see it,
+            # so the gate could be tuned perfectly and still recover nothing.
+            # Cost is unchanged — one judge call per chunk regardless of depth.
+            "candidate_depth": 30,
             "judge_timeout_s": 60,
             "ollama_model": "qwen3.5:9b",
             "max_judge_calls": 30,

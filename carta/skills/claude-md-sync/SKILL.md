@@ -22,8 +22,8 @@ carta claude-md check
 
 > Uses the installed `carta` CLI. If it isn't on PATH, run `python -m carta claude-md check`.
 
-Parse the JSON. If `findings` is empty, report "CLAUDE.md is in sync with the docs." and stop.
-Each finding has:
+Parse the JSON. If `findings` is empty **and both coverage caveats below are zero**, report
+"CLAUDE.md is in sync with the docs." and stop. Each finding has:
 
 - `heading` — the CLAUDE.md section heading
 - `section_text` — the full current text of that section
@@ -36,6 +36,19 @@ sections were *not actually evaluated*, and a non-responding judge reads as "not
 `0 findings` result with `judge_errors` > 0 is **not** a clean bill of health. Tell the user the
 judge is timing out and to raise `hooks.stale_scan.judge_timeout_s` (and/or check the Ollama judge
 model) before trusting the result.
+
+**Heed `skipped_overflow` and `candidates_truncated` — the coverage caveats.** They say the scan did
+not look everywhere, so like `judge_errors` they make a `0 findings` result meaningless rather than
+clean:
+
+- `skipped_overflow` > 0 — that many sections were never checked because the scan hit
+  `hooks.stale_scan.max_judge_calls` (default 30). A large CLAUDE.md exceeds it routinely. Tell the
+  user how many sections went unexamined and that raising `max_judge_calls` will cover the rest, at
+  proportionally more judge time.
+- `candidates_truncated` > 0 — that many retrieved candidates were cut by search depth before the
+  supersession gate saw them. Suggest raising `hooks.stale_scan.candidate_depth`.
+
+Report these even when there ARE findings: they bound what the run could have found.
 
 ---
 
