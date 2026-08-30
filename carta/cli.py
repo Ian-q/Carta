@@ -298,8 +298,10 @@ def cmd_search(args):
         sys.exit(1)
     from carta.embed.pipeline import run_search
     query = " ".join(args.query)
+    # Only pay for stage snapshots when --trace will actually read them.
+    trace_stages = {} if getattr(args, "trace", None) else None
     try:
-        results = run_search(query, cfg, verbose=True)
+        results = run_search(query, cfg, verbose=True, trace_stages=trace_stages)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -307,8 +309,13 @@ def cmd_search(args):
     if getattr(args, "trace", None):
         from carta.search.trace import format_trace
         from carta.search.scoped import get_search_collections
-        print(format_trace(results, args.trace, query,
-                           get_search_collections(cfg, "repo")))
+        # Prefer the collections that actually answered over the ones config says
+        # would be searched — a 404 or a not-ready visual collection is skipped.
+        collections = (trace_stages or {}).get("collections_queried")
+        if collections is None:
+            collections = get_search_collections(cfg, "repo")
+        print(format_trace(results, args.trace, query, collections,
+                           stages=trace_stages))
         print()
 
     if not results:
@@ -981,6 +988,12 @@ def _print_stale_result(result, scfg):
             print(f"     Run: /doc-search \"{f.section.lstrip('# ').strip()}\"", file=sys.stderr)
     if result.skipped_overflow:
         print(f"  ({result.skipped_overflow} more section(s) not checked — max_judge_calls cap)", file=sys.stderr)
+    if getattr(result, "candidates_truncated", 0):
+        print(
+            f"  ({result.candidates_truncated} retrieved candidate(s) never reached the "
+            f"judge — cut by search top_n before the gate; see #121)",
+            file=sys.stderr,
+        )
     if not scfg.get("block_on_stale", False):
         print("  (warn-only; set hooks.stale_scan.block_on_stale: true to fail)", file=sys.stderr)
 
@@ -1189,7 +1202,9 @@ def main():
     search_p.add_argument(
         "--trace", metavar="SUBSTRING",
         help="Print per-stage retrieval ranks for documents whose path matches "
-             "SUBSTRING. Diagnoses which stage lost a result.",
+             "SUBSTRING, and name the narrowing that dropped it — fusion, dedup, "
+             "rerank, the visual cap, or falling below top_n. Distinguishes a "
+             "ranking loss from a document that was never retrieved at all.",
     )
 
     flag_p = sub.add_parser(
