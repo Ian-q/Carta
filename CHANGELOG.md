@@ -4,7 +4,15 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
-Two silent retrieval failures, and the instrumentation that would have caught them.
+## [0.17.0] — 2026-08-30
+
+**Retrieval is trustworthy again.** Five silent failures across every consumer of the search path, plus the instrumentation whose absence let them survive.
+
+The through-line is one mistake in five places: **a number that looks like a similarity usually isn't.** Carta ranks with four incomparable scales — dense cosine (0–1), BM25, *two* RRF layers (intra-collection at `rrf_k`, then cross-collection fusion), and ColPali MaxSim, a sum over query tokens an order of magnitude larger. Every defect here is a comparison between two of them: a cosine threshold applied to RRF output in the recall hook and again in the stale scan; a merge sorting MaxSim against cosine in the MCP server.
+
+They compounded. `carta_search` returned `[]` on every hybrid collection, which hid the fact that it also buried text under page images — so fixing the first exposed the second, and until both landed the repair was not observably delivered on any corpus with visual pages. The recall gate and the stale-scan gate were the same bug in two consumers; only one was found first. And `--trace`, the tool built to make exactly this class of failure visible, could not see the intermediate pools it claimed to report on, so it blamed ingestion for ranking losses.
+
+Where a number's scale is now load-bearing, the code says which scale it is on and why — see the design rationale in `docs/ROADMAP.md`.
 
 ### Fixed
 
