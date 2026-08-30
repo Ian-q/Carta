@@ -35,6 +35,13 @@ class StaleScanResult:
     judge_calls: int = 0
     skipped_overflow: int = 0
     judge_errors: int = 0   # judge calls that returned None (timeout/error) — fail-open, but tracked
+    # Candidates that were retrieved and fused but cut by run_search's top_n
+    # before the gate could see them. This scan passes no depth override, so a
+    # superseding doc ranked below top_n cannot be reported at ANY threshold —
+    # and a missed warning is invisible by construction. Counting it makes the
+    # ceiling measurable; #121 owns lifting it. 0 when search_fn is injected,
+    # since an injected function carries no stage data to measure.
+    candidates_truncated: int = 0
 
 
 def _search_cfg(cfg: dict) -> dict:
@@ -216,9 +223,19 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
     judge_fn(section_text, candidate_hit) -> True (stale) / False / None (unknown).
     Both default to the real search + Ollama stale judge; injectable for tests.
     """
+    # Candidates fused but cut by top_n before the gate, accumulated across every
+    # chunk searched. Only the default search_fn can measure this — it is the only
+    # one with access to run_search's stage snapshots.
+    truncated: list[int] = []
     if search_fn is None:
         from carta.embed.pipeline import run_search
-        search_fn = lambda q: run_search(q, _search_cfg(cfg))  # noqa: E731
+
+        def search_fn(q):  # noqa: E731 - closure over `truncated` by design
+            stages: dict = {}
+            hits = run_search(q, _search_cfg(cfg), trace_stages=stages)
+            pool = stages.get("post_dedupe") or stages.get("fused") or []
+            truncated.append(max(0, len(pool) - len(hits)))
+            return hits
     if judge_fn is None:
         judge_fn = lambda section_text, candidate: _stale_judge(section_text, candidate, cfg)  # noqa: E731
 
@@ -259,4 +276,5 @@ def run_stale_scan(repo_root, cfg, changed_docs, *, search_fn=None, judge_fn=Non
                     candidate_score=hits[0].get("score") or 0.0,
                     candidate_excerpt=hits[0].get("excerpt", ""),
                 ))
+    result.candidates_truncated = sum(truncated)
     return result

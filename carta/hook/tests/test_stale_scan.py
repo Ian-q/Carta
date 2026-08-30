@@ -52,6 +52,45 @@ def _doc(path="docs/a.md"):
     return ChangedDoc(path=path, text="## micro-ROS UART\nThe UART transport uses micro-ROS.\n")
 
 
+def test_scan_counts_candidates_truncated_before_the_gate(monkeypatch):
+    """`stale_scan` calls run_search with no depth override, so it sees only
+    `top_n` fused results — a superseding doc ranked below that never reaches the
+    judge at ANY threshold. That ceiling is invisible today: a missed warning
+    looks identical to no warning. Count what was cut so it can be measured
+    (evidence for #121, which owns the fix).
+    """
+    import carta.embed.pipeline as pipeline
+
+    fused = [{"source": f"docs/c{i}.md", "score": 0.9 - i * 0.01, "excerpt": "x"}
+             for i in range(12)]
+
+    def fake_run_search(q, cfg, *a, trace_stages=None, **kw):
+        if trace_stages is not None:
+            trace_stages["retrieved"] = list(fused)
+            trace_stages["fused"] = list(fused)
+            trace_stages["final"] = fused[:5]
+        return fused[:5]
+
+    monkeypatch.setattr(pipeline, "run_search", fake_run_search)
+
+    result = run_stale_scan(Path("/repo"), _CFG, [_doc()],
+                            judge_fn=lambda section_text, candidate: False)
+
+    assert result.candidates_truncated == 7, (
+        f"expected the 7 fused candidates cut by top_n to be counted, "
+        f"got {result.candidates_truncated}"
+    )
+
+
+def test_injected_search_fn_leaves_the_truncation_counter_at_zero():
+    """An injected search_fn carries no stage data; the counter must stay 0
+    rather than fabricate a measurement."""
+    search = lambda q: [{"source": "docs/cobs.md", "score": 0.91, "excerpt": "e"}]
+    result = run_stale_scan(Path("/repo"), _CFG, [_doc()], search_fn=search,
+                            judge_fn=lambda s, c: False)
+    assert result.candidates_truncated == 0
+
+
 def test_stale_section_with_yes_judge_yields_finding():
     search = lambda q: [{"source": "docs/cobs.md", "score": 0.91, "excerpt": "COBS+JSON replaced micro-ROS"}]
     judge = lambda section_text, candidate: True

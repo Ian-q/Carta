@@ -1898,6 +1898,7 @@ def _apply_visual_cap(
     limit: int,
     visual_max_ratio: float = 1.0,
     visual_floor: int = 0,
+    diverted: list | None = None,
 ) -> list[dict]:
     """Admit up to ``limit`` hits from an already-ordered list, capping the visual share.
 
@@ -1932,7 +1933,16 @@ def _apply_visual_cap(
             result.append(hit)
     # Text too shallow to fill the pool: restore diverted visual, still in order.
     if len(result) < limit and overflow:
-        result.extend(overflow[: limit - len(result)])
+        restored = overflow[: limit - len(result)]
+        result.extend(restored)
+        overflow = overflow[len(restored):]
+    if diverted is not None:
+        # Only the hits the VISUAL QUOTA actually rejected. Hits the loop never
+        # reached — because the pool was already full — are truncation casualties,
+        # not quota casualties, and must not be reported as the latter: this
+        # function is a hard truncator as well as a filter, and conflating the two
+        # tells an operator to tune `visual_max_ratio` for a plain rank loss.
+        diverted.extend(overflow)
     return result
 
 
@@ -2368,7 +2378,8 @@ def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[di
 
 
 def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None = None,
-               timeout_s: float | None = None) -> list[dict]:
+               timeout_s: float | None = None, *,
+               trace_stages: dict | None = None) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
     Args:
@@ -2378,6 +2389,18 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
         stats: optional dict; when provided, run_search records "rerank_requested" and
             "rerank_applied" (rerank_score observed on hits before stripping).
         timeout_s: optional WALL-CLOCK budget for the whole search (issue #106).
+        trace_stages: optional dict; when provided, run_search records a shallow
+            snapshot of the candidate pool at each narrowing it actually performs
+            ("retrieved", "fused", "post_dedupe", "rerank_pool", "post_rerank",
+            "final", plus "collections_queried" and "cap_diverted" — the latter
+            being the hits the visual QUOTA rejected, which is not a stage because
+            `_apply_visual_cap` truncates as well as filters). Every narrowing is
+            destructive — the intermediate lists are locals that die with the call
+            — so without this a caller cannot tell a document that was never
+            retrieved from one that was retrieved and then out-ranked (#122).
+            Stages that did not run are OMITTED rather than recorded empty, since
+            the tracer attributes a loss to the next *recorded* stage. Snapshots
+            are lists of references, not copies of the hits.
             None — the default and what every caller but the hook passes — leaves
             behaviour exactly as it was: a 60s query embed and a 10s Qdrant client,
             with no deadline checks.
@@ -2463,6 +2486,9 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     # so incomparable score scales (text cosine/RRF vs visual ColPali MaxSim)
     # can't crowd each other out.
     per_collection: list[list[dict]] = []
+    # Collections that actually returned a lane, which is not the same as the
+    # collections we set out to query: one may 404 or be skipped as not-ready.
+    queried_collections: list[str] = []
 
     for coll_name in collections:
         if deadline is not None and time.monotonic() >= deadline:
@@ -2569,6 +2595,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
                         coll_results.append(_text_hit(payload, r.score, None))
 
             per_collection.append(coll_results)
+            queried_collections.append(coll_name)
         except Exception as e:
             err_str = str(e).lower()
             # 404 / collection not found — skip silently (collection may not exist yet)
@@ -2591,6 +2618,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     # When deduping, defer the visual cap to the final stage (applied against top_n
     # after dedup) so the deepened pool can't let visual over-inject. 1.0 = no cap.
     merge_ratio = 1.0 if dedupe_results else visual_max_ratio
+    if trace_stages is not None:
+        trace_stages["retrieved"] = [h for coll in per_collection for h in coll]
+        trace_stages["collections_queried"] = list(queried_collections)
+
     all_results = _rrf_merge_collections(
         per_collection, fetch_limit, visual_max_ratio=merge_ratio
     )
@@ -2601,16 +2632,28 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     if graph_enabled:
         all_results = _apply_graph_expansion(all_results, cfg, repo_root)
 
+    # Recorded after any graph expansion, so "fused" is the pool the next
+    # narrowing actually sees rather than the pool before a widening.
+    if trace_stages is not None:
+        trace_stages["fused"] = list(all_results)
+
     # De-duplicate by source so the reranker ranks distinct docs and the shown
     # top_n covers distinct docs (not duplicate chunks of the same one).
     if dedupe_results:
         all_results = _dedupe_by_source(all_results)
+        if trace_stages is not None:
+            trace_stages["post_dedupe"] = list(all_results)
 
     # Optional second-stage cross-encoder reranking (opt-in via search.rerank.enabled)
     rerank_applied = False
     if rerank_enabled and all_results:
         from carta.search.rerank import rerank_dispatch
         pool = all_results[:candidate_pool]
+        # Recorded separately from post_rerank: hits beyond candidate_pool are never
+        # scored by the cross-encoder at all. Blaming their loss on the reranker
+        # points at reranker quality when the remedy is raising candidate_pool.
+        if trace_stages is not None:
+            trace_stages["rerank_pool"] = list(pool)
         # rerank_hits reads chunk text from key "text"; run_search stores it as "excerpt"
         for h in pool:
             h["text"] = h.get("excerpt", "")
@@ -2630,6 +2673,8 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
         for _h in all_results:
             _h.pop("text", None)
             _h.pop("rerank_score", None)
+        if trace_stages is not None:
+            trace_stages["post_rerank"] = list(all_results)
 
     if stats is not None:
         stats["rerank_requested"] = rerank_enabled
@@ -2638,6 +2683,16 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     # Cap the visual lane's share of the SHOWN results (relative to top_n, not the
     # deepened fetch pool), preserving the #36 balance after dedup.
     if dedupe_results:
-        all_results = _apply_visual_cap(all_results, top_n, visual_max_ratio)
+        # `diverted` collects only the hits the visual QUOTA rejected. The cap also
+        # truncates to top_n, so snapshotting its *output* as a stage would make it
+        # swallow every plain rank loss and report it as a visual-cap drop.
+        cap_diverted: list = [] if trace_stages is not None else None
+        all_results = _apply_visual_cap(all_results, top_n, visual_max_ratio,
+                                        diverted=cap_diverted)
+        if trace_stages is not None:
+            trace_stages["cap_diverted"] = cap_diverted
 
-    return all_results[:top_n]
+    final = all_results[:top_n]
+    if trace_stages is not None:
+        trace_stages["final"] = list(final)
+    return final

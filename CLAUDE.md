@@ -173,7 +173,7 @@ keeping the board honest.
 | `init` | Bootstrap Carta in a repo (config, collections, skills, hook) |
 | `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
 | `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair` re-embeds damaged points. `.xlsx`/`.csv` sources embed text-bearing cells only (frame names + notes; numerics stay out), mirrored to `.carta/companions/` |
-| `search` | Hybrid (BM25 + dense, RRF) semantic search. `--trace <substring>` reports per-stage ranks and scores (bm25 rank / dense rank + raw cosine / intra-RRF / fused / final) for matching paths — which stage lost a result |
+| `search` | Hybrid (BM25 + dense, RRF) semantic search. `--trace <substring>` reports per-stage ranks and scores (bm25 rank / dense rank + raw cosine / intra-RRF / fused / final) for matching paths, and for a document that is *not* in the results names the narrowing that dropped it — fusion, dedup, rerank, the visual cap, or falling below `top_n` — distinguishing a ranking loss from one never retrieved at all |
 | `focus` | Deep retrieval scoped to **one file**: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `search` (locate → go deep) |
 | `audit` | Embed-pipeline **data integrity** check → JSON |
 | `doctor` | Diagnose environment (Qdrant/Ollama/models); `--fix` auto-installs |
