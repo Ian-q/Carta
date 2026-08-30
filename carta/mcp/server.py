@@ -18,7 +18,7 @@ from typing import Literal, Optional, Union
 
 from carta.config import find_config, load_config, ConfigError
 from carta.embed.embed import get_embedding
-from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S, _text_source
+from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S, _text_source, _rrf_merge_collections
 from carta.embed.lock import embed_lock, EmbedLockHeld
 from carta.scanner.scanner import check_embed_induction_needed, check_embed_drift
 from carta.search.scoped import get_search_collections
@@ -33,6 +33,12 @@ logging.basicConfig(
 _logger = logging.getLogger(__name__)
 
 mcp_server = FastMCP("carta")
+
+# The visual cap is a fraction of the requested depth, and here that depth is chosen
+# by the calling agent rather than by config. At the shipped visual_max_ratio of 0.2
+# the cap rounds to 0 for top_k 1-2, suppressing the visual lane outright on exactly
+# the narrow questions where one page image is the whole answer. Keep one slot.
+_MCP_VISUAL_FLOOR = 1
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +114,19 @@ def carta_search(
         # Get collections to search based on scope
         collections = get_search_collections(cfg, scope)
 
-        # Search across all collections and merge results
-        all_results = []
+        # Search across all collections, keeping each collection's hits as its own
+        # ranked list: the merge below fuses by RANK, and rank is only meaningful
+        # within a collection. Flattening first would destroy it.
+        text_lanes: list[list[dict]] = []
+        visual_lanes: list[list[dict]] = []
+        # Every lane is fetched exactly `top_k` deep, and no deeper. The fused order
+        # is rank-major and `_apply_visual_cap` admits non-visual hits unconditionally
+        # until the pool is full, so `top_k` per lane already supplies every hit that
+        # can possibly be admitted — a deeper fetch is provably output-identical here.
+        # It would only start to matter if this path later grew `_dedupe_by_source`,
+        # which collapses hits and so needs candidates in reserve. Depth is not free:
+        # each text hit carries its chunk text, and each visual hit costs a page
+        # render plus a base64 encode, paid whether or not the merge keeps it.
         for coll_name in collections:
             try:
                 # Check if this is a visual collection
@@ -118,14 +135,14 @@ def carta_search(
                     results = _run_search_visual_collection(
                         query, cfg, coll_name, top_k, repo_root
                     )
-                    all_results.extend(results)
+                    visual_lanes.append(results)
                 else:
                     # Search text collection using standard embedding
                     results = _run_search_collection(query, cfg, coll_name, top_k)
                     # Mark results with type for downstream processing
                     for r in results:
                         r["type"] = "text"
-                    all_results.extend(results)
+                    text_lanes.append(results)
             except QueryEmbeddingError:
                 # The query itself could not be embedded (Ollama outage). This is not a
                 # per-collection miss — it's identical for every text collection — so
@@ -136,9 +153,20 @@ def carta_search(
                 # This collection does not exist yet — other collections may still answer.
                 continue
 
-        # Sort by score descending and take top_k
-        all_results.sort(key=lambda x: x["score"], reverse=True)
-        results = all_results[:top_k]
+        # Fuse by rank, never by raw score. Text hits carry dense cosine (~0.4-0.8)
+        # and visual hits carry ColPali MaxSim (a sum over query tokens, ~10-40);
+        # one comparator over both puts every page image above every text chunk
+        # (#120). RRF discards magnitude, so a rank-0 text hit and a rank-0 visual
+        # hit compete fairly. Text lanes go first: ties break toward earlier lanes.
+        visual_max_ratio = cfg.get("search", {}).get("fusion", {}).get(
+            "visual_max_ratio", 1.0
+        )
+        results = _rrf_merge_collections(
+            text_lanes + visual_lanes,
+            top_k,
+            visual_max_ratio=visual_max_ratio,
+            visual_floor=_MCP_VISUAL_FLOOR,
+        )
 
     except QueryEmbeddingError as e:
         return {"error": "embedding_unavailable", "detail": str(e)}

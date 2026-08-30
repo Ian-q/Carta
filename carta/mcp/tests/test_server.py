@@ -417,7 +417,14 @@ def test_carta_search_invalid_scope():
 
 
 def test_carta_search_merges_results_from_multiple_collections():
-    """Results from multiple collections are merged and sorted by score."""
+    """Results from multiple collections are merged by RANK, not by raw score.
+
+    Cross-collection ordering is Reciprocal Rank Fusion, matching `run_search`
+    (#120). Both hits here are rank 0 in their own collection, so they tie on
+    fused score and the tie breaks toward the collection listed first — the 0.7
+    hit leads the 0.9 one. That is deliberate: scores from different collections
+    are not a ranking signal, only ranks within a collection are.
+    """
     server = _get_server_module()
     carta_search = server.carta_search
     
@@ -441,9 +448,11 @@ def test_carta_search_merges_results_from_multiple_collections():
         
         assert isinstance(result, list)
         assert len(result) == 2
-        # Results should be sorted by score descending
-        assert result[0]["score"] == 0.9
-        assert result[1]["score"] == 0.7
+        # Rank-based: both are rank 0, tie breaks toward the earlier collection.
+        assert [r["source"] for r in result] == ["project.pdf", "other.pdf"]
+        # Both survive the merge; `score` keeps its intra-collection value and is
+        # explicitly NOT the ordering signal.
+        assert {r["score"] for r in result} == {0.7, 0.9}
     finally:
         _restore_server_functions(server, originals)
 
@@ -662,7 +671,13 @@ def test_carta_scan_config_not_found():
 # ---------------------------------------------------------------------------
 
 def test_carta_search_includes_visual_results():
-    """Visual collections are searched and results include type='visual'."""
+    """Visual collections are searched and their hits survive the merge intact.
+
+    The text hit leads: MaxSim 0.92 does not outrank cosine 0.85 by magnitude,
+    because ordering is by rank and both are rank 0 in their own lane (#120).
+    The visual hit must still be present and still carry its `image_b64` — the
+    merge reorders hits, it never strips the image passthrough.
+    """
     server = _get_server_module()
     carta_search = server.carta_search
     
@@ -700,10 +715,194 @@ def test_carta_search_includes_visual_results():
         
         assert isinstance(result, list)
         assert len(result) == 2
-        # Results should be sorted by score (visual 0.92 first, then text 0.85)
-        assert result[0]["score"] == 0.92
-        assert result[0]["type"] == "visual"
-        assert result[0]["image_b64"] == "base64data"
+        # Text leads on rank; MaxSim magnitude no longer buys slot 0.
+        assert result[0]["source"] == "docs/spec.pdf"
+        assert result[0].get("type", "text") == "text"
+        # The visual hit survives, with its image payload intact.
+        visual = [r for r in result if r.get("type") == "visual"]
+        assert len(visual) == 1
+        assert visual[0]["image_b64"] == "base64data"
+        assert visual[0]["score"] == 0.92
+    finally:
+        _restore_server_functions(server, originals)
+
+
+def test_carta_search_maxsim_visual_does_not_bury_text():
+    """ColPali MaxSim (~10-40) must not outrank dense cosine (~0.5) on the MCP path.
+
+    The two producers stamp `score` from incomparable metrics, so a single
+    score-descending sort puts every visual page above every text chunk. Merge by
+    rank (RRF), never by raw score — the fix `run_search` already carries (#36).
+    """
+    server = _get_server_module()
+
+    text_results = [
+        {"score": 0.55 - i * 0.01, "source": f"docs/t{i}.md", "excerpt": "t"}
+        for i in range(5)
+    ]
+    visual_results = [
+        {
+            "score": 34.0 - i,
+            "source": f"docs/v{i}.pdf (page {i})",
+            "excerpt": "v",
+            "type": "visual",
+            "image_b64": "b",
+            "page_num": i,
+        }
+        for i in range(5)
+    ]
+
+    patches, originals = _patch_server_functions(
+        server,
+        _load_cfg=_TEST_CFG,
+        _repo_root_from_cfg=_MOCK_REPO_ROOT,
+        get_search_collections=["test-project_doc", "test-project_visual"],
+        _run_search_collection=lambda *a, **k: text_results,
+        _run_search_visual_collection=lambda *a, **k: visual_results,
+    )
+
+    try:
+        result = server.carta_search("query", top_k=5)
+        types = [r.get("type", "text") for r in result]
+        assert result[0]["source"] == "docs/t0.md", (
+            f"top text hit lost slot 0 to a MaxSim score: {result[0]}"
+        )
+        assert types.count("text") >= 2, f"text crowded out by MaxSim: {types}"
+    finally:
+        _restore_server_functions(server, originals)
+
+
+def test_carta_search_does_not_over_fetch_any_lane():
+    """No lane is fetched deeper than the caller asked for.
+
+    The fused order is rank-major and `_apply_visual_cap` admits non-visual hits
+    unconditionally until the pool is full, so `top_k` per lane already supplies
+    every hit that can be admitted — fetching deeper is output-identical and pure
+    cost. Each text hit carries its chunk text; each visual hit costs a page render
+    plus a base64 encode, paid whether or not the merge keeps it.
+    """
+    server = _get_server_module()
+
+    seen = {}
+
+    def record_text(query, cfg, coll_name, top_n):
+        seen["text"] = top_n
+        return [{"score": 0.5, "source": "docs/a.md", "excerpt": "t"}]
+
+    def record_visual(query, cfg, coll_name, top_n, repo_root):
+        seen["visual"] = top_n
+        return [{"score": 30.0, "source": "docs/b.pdf (page 1)", "excerpt": "v",
+                 "type": "visual", "image_b64": "b", "page_num": 1}]
+
+    patches, originals = _patch_server_functions(
+        server,
+        _load_cfg=_TEST_CFG,
+        _repo_root_from_cfg=_MOCK_REPO_ROOT,
+        get_search_collections=["test-project_doc", "test-project_visual"],
+        _run_search_collection=record_text,
+        _run_search_visual_collection=record_visual,
+    )
+
+    try:
+        server.carta_search("query", top_k=5)
+        assert seen == {"text": 5, "visual": 5}, (
+            f"a lane was fetched deeper than top_k, which cannot change the "
+            f"output and costs payload/renders per query: {seen}"
+        )
+    finally:
+        _restore_server_functions(server, originals)
+
+
+def test_carta_search_keeps_one_visual_slot_at_small_top_k():
+    """A small agent-chosen top_k must not silently suppress the visual lane entirely.
+
+    The cap is round(visual_max_ratio * limit), so at the shipped 0.2 it is 0 for
+    top_k 1-2 — `carta_search(q, top_k=2)` would return no page image at all while
+    any text hit exists. The ratio was swept against the CLI's 30-deep pool at
+    top_n=5 (where it lands on 1); it is a borrowed number here, not a calibrated
+    one, so the visual lane keeps a floor of one slot when it has hits to offer.
+    """
+    server = _get_server_module()
+
+    cfg = dict(_TEST_CFG)
+    cfg["search"] = {"top_n": 5, "fusion": {"visual_max_ratio": 0.2}}
+
+    text_results = [
+        {"score": 0.55 - i * 0.01, "source": f"docs/t{i}.md", "excerpt": "t"}
+        for i in range(5)
+    ]
+    visual_results = [
+        {
+            "score": 34.0 - i,
+            "source": f"docs/v{i}.pdf (page {i})",
+            "excerpt": "v",
+            "type": "visual",
+            "image_b64": "b",
+            "page_num": i,
+        }
+        for i in range(5)
+    ]
+
+    patches, originals = _patch_server_functions(
+        server,
+        _load_cfg=cfg,
+        _repo_root_from_cfg=_MOCK_REPO_ROOT,
+        get_search_collections=["test-project_doc", "test-project_visual"],
+        _run_search_collection=lambda *a, **k: text_results,
+        _run_search_visual_collection=lambda *a, **k: visual_results,
+    )
+
+    try:
+        result = server.carta_search("query", top_k=2)
+        types = [r.get("type", "text") for r in result]
+        assert types.count("visual") == 1, (
+            f"visual lane suppressed entirely at top_k=2 (cap rounds to 0): {types}"
+        )
+        assert types.count("text") == 1, f"expected one text hit alongside: {types}"
+    finally:
+        _restore_server_functions(server, originals)
+
+
+def test_carta_search_visual_cap_still_binds_at_normal_depth():
+    """The floor lifts a zero cap to one; it must not disable the cap itself.
+
+    At top_k=5 the shipped 0.2 gives a cap of 1, and RRF's ~1:1 interleave would
+    otherwise fill half the pool with page images.
+    """
+    server = _get_server_module()
+
+    cfg = dict(_TEST_CFG)
+    cfg["search"] = {"top_n": 5, "fusion": {"visual_max_ratio": 0.2}}
+
+    text_results = [
+        {"score": 0.55 - i * 0.01, "source": f"docs/t{i}.md", "excerpt": "t"}
+        for i in range(10)
+    ]
+    visual_results = [
+        {
+            "score": 34.0 - i,
+            "source": f"docs/v{i}.pdf (page {i})",
+            "excerpt": "v",
+            "type": "visual",
+            "image_b64": "b",
+            "page_num": i,
+        }
+        for i in range(10)
+    ]
+
+    patches, originals = _patch_server_functions(
+        server,
+        _load_cfg=cfg,
+        _repo_root_from_cfg=_MOCK_REPO_ROOT,
+        get_search_collections=["test-project_doc", "test-project_visual"],
+        _run_search_collection=lambda *a, **k: text_results,
+        _run_search_visual_collection=lambda *a, **k: visual_results,
+    )
+
+    try:
+        result = server.carta_search("query", top_k=5)
+        types = [r.get("type", "text") for r in result]
+        assert types.count("visual") == 1, f"cap did not bind at top_k=5: {types}"
     finally:
         _restore_server_functions(server, originals)
 
