@@ -112,6 +112,51 @@ def test_ratio_zero_excludes_visual_when_text_fills_pool():
     assert [m["source"] for m in merged] == ["t0", "t1", "t2", "t3", "t4"]
 
 
+def test_visual_floor_does_not_lower_a_larger_ratio_cap():
+    """The floor RAISES a cap the ratio rounded too low; it never replaces it.
+
+    At top_n=20 the shipped 0.2 ratio gives a cap of 4 while the floor asks for 1.
+    A `max()` keeps 4; a hard assignment would silently cut the visual lane to a
+    quarter of its intended share on every deep query. The two are indistinguishable
+    at top_n 1-5, which is where every other cap test sits.
+    """
+    text = [_text(f"t{i}", 0.5) for i in range(20)]
+    visual = [_visual(f"v{i}", 30.0) for i in range(20)]
+
+    merged = _rrf_merge_collections(
+        [text, visual], top_n=20, visual_max_ratio=0.2, visual_floor=1
+    )
+
+    assert [m["type"] for m in merged].count("visual") == 4
+
+
+def test_visual_floor_raises_a_cap_the_ratio_rounded_to_zero():
+    """The case the floor exists for: round(0.2 * 2) == 0 suppresses the lane."""
+    text = [_text(f"t{i}", 0.5) for i in range(5)]
+    visual = [_visual(f"v{i}", 30.0) for i in range(5)]
+
+    without = _rrf_merge_collections([text, visual], top_n=2, visual_max_ratio=0.2)
+    with_floor = _rrf_merge_collections(
+        [text, visual], top_n=2, visual_max_ratio=0.2, visual_floor=1
+    )
+
+    assert [m["type"] for m in without].count("visual") == 0
+    assert [m["type"] for m in with_floor].count("visual") == 1
+
+
+def test_visual_floor_is_clamped_by_the_pool_size():
+    """A floor wider than the pool cannot admit more hits than `top_n`."""
+    text = [_text(f"t{i}", 0.5) for i in range(5)]
+    visual = [_visual(f"v{i}", 30.0) for i in range(5)]
+
+    merged = _rrf_merge_collections(
+        [text, visual], top_n=2, visual_max_ratio=0.0, visual_floor=99
+    )
+
+    assert len(merged) == 2
+    assert [m["type"] for m in merged].count("visual") <= 2
+
+
 def test_merge_writes_fused_score_and_rank_onto_hits():
     """The cross-collection fusion decides ordering, so its score must be on the
     hit. Before this, hits carried the intra-collection score, which did not
