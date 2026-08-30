@@ -9,7 +9,7 @@
 > The doc backlog lives in [`BACKLOG/TRIAGE.md`](BACKLOG/TRIAGE.md); audit findings in
 > [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
 
-**Current release:** v0.16.1 · **Unreleased on `main`:** the retrieval-path repair (#123).
+**Current release:** v0.17.0.
 **Retrieval:** hybrid recall@5 **0.984** (61/62 on the 62-query ET-embed eval, CLI path).
 
 ---
@@ -129,6 +129,7 @@ gantt
     Hook import cost (v0.16.1)      :done, 2026-07-30, 1d
     section Retrieval path
     MCP + gate repair + --trace (#123) :done, 2026-08-09, 9d
+    Score-scale cluster (v0.17.0)     :done, 2026-08-29, 2d
 ```
 
 > This gantt records **shipped** cycles only — planned work lives on the board, which is where dates
