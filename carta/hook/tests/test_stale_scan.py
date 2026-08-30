@@ -32,6 +32,21 @@ def test_search_cfg_forces_rerank_and_colpali_off():
     assert out["search"]["rerank"]["enabled"] is False
 
 
+def test_search_cfg_searches_deeper_than_the_display_top_n():
+    """The scan must not inherit `search.top_n` (5).
+
+    A superseding doc fused at rank 6-29 is retrieved, embedded and ranked, then
+    truncated away before any threshold can see it — so the relevance floor would
+    be tuned against a ceiling. Judge cost is unchanged: one call per chunk."""
+    cfg = {"search": {"top_n": 5}}
+    assert _search_cfg(cfg)["search"]["top_n"] == 30
+
+
+def test_search_cfg_depth_is_configurable():
+    cfg = {"search": {"top_n": 5}, "hooks": {"stale_scan": {"candidate_depth": 12}}}
+    assert _search_cfg(cfg)["search"]["top_n"] == 12
+
+
 def test_in_doc_scope(tmp_path):
     cfg = {"docs_root": "docs/", "excluded_paths": []}
     assert _in_doc_scope("docs/guide.md", cfg, tmp_path) is True
@@ -52,12 +67,127 @@ def _doc(path="docs/a.md"):
     return ChangedDoc(path=path, text="## micro-ROS UART\nThe UART transport uses micro-ROS.\n")
 
 
+def _fused_hits(dense_specs, sparse_ids):
+    """Build lane point lists, fuse them for real, and shape real hit dicts.
+
+    Real fusion, not hand-written scores: the defect under test IS a scale error,
+    so a fabricated `score` could hide it.
+
+    dense_specs: [(id, cosine), ...] in dense-lane rank order.
+    sparse_ids:  [id, ...] in sparse-lane rank order.
+    """
+    from unittest.mock import MagicMock
+    from carta.embed import pipeline
+
+    def _pt(pid, score):
+        p = MagicMock()
+        p.id = pid
+        p.score = score
+        p.payload = {"file_path": f"docs/{pid}.md", "text": pid}
+        return p
+
+    dense = [_pt(pid, cos) for pid, cos in dense_specs]
+    sparse = [_pt(pid, 10.0) for pid in sparse_ids]
+    fused = pipeline._fuse_lanes(dense, sparse, top_n=5, k=2)
+    return [pipeline._text_hit(e["point"].payload, e["score"], e["ranks"], e["dense_score"])
+            for e in fused]
+
+
+def _scan_with(hits, cfg=None):
+    judged = []
+
+    def judge_fn(section_text, candidate):
+        judged.append(candidate)
+        return True
+
+    result = run_stale_scan(Path("/repo"), cfg or _CFG, [_doc()],
+                            search_fn=lambda q: hits, judge_fn=judge_fn)
+    return result, judged
+
+
+def test_relevant_single_lane_candidate_reaches_the_judge():
+    """A doc rank 0 in the dense lane with a strong cosine, absent from sparse,
+    fuses to exactly 1/(2+0) = 0.5. That is below the 0.65 `candidate_threshold`,
+    so today it is dropped and the supersession is never reported — a MISSED
+    WARNING, which is the fail-open direction that matters for this feature."""
+    hits = _fused_hits([("b", 0.82)], [])
+    assert hits[0]["score"] == 0.5           # pins the RRF scale before behaviour
+    assert hits[0]["dense_score"] == 0.82    # genuinely relevant
+
+    result, judged = _scan_with(hits)
+    assert judged, "relevant single-lane candidate never reached the judge"
+    assert len(result.findings) == 1
+
+
+def test_bm25_only_candidate_is_never_dropped():
+    """A sparse-only hit has no dense cosine to measure, so it cannot be
+    MEASURABLY irrelevant. Dropping it is the recall bug being replaced —
+    supersession often turns on a shared identifier the dense lane misses."""
+    hits = _fused_hits([], ["b"])
+    assert hits[0]["dense_score"] is None
+
+    _result, judged = _scan_with(hits)
+    assert judged, "BM25-only candidate was silenced instead of judged"
+
+
+def test_measurably_irrelevant_candidate_is_still_skipped():
+    """Proves this is a re-scaling, not a deletion of the gate: a hit ranked 0 in
+    BOTH lanes fuses to 1.0 — the maximum — yet a 0.18 cosine says it is not
+    about the same thing. A high fused score must not buy past a low cosine."""
+    hits = _fused_hits([("b", 0.18)], ["b"])
+    assert hits[0]["score"] == 1.0
+
+    _result, judged = _scan_with(hits)
+    assert not judged, "measurably irrelevant candidate still cost a judge call"
+
+
+def test_gate_does_not_read_the_cross_collection_ordering_field():
+    """`score` is INTRA-collection while ordering comes from `fused_score`, so
+    hits[0] is not necessarily the best candidate. Gating on hits[0] alone
+    discards better candidates sitting behind it."""
+    from carta.embed import pipeline
+
+    weak = _fused_hits([("weak", 0.20)], ["weak"])       # score 1.0, cosine 0.20
+    strong = _fused_hits([("strong", 0.88)], [])          # score 0.5, cosine 0.88
+    merged = pipeline._rrf_merge_collections([weak, strong], top_n=5)
+    assert merged[0]["dense_score"] == 0.20               # weak leads the list
+
+    _result, judged = _scan_with(merged)
+    assert judged, "a strong candidate behind hits[0] was never considered"
+    assert judged[0]["source"] == "docs/strong.md"
+
+
+def test_default_search_fn_actually_applies_search_cfg(monkeypatch):
+    """The call site must apply `_search_cfg`, not just possess it.
+
+    Testing `_search_cfg` as a pure function proves nothing about the one place it
+    is used. Mutating `run_search(q, _search_cfg(cfg), ...)` to pass `cfg` raw —
+    dropping the depth override, the ColPali kill and the rerank kill in one edit
+    — previously failed no test in the suite.
+    """
+    import carta.embed.pipeline as pipeline
+
+    seen = {}
+
+    def fake_run_search(q, cfg, *a, trace_stages=None, **kw):
+        seen.update(cfg)
+        return []
+
+    monkeypatch.setattr(pipeline, "run_search", fake_run_search)
+    run_stale_scan(Path("/repo"), _CFG, [_doc()], judge_fn=lambda s, c: False)
+
+    search = seen.get("search", {})
+    assert search.get("top_n") == 30, f"depth override not applied at the call site: {seen}"
+    assert seen.get("embed", {}).get("colpali_enabled") is False
+    assert search.get("rerank", {}).get("enabled") is False
+
+
 def test_scan_counts_candidates_truncated_before_the_gate(monkeypatch):
-    """`stale_scan` calls run_search with no depth override, so it sees only
-    `top_n` fused results — a superseding doc ranked below that never reaches the
-    judge at ANY threshold. That ceiling is invisible today: a missed warning
-    looks identical to no warning. Count what was cut so it can be measured
-    (evidence for #121, which owns the fix).
+    """Candidates cut by search depth before the gate are counted, not silent.
+
+    The scan now searches to `candidate_depth`, so this should normally be 0 — a
+    non-zero value means even that depth is too shallow for the corpus, which is
+    otherwise invisible: a missed warning looks identical to no warning.
     """
     import carta.embed.pipeline as pipeline
 
@@ -359,10 +489,16 @@ def test_stale_judge_none_on_bad_or_missing_output(monkeypatch):
 
 
 def test_hit_with_none_score_does_not_crash_the_scan():
-    """A hit whose score is explicitly None must be treated as 0.0 (below
-    threshold), not raise TypeError and unwind the whole fail-open scan."""
+    """A hit with no usable relevance signal must be skipped, not raise TypeError
+    and unwind the whole fail-open scan.
+
+    This is the LEGACY (non-hybrid) shape: no `lane_ranks`, no `dense_score`, and
+    `score` explicitly None, so there is nothing to measure and nothing to compare.
+    Contrast `test_bm25_only_candidate_is_never_dropped`, where `lane_ranks` IS
+    present — a hybrid sparse-only hit has no cosine *by construction* and must
+    reach the judge rather than be silenced."""
     search = lambda q: [{"source": "docs/cobs.md", "score": None, "excerpt": "x"}]
     judge = lambda section_text, candidate: True
     result = run_stale_scan(Path("/repo"), _CFG, [_doc()], search_fn=search, judge_fn=judge)
     assert result.scanned == 1
-    assert result.findings == []  # None score → below threshold → no judge, no finding
+    assert result.findings == []  # no measurable signal → no judge, no finding
