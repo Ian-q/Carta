@@ -1893,15 +1893,29 @@ def _visual_collection_ready(client, coll_name: str) -> bool:
     return bool(count and count > 0)
 
 
-def _apply_visual_cap(ordered: list[dict], limit: int, visual_max_ratio: float = 1.0) -> list[dict]:
+def _apply_visual_cap(
+    ordered: list[dict],
+    limit: int,
+    visual_max_ratio: float = 1.0,
+    visual_floor: int = 0,
+) -> list[dict]:
     """Admit up to ``limit`` hits from an already-ordered list, capping the visual share.
 
     Caps ``type == "visual"`` hits at ``round(visual_max_ratio * limit)``; overflow
     visual is diverted and the freed slots are backfilled with deeper non-visual hits,
     input order preserved among everything admitted. ``visual_max_ratio >= 1.0`` disables
     the cap. Returns a list of length <= limit.
+
+    ``visual_floor`` raises the cap when the ratio rounds it below that many slots —
+    the cap is a *fraction of the requested depth*, so at a small ``limit`` it rounds
+    to 0 and suppresses the visual lane outright (``round(0.2 * 2) == 0``). Callers
+    whose depth is chosen by someone else — the MCP tool's agent-supplied ``top_k`` —
+    pass 1 so a relevant page image survives a shallow request. It never lowers a cap
+    and is bounded by ``limit``; the default 0 leaves the CLI's swept behaviour exact.
     """
     visual_cap = round(visual_max_ratio * limit)
+    if visual_floor:
+        visual_cap = max(visual_cap, min(visual_floor, limit))
     result: list[dict] = []
     overflow: list[dict] = []
     visual_admitted = 0
@@ -2269,6 +2283,7 @@ def _rrf_merge_collections(
     top_n: int,
     k: int = 60,
     visual_max_ratio: float = 1.0,
+    visual_floor: int = 0,
 ) -> list[dict]:
     """Fuse ranked hit lists from multiple collections with Reciprocal Rank Fusion.
 
@@ -2292,6 +2307,9 @@ def _rrf_merge_collections(
         visual_max_ratio: ceiling on the visual lane's share of the pool, as a
             fraction of `top_n` (cap = round(visual_max_ratio * top_n)). 1.0 (default)
             disables the cap; a corpus with no visual hits is unaffected either way.
+        visual_floor: minimum visual slots when the ratio rounds the cap below it.
+            0 (default) leaves the cap exactly as the ratio computes it. See
+            `_apply_visual_cap` for why a caller with agent-chosen depth passes 1.
 
     Returns:
         Flat list of the original hit dicts (mutated in place), best-first by RRF,
@@ -2319,7 +2337,7 @@ def _rrf_merge_collections(
         hit["fused_score"] = rrf
         hit["fused_rank"] = fused_rank
         ordered.append(hit)
-    return _apply_visual_cap(ordered, top_n, visual_max_ratio)
+    return _apply_visual_cap(ordered, top_n, visual_max_ratio, visual_floor)
 
 
 def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[dict]:
