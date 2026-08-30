@@ -182,7 +182,7 @@ def test_run_search_forwards_configured_visual_max_ratio(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(pipeline, "_rrf_merge_collections", lambda *a, **k: [])
 
-    def fake_cap(ordered, limit, visual_max_ratio=1.0):
+    def fake_cap(ordered, limit, visual_max_ratio=1.0, visual_floor=0, diverted=None):
         captured["ratio"] = visual_max_ratio
         return list(ordered)[:limit]
 

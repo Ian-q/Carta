@@ -1,8 +1,22 @@
 """Retrieval tracing: what each stage did with each result.
 
-A retrieval miss can happen at five stages (never retrieved, one lane only,
-demoted by fusion, collapsed by dedup, dropped by the visual cap) and they are
-indistinguishable from the outside. This records which one.
+A retrieval miss can happen at six places — never retrieved at all; retrieved in
+one lane only; demoted out of the fetch pool by cross-collection fusion; dropped
+by the reranker's truncation; dropped by the visual cap; or simply ranked below
+`top_n` — and from the outside they are indistinguishable. `format_trace` tells
+them apart, but ONLY when handed the per-stage snapshots `run_search` captures
+into its `trace_stages` out-param. Without those it can see just the final list,
+and says so rather than guessing a cause.
+
+Two corrections to an earlier version of this note, both load-bearing:
+
+* **Dedup is not a loss stage for tracing.** `_dedupe_by_source` keys on `source`,
+  which is the same field the needle matches against, so a collapsed duplicate
+  always leaves a surviving twin with an identical source. It changes a hit's
+  rank; it never removes a traceable document.
+* **Plain `top_n` truncation is the dominant loss**, and it was missing from the
+  list entirely. With shipped defaults (pool 30, `top_n` 5) most of the pool exits
+  there — and it is the case an operator actually runs `--trace` to diagnose.
 
 Two consumers: the recall hook appends JSONL for gate calibration (to
 `~/.carta/traces/<project>/`, machine-level state outside every repo — see
@@ -114,7 +128,75 @@ def _fmt_value(value) -> str:
     return str(value) if value is not None else _UNKNOWN
 
 
-def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
+# The narrowings `run_search` applies, in pipeline order. Only the stages that
+# actually ran are recorded (dedup and rerank are both optional), so "where was
+# it lost" is answered by the next *recorded* stage after the last one that still
+# held the document — never by a stage that never executed.
+_STAGE_ORDER = ("retrieved", "fused", "post_dedupe", "rerank_pool", "post_rerank", "final")
+
+# What it means to be absent from a stage, given you were present in the one before.
+_STAGE_LOSS = {
+    "fused": "demoted out of the fetch pool by cross-collection fusion",
+    "post_dedupe": "collapsed into another chunk of the same source by dedup",
+    "rerank_pool": "cut by the reranker's candidate_pool slice, before it was scored",
+    "post_rerank": "scored by the reranker and ranked out",
+    "final": "ranked below top_n",
+}
+
+# The visual cap is NOT a stage: `_apply_visual_cap` both enforces the quota and
+# hard-truncates to top_n, so its output list cannot tell the two apart — treating
+# it as a stage made every plain rank loss report as a visual-cap drop, sending the
+# operator to tune `visual_max_ratio` for something it did not cause. run_search
+# instead reports exactly the hits the quota rejected, and membership in that set
+# overrides the final-stage verdict.
+_CAP_DIVERTED = "cap_diverted"
+_CAP_LOSS = "dropped by the visual cap"
+
+
+def _hit_detail_lines(h: dict) -> list:
+    """The per-hit rank/score rows, shared by the shown and dropped paths."""
+    ranks = h.get("lane_ranks") or {}
+    return [
+        f"  bm25 rank    : {_fmt_rank(ranks.get('sparse'))}",
+        f"  dense rank   : {_fmt_rank(ranks.get('dense'))}",
+        f"  dense cosine : {_fmt_value(h.get('dense_score'))}  "
+        f"(raw dense-lane similarity, not an RRF score)",
+        f"  intra-score  : {_fmt_value(h.get('score'))}  (dense+sparse RRF, k=2)",
+        f"  post-RRF     : fused_rank={_fmt_value(h.get('fused_rank'))}  "
+        f"fused_score={_fmt_value(h.get('fused_score'))}  (cross-collection RRF, k=60)",
+    ]
+
+
+def _find_in_stage(stage_hits, needle_lower: str):
+    """First hit in `stage_hits` whose source contains the needle, else None."""
+    for h in stage_hits or []:
+        if needle_lower in str(h.get("source", "")).lower():
+            return h
+    return None
+
+
+def _trace_survival(stages: dict, needle_lower: str):
+    """Walk the recorded stages in pipeline order.
+
+    Returns `(last_stage_seen, hit, lost_at)` — where `lost_at` is the first
+    recorded stage that no longer holds the document, or None if it survived to
+    the last recorded stage. `last_stage_seen` is None when the document never
+    appears in any stage at all, which is the only case that genuinely indicts
+    ingestion.
+    """
+    recorded = [s for s in _STAGE_ORDER if s in stages]
+    last_seen, hit = None, None
+    for stage in recorded:
+        found = _find_in_stage(stages.get(stage), needle_lower)
+        if found is not None:
+            last_seen, hit = stage, found
+        elif last_seen is not None:
+            return last_seen, hit, stage
+    return last_seen, hit, None
+
+
+def format_trace(hits: list, needle: str, query: str, collections: list,
+                 *, stages: dict | None = None) -> str:
     """Human-readable per-stage report for documents matching `needle`.
 
     `needle` is matched case-insensitively against each hit's `source` path.
@@ -150,28 +232,49 @@ def format_trace(hits: list, needle: str, query: str, collections: list) -> str:
     matches = [(i, h) for i, h in enumerate(hits)
                if needle_lower in str(h.get("source", "")).lower()]
     if not matches:
+        last_seen, hit, lost_at = (
+            _trace_survival(stages, needle_lower) if stages else (None, None, None)
+        )
+        if hit is not None:
+            # It WAS retrieved. Show the evidence and name the narrowing that
+            # dropped it — this is a ranking-stage loss, not an ingestion one.
+            lines.append(str(hit.get("source") or needle))
+            lines.extend(_hit_detail_lines(hit))
+            # A quota casualty is reported as such regardless of which stage the
+            # walk landed on — the cap runs inside the same step that truncates.
+            if _find_in_stage(stages.get(_CAP_DIVERTED), needle_lower) is not None:
+                reason = _CAP_LOSS
+            else:
+                reason = _STAGE_LOSS.get(lost_at, "dropped after retrieval")
+            lines.append(f"  FINAL        : not shown — {reason}")
+            lines.append("")
+            lines.append("  → retrieved, embedded and ranked — then dropped by the "
+                         "narrowing named above. This is a ranking problem, not an "
+                         "ingestion one.")
+            return "\n".join(lines)
+
         lines.append(f"{needle}")
         lines.append(f"  bm25 rank    : {_NOT_IN_LANE}")
         lines.append(f"  dense rank   : {_NOT_IN_LANE}")
         lines.append("  FINAL        : not retrieved")
         lines.append("")
-        lines.append("  → never entered retrieval: check ingestion, not ranking.")
+        if stages:
+            # Stage data was captured and the document is in none of it.
+            lines.append("  → never entered retrieval: check ingestion, not ranking.")
+        else:
+            # No stage data: "absent from the final results" is all that is known,
+            # and the two causes are indistinguishable from here. Say so rather
+            # than assert a cause this call cannot establish.
+            lines.append("  → absent from the final results. Without stage data this "
+                         "cannot tell a never-retrieved document from one that was "
+                         "retrieved and then out-ranked.")
         return "\n".join(lines)
 
     for n, (i, h) in enumerate(matches):
         if n > 0:
             lines.append("")   # separate multiple matched documents
-        ranks = h.get("lane_ranks") or {}
-        dense = ranks.get("dense")
-        sparse = ranks.get("sparse")
         lines.append(str(h.get("source")))
-        lines.append(f"  bm25 rank    : {_fmt_rank(sparse)}")
-        lines.append(f"  dense rank   : {_fmt_rank(dense)}")
-        lines.append(f"  dense cosine : {_fmt_value(h.get('dense_score'))}  "
-                     f"(raw dense-lane similarity, not an RRF score)")
-        lines.append(f"  intra-score  : {_fmt_value(h.get('score'))}  (dense+sparse RRF, k=2)")
-        lines.append(f"  post-RRF     : fused_rank={_fmt_value(h.get('fused_rank'))}  "
-                     f"fused_score={_fmt_value(h.get('fused_score'))}  (cross-collection RRF, k=60)")
+        lines.extend(_hit_detail_lines(h))
         lines.append(f"  FINAL        : {i}  ✓ shown")
     return "\n".join(lines)
 
