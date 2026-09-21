@@ -10,7 +10,9 @@
 > [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
 
 **Current release:** v0.17.0.
-**Retrieval:** hybrid recall@5 **0.984** (61/62 on the 62-query ET-embed eval, CLI path).
+**Retrieval:** on the 84-query ET-embed eval built not to saturate (#19): hybrid recall@5 **0.655** /
+MRR 0.554 (CLI); MCP dense-only MRR 0.463 → **0.698** with a caller-written hypothetical (HyDE). The
+retired 62-query set had saturated at 0.984.
 
 ---
 
@@ -22,6 +24,8 @@ flowchart TD
         DEDUP["#73 search result dedup<br/>recall 0.952→0.984"]
         RERANK["reranker rank-prior<br/>(abandoned — lever spent)"]
         REPAIR["#123 retrieval path repair<br/>+ per-stage --trace"]
+        EVAL2["#19 84-query eval<br/>(pdf-deep, vocab-mismatch, rejects)"]
+        HYDE["HyDE: caller-written<br/>hypothetical answer"]
     end
     subgraph storage["Storage integrity"]
         VIS["#78 visual doc_generation<br/>+ orphan sweep"]
@@ -43,6 +47,8 @@ flowchart TD
     DEEP -- "covers what a text layer<br/>cannot answer" --> VIS
     HOOK --> SYNC
     FOCUS -- "deep partner to search<br/>(locate → go deep)" --> DEDUP
+    RERANK -- "saturation made the next<br/>lever unmeasurable" --> EVAL2
+    EVAL2 -- "re-exposed a first-stage<br/>lever: +0.24 MRR on MCP" --> HYDE
 ```
 
 ## Design rationale worth keeping
@@ -68,11 +74,22 @@ re-derive.
   fusion argmax, so the branch guarding against it never ran. It read as defensive and was inert.
   Reachability of every branch is now proven by tests driving real fusion output through the real
   gate.
-- **The first-stage recall lever is spent.** Across #35/#36/#37, contextual headers, and the #73
-  dedup, hybrid recall@5 climbed 0.790 → **0.984**. The reranker rank-prior experiment
-  ([abandoned spec](superpowers/specs/2026-06-13-reranker-rank-prior-design.md)) established that
-  the residual misses are **not** a chunking or embedding problem. The eval is too saturated to
-  measure another first-stage lever; growing the corpus is the only way to re-expose one.
+- **A saturated eval hides levers; the fix was harder questions, not more of them.** Across
+  #35/#36/#37, contextual headers, and the #73 dedup, hybrid recall@5 climbed 0.790 → 0.984 on the
+  62-query set, and the reranker rank-prior experiment
+  ([abandoned spec](superpowers/specs/2026-06-13-reranker-rank-prior-design.md)) found no chunking or
+  embedding problem left. The rebuilt 84-query set asks what the old one did not — answers buried in
+  long PDFs, questions sharing no vocabulary with their answer, design rationale, and `reject` hard
+  negatives — and baseline recall@5 fell to 0.655. That headroom is what made HyDE measurable.
+- **HyDE belongs to the caller, not to Carta.** Blending a *plausible* answer into the dense query
+  vector is a large win when a frontier model writes it (MCP MRR +0.24), and no win when a local
+  9b does — so the hypothetical is an argument, never something Carta generates. The blend keeps
+  the question in the vector (`mean`, not hypothetical-only): the three Claude variants tie within
+  noise, but `mean` has the fewest regressions and is the only 9b variant whose CI stays above zero —
+  it degrades gracefully when the hypothetical is poor. **A wrong answer is not a usable anchor:** dense embeddings encode topic, not truth, so
+  "the bus runs at 250 kbps" and "…500 kbps" embed together; subtracting a wrong answer is
+  neutral-to-harmful and its opposite vector is simply off-topic (0/84 found, dense-only).
+  [Spec with the full table](superpowers/specs/2026-09-21-hyde-hypothetical-query-design.md).
 - **The Qdrant WAL corruption was upstream, not ours.** `wal.rs:150 Utf8Error` was a Qdrant 1.17.0
   WAL-reader regression (qdrant#8455), fixed in 1.17.1. The bind-mount/fsync theory was falsified —
   no data was ever lost, and quarantined collections replay clean on 1.17.1. Hence the image pin.
