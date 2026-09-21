@@ -2379,7 +2379,8 @@ def _apply_graph_expansion(results: list[dict], cfg: dict, repo_root) -> list[di
 
 def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None = None,
                timeout_s: float | None = None, *,
-               trace_stages: dict | None = None) -> list[dict]:
+               trace_stages: dict | None = None,
+               hypothetical: str | None = None) -> list[dict]:
     """Search both text and visual collections for results matching query.
 
     Args:
@@ -2404,6 +2405,10 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
             None — the default and what every caller but the hook passes — leaves
             behaviour exactly as it was: a 60s query embed and a 10s Qdrant client,
             with no deadline checks.
+        hypothetical: optional caller-written passage phrased the way the docs would
+            state the answer (HyDE; it need not be correct). Blended into the DENSE
+            query vector only — BM25 and ColPali keep the raw query. None or blank
+            leaves behaviour unchanged. See carta/search/hyde.py.
 
     Returns:
         List of dicts: {"score": float, "source": str, "excerpt": str}
@@ -2472,6 +2477,19 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
     # not a per-collection miss — surface it instead of letting the loop's handler
     # mis-classify it and return [] ("nothing embedded", #79).
     text_query_vec = _embed_query_or_raise(query, cfg, collections, timeout=_remaining())
+    from carta.search import hyde
+    if text_query_vec is not None and hyde.usable(hypothetical):
+        # Dense lane only: BM25 and ColPali below still receive the raw `query`.
+        try:
+            hyp_vec = hyde.embed_hypothetical(
+                hypothetical, cfg["embed"]["ollama_url"], cfg["embed"]["ollama_model"],
+                timeout=_remaining())
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not embed the hypothetical — is Ollama running? Run: carta doctor\n"
+                f"(Detail: {e})"
+            ) from e
+        text_query_vec = hyde.blend(text_query_vec, hyp_vec)
 
     # Constructed AFTER the embed so a budgeted caller's client reflects the time
     # already spent rather than getting a fresh full budget. Safe to reorder:

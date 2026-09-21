@@ -428,7 +428,7 @@ def test_carta_search_merges_results_from_multiple_collections():
     server = _get_server_module()
     carta_search = server.carta_search
     
-    def mock_search_side_effect(query, cfg, coll_name, top_n):
+    def mock_search_side_effect(query, cfg, coll_name, top_n, hypothetical=None):
         if coll_name == "test-project_doc":
             return [{"score": 0.7, "source": "project.pdf", "excerpt": "project text"}]
         elif coll_name == "other-project_doc":
@@ -785,7 +785,7 @@ def test_carta_search_does_not_over_fetch_any_lane():
 
     seen = {}
 
-    def record_text(query, cfg, coll_name, top_n):
+    def record_text(query, cfg, coll_name, top_n, hypothetical=None):
         seen["text"] = top_n
         return [{"score": 0.5, "source": "docs/a.md", "excerpt": "t"}]
 
@@ -1052,3 +1052,86 @@ def test_run_search_collection_does_not_misclassify_500_with_not_found_in_body(m
 
     with pytest.raises(server.QdrantQueryError):
         server._run_search_collection("q", _cfg(), "ET-embed_doc", 5)
+
+
+# ---------------------------------------------------------------------------
+# HyDE: carta_search(..., hypothetical=) — the caller writes a plausible answer
+# (spec: docs/superpowers/specs/2026-09-21-hyde-hypothetical-query-design.md)
+# ---------------------------------------------------------------------------
+
+def test_carta_search_forwards_hypothetical_to_each_collection():
+    server = _get_server_module()
+    patches, originals = _patch_server_functions(
+        server,
+        _load_cfg=_TEST_CFG,
+        _repo_root_from_cfg=_MOCK_REPO_ROOT,
+        get_search_collections=["test-project_doc", "test-project_notes"],
+        _run_search_collection=lambda *a, **k: [],
+    )
+    try:
+        server.carta_search("why are prices stale", hypothetical="CDN copies expire only after their TTL.")
+        calls = patches["_run_search_collection"].call_args_list
+        assert len(calls) == 2
+        assert all(c.kwargs.get("hypothetical") == "CDN copies expire only after their TTL." for c in calls)
+    finally:
+        _restore_server_functions(server, originals)
+
+
+def test_run_search_collection_blends_hypothetical_into_dense_query(monkeypatch):
+    import math
+    import carta.search.hyde as hyde
+    server = _get_server_module()
+    fake = ContractFakeQdrant(named_vectors=True, points=[_point()])
+    embedded = {"query": [], "hyp": []}
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+
+    def fake_get_embedding(text, **kw):
+        embedded["query"].append((text, kw.get("prefix")))
+        return [1.0, 0.0]
+
+    def fake_embed_hyp(text, url, model, timeout=None):
+        embedded["hyp"].append(text)
+        return [0.0, 1.0]
+
+    monkeypatch.setattr(server, "get_embedding", fake_get_embedding)
+    monkeypatch.setattr(hyde, "embed_hypothetical", fake_embed_hyp)
+
+    server._run_search_collection("the question", _cfg(), "ET-embed_doc", 5,
+                                  hypothetical="the passage")
+
+    assert embedded["query"] == [("the question", "search_query: ")]   # query embedded as a query
+    assert embedded["hyp"] == ["the passage"]                          # hypothetical, not the query
+    assert fake.calls[-1]["query"] == pytest.approx([1 / math.sqrt(2), 1 / math.sqrt(2)])
+    assert fake.calls[-1]["using"] == "dense"
+
+
+def test_run_search_collection_without_hypothetical_is_unchanged(monkeypatch):
+    import carta.search.hyde as hyde
+    server = _get_server_module()
+    fake = ContractFakeQdrant(named_vectors=True, points=[_point()])
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [1.0, 0.0])
+
+    def must_not_embed(*a, **k):
+        raise AssertionError("no hypothetical -> no second embed")
+
+    monkeypatch.setattr(hyde, "embed_hypothetical", must_not_embed)
+    server._run_search_collection("q", _cfg(), "ET-embed_doc", 5)
+    server._run_search_collection("q", _cfg(), "ET-embed_doc", 5, hypothetical="  ")
+    assert fake.calls[-1]["query"] == [1.0, 0.0]
+
+
+def test_hypothetical_embed_failure_is_reported_as_embedding_unavailable(monkeypatch):
+    """A dead embed backend must surface as an error, never as 'no results' (#79)."""
+    import carta.search.hyde as hyde
+    server = _get_server_module()
+    fake = ContractFakeQdrant(named_vectors=True, points=[_point()])
+    monkeypatch.setattr(server, "QdrantClient", lambda **kw: fake)
+    monkeypatch.setattr(server, "get_embedding", lambda *a, **k: [1.0, 0.0])
+
+    def boom(*a, **k):
+        raise ConnectionError("ollama down")
+
+    monkeypatch.setattr(hyde, "embed_hypothetical", boom)
+    with pytest.raises(server.QueryEmbeddingError, match="hypothetical"):
+        server._run_search_collection("q", _cfg(), "ET-embed_doc", 5, hypothetical="h")

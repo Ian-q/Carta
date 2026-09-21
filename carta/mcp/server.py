@@ -86,6 +86,7 @@ def carta_search(
     query: str,
     top_k: int = 5,
     scope: Literal["repo", "shared", "global"] = "repo",
+    hypothetical: str | None = None,
 ) -> list[dict] | dict:
     """Search embedded project documentation for chunks relevant to query.
 
@@ -98,6 +99,14 @@ def carta_search(
         top_k: Maximum number of results to return (default 5).
         scope: Search scope - "repo" (current project only), "shared" (project + 
                permitted cross-project), or "global" (global collections only).
+        hypothetical: Optional but recommended for any non-trivial question. Write 2-5
+               sentences phrased the way THIS project's own docs/datasheets/plans would
+               state the answer — your best guess, with plausible specifics. It does NOT
+               need to be correct: it is blended into the semantic match so documents
+               worded differently from the question are found (measured: MRR +0.24,
+               recall@5 0.54 -> 0.77 on a hard eval set). This tool's text search is
+               semantic only, so the blend moves the whole text ranking; the visual
+               (page-image) lane still searches with `query`.
 
     Returns:
         List of result dicts: {score, source, page, section_heading, excerpt}.
@@ -138,7 +147,9 @@ def carta_search(
                     visual_lanes.append(results)
                 else:
                     # Search text collection using standard embedding
-                    results = _run_search_collection(query, cfg, coll_name, top_k)
+                    results = _run_search_collection(
+                        query, cfg, coll_name, top_k, hypothetical=hypothetical
+                    )
                     # Mark results with type for downstream processing
                     for r in results:
                         r["type"] = "text"
@@ -259,7 +270,8 @@ class QdrantQueryError(Exception):
     """The query itself failed. NOT safe to skip — it is identical for every collection."""
 
 
-def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: int) -> list[dict]:
+def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: int,
+                           hypothetical: str | None = None) -> list[dict]:
     """Search a single collection for chunks semantically similar to query.
 
     Args:
@@ -281,6 +293,7 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
     from qdrant_client.http.exceptions import UnexpectedResponse
 
     from carta.embed.embed import DENSE_VECTOR_NAME, collection_is_hybrid
+    from carta.search import hyde
 
     ollama_url = cfg["embed"]["ollama_url"]
     model = cfg["embed"]["ollama_model"]
@@ -294,6 +307,16 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
             f"Could not embed the query — is Ollama running at {ollama_url} and the "
             f"'{model}' model pulled? Run: carta doctor\n(Detail: {e})"
         ) from e
+    if hyde.usable(hypothetical):
+        # HyDE: blend the caller's hypothetical answer into the dense query vector.
+        try:
+            hyp_vec = hyde.embed_hypothetical(hypothetical, ollama_url, model)
+        except Exception as e:
+            raise QueryEmbeddingError(
+                f"Could not embed the hypothetical — is Ollama running at {ollama_url} and the "
+                f"'{model}' model pulled? Run: carta doctor\n(Detail: {e})"
+            ) from e
+        query_vec = hyde.blend(query_vec, hyp_vec)
 
     client = QdrantClient(url=cfg["qdrant_url"], timeout=10)
     try:
