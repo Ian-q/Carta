@@ -766,6 +766,7 @@ def cmd_eval(args):
     requires run_search to accept a scope parameter.
     """
     import copy
+    import json
     from carta.config import load_config
     from carta.eval.harness import run_eval
     from carta.embed.pipeline import run_search
@@ -797,6 +798,14 @@ def cmd_eval(args):
 
     metrics = run_eval(Path(args.eval_path), _search, k=k)
     print(f"queries={metrics['n_queries']}  recall@{k}={metrics['recall_at_k']:.3f}  MRR={metrics['mrr']:.3f}")
+    print("  ".join(f"recall@{c}={r:.3f}" for c, r in metrics["recall_at"].items()))
+    if metrics["n_with_reject"]:
+        print(f"hard negatives: {metrics['reject_violations']}/{metrics['n_with_reject']} queries "
+              f"ranked a reject doc above the gold (or in the top-{k} when the gold missed)")
+    if metrics["by_tag"]:
+        print("by tag:")
+        for tag, t in metrics["by_tag"].items():
+            print(f"  {tag:<16} n={t['n']:<3}  recall@{k}={t['recall_at_k']:.3f}  MRR={t['mrr']:.3f}")
     if rerank_requested:
         print(f"rerank: applied on {rerank_applied_count}/{query_count} queries")
         # Partial fail-open: a 0.8B reranker degrading on N/Q queries still prints a
@@ -814,7 +823,8 @@ def cmd_eval(args):
         print("rerank: not requested")
     for row in metrics["per_query"]:
         mark = row["first_hit_rank"] if row["first_hit_rank"] is not None else "MISS"
-        print(f"  [{mark}] {row['q']}")
+        flag = f"  (reject@{row['first_reject_rank']})" if row["reject_violation"] else ""
+        print(f"  [{mark}] {row['q']}{flag}")
 
     # A reranker that failed open on EVERY query is indistinguishable from a
     # working one in rank metrics alone — that's how 0.8.0 shipped broken.
@@ -827,6 +837,14 @@ def cmd_eval(args):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if getattr(args, "json", None):
+        # Written only after the total-fail-open check above, and carrying the rerank state,
+        # so an A/B script reading the file can never take a fail-open run for a reranked one.
+        metrics["rerank"] = {"requested": rerank_requested, "applied": rerank_applied_count,
+                             "queries": query_count}
+        Path(args.json).write_text(json.dumps(metrics, indent=2))
+        print(f"metrics written to {args.json}")
 
 
 def cmd_remember(args):
@@ -1230,6 +1248,8 @@ def main():
     eval_p = sub.add_parser("eval", help="Score retrieval quality against an eval set")
     eval_p.add_argument("eval_path", help="Path to eval-set YAML (see carta/eval/datasets/example.yaml)")
     eval_p.add_argument("-k", type=int, default=5, help="top-k cutoff (default 5)")
+    eval_p.add_argument("--json", metavar="PATH",
+                        help="also write the full metrics (incl. per-query ranks) as JSON")
 
     remember_p = sub.add_parser(
         "remember",

@@ -78,6 +78,14 @@ When `search.rerank.enabled` is true, `carta eval` also prints `rerank: applied 
 — and **fails (exit 1)** if the reranker ran on zero queries, so a silent fail-open (wrong model
 name, Ollama down, reasoning-model misconfig) can never masquerade as a reranked result.
 
+**Eval sets that don't saturate.** Once recall@5 nears 1.0 it can no longer detect a regression
+or measure an improvement, so `carta eval` also reports **recall@1 / recall@3** and supports two
+optional per-query fields: `reject:` — plausible-but-wrong docs (a sibling part's datasheet, a
+superseded plan); ranking one above the gold is counted as a **hard-negative violation** — and
+`tags:`, which break recall@k and MRR down per label (e.g. `pdf-deep`, `vocab-mismatch`). `--json PATH`
+writes the full metrics, per-query ranks included, for A/B tooling. See
+`carta/eval/datasets/example.yaml`.
+
 **Comparing against public benchmarks.** To position Carta against standard suites:
 - **[ViDoRe](https://huggingface.co/spaces/vidore/vidore-leaderboard) v1/v2** (nDCG@5) — the visual-document-retrieval benchmark ColPali/ColQwen2 are evaluated on; the most direct check of Carta's visual layer.
 - **[BEIR](https://github.com/beir-cellar/beir)** / **[MTEB retrieval](https://huggingface.co/spaces/mteb/leaderboard)** / **[RTEB](https://huggingface.co/blog/rteb)** (nDCG@10) — standard text-retrieval generalization.
