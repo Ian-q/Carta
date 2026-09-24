@@ -7,6 +7,18 @@ import requests
 
 from carta.config import ollama_keep_alive
 
+# _NO_THINK: the default judges (qwen3.5:0.8b, qwen3.5:9b) are reasoning models, and Ollama lets a
+# reasoning model emit a hidden chain of thought before it answers unless the request says
+# "think": false. For the recall hook's yes/no that is fatal: one call was measured at ~3,100
+# thinking tokens / ~55 s against a 3 s budget, so the judge zone always timed out and failed open
+# to silence. llm_rerank.py has carried the same fix since 0.9.0.
+#
+# ollama_json (the stale-scan supersession judge) deliberately KEEPS thinking. Measured on the #84
+# corpus with qwen3.5:9b: thinking off is ~15x faster (1.3 s vs ~20 s per case) but admitted a
+# false positive on 2 of 3 runs, and precision is what #84 validated. It runs pre-push, not on
+# prompt submission, so the latency is affordable there. (With a format constraint the thinking
+# is not reported in eval_count — it shows up only as wall-clock time.)
+
 
 def ollama_yesno(
     ollama_url: str,
@@ -31,6 +43,7 @@ def ollama_yesno(
                     {"role": "user", "content": user},
                 ],
                 "stream": False,
+                "think": False,  # see the _NO_THINK note at the top of this module
                 "keep_alive": ollama_keep_alive(),
             },
             timeout=timeout_s,
