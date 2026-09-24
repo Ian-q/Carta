@@ -281,6 +281,117 @@ class TestCmdEvalRerankAssertion:
         assert "rerank: not requested" in captured.out
 
 
+class TestCmdEvalReporting:
+    """cmd_eval surfaces the v2 eval-set fields: shallow-cutoff recall, the per-tag
+    breakdown, hard-negative (reject) violations, and a --json dump for A/B tooling."""
+
+    def _run(self, tmp_path, yaml_text, results_by_query, json_path=None):
+        import argparse
+        from unittest.mock import patch
+        from carta.cli import cmd_eval
+
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml_text)
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "http://localhost:11434", "ollama_model": "m"},
+               "search": {"top_n": 5}}
+
+        def fake_run_search(query, c, verbose=False, stats=None):
+            return [{"score": 1.0, "source": s, "excerpt": "", "type": "text"}
+                    for s in results_by_query[query]]
+
+        args = argparse.Namespace(eval_path=str(p), k=5, json=json_path)
+        with patch("carta.cli.find_config", return_value=Path("/fake/.carta/config.yaml")), \
+             patch("carta.config.load_config", return_value=cfg), \
+             patch("carta.embed.pipeline.run_search", side_effect=fake_run_search):
+            cmd_eval(args)
+
+    YAML = (
+        'queries:\n'
+        '  - q: "alpha"\n'
+        '    expect: ["rev-b"]\n'
+        '    reject: ["rev-a"]\n'
+        '    tags: [pdf-deep, hard-negative]\n'
+        '  - q: "beta"\n'
+        '    expect: ["b.md"]\n'
+    )
+    RESULTS = {"alpha": ["docs/current-monitor-rev-a.pdf", "docs/current-monitor-rev-b.pdf"], "beta": ["docs/b.md"]}
+
+    def test_summary_line_is_unchanged(self, tmp_path, capsys):
+        self._run(tmp_path, self.YAML, self.RESULTS)
+        assert "queries=2  recall@5=1.000  MRR=0.750" in capsys.readouterr().out
+
+    def test_prints_shallow_cutoff_recall(self, tmp_path, capsys):
+        self._run(tmp_path, self.YAML, self.RESULTS)
+        assert "recall@1=0.500  recall@3=1.000  recall@5=1.000" in capsys.readouterr().out
+
+    def test_prints_reject_violations_and_marks_query(self, tmp_path, capsys):
+        self._run(tmp_path, self.YAML, self.RESULTS)
+        out = capsys.readouterr().out
+        assert "hard negatives: 1/1 queries ranked a reject doc above the gold" in out
+        assert "when the gold missed" in out
+        assert "[2] alpha  (reject@1)" in out
+
+    def test_prints_per_tag_breakdown(self, tmp_path, capsys):
+        self._run(tmp_path, self.YAML, self.RESULTS)
+        out = capsys.readouterr().out
+        assert "by tag:" in out
+        assert "pdf-deep" in out and "n=1" in out
+
+    def test_untagged_set_prints_no_tag_or_reject_section(self, tmp_path, capsys):
+        self._run(tmp_path, 'queries:\n  - q: "beta"\n    expect: ["b.md"]\n', {"beta": ["docs/b.md"]})
+        out = capsys.readouterr().out
+        assert "by tag:" not in out and "hard negatives" not in out
+
+    def test_json_flag_writes_full_metrics(self, tmp_path, capsys):
+        import json
+        out_path = tmp_path / "m.json"
+        self._run(tmp_path, self.YAML, self.RESULTS, json_path=str(out_path))
+        m = json.loads(out_path.read_text())
+        assert m["n_queries"] == 2 and m["reject_violations"] == 1
+        assert m["per_query"][0]["first_hit_rank"] == 2
+        assert m["recall_at"] == {"1": 0.5, "3": 1.0, "5": 1.0}
+
+
+class TestCmdEvalJsonRerankGuard:
+    """--json must not leave an unmarked file behind when the reranker failed open: A/B
+    tooling reads the file, not stderr."""
+
+    def _run(self, tmp_path, applied):
+        import argparse
+        from unittest.mock import patch
+        from carta.cli import cmd_eval
+        p = tmp_path / "eval.yaml"
+        p.write_text('queries:\n  - q: "alpha"\n    expect: ["a.md"]\n')
+        out = tmp_path / "m.json"
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333",
+               "embed": {"ollama_url": "http://localhost:11434", "ollama_model": "m"},
+               "search": {"top_n": 5, "rerank": {"enabled": True}}}
+
+        def fake_run_search(query, c, verbose=False, stats=None):
+            stats["rerank_requested"] = True
+            stats["rerank_applied"] = applied
+            return [{"score": 1.0, "source": "docs/a.md", "excerpt": "", "type": "text"}]
+
+        args = argparse.Namespace(eval_path=str(p), k=5, json=str(out))
+        with patch("carta.cli.find_config", return_value=Path("/fake/.carta/config.yaml")), \
+             patch("carta.config.load_config", return_value=cfg), \
+             patch("carta.embed.pipeline.run_search", side_effect=fake_run_search):
+            try:
+                cmd_eval(args)
+            except SystemExit:
+                pass
+        return out
+
+    def test_total_fail_open_writes_no_json(self, tmp_path):
+        assert not self._run(tmp_path, applied=False).exists()
+
+    def test_json_records_rerank_state(self, tmp_path):
+        import json
+        m = json.loads(self._run(tmp_path, applied=True).read_text())
+        assert m["rerank"] == {"requested": True, "applied": 1, "queries": 1}
+
+
 class TestCmdRemember:
     def _args(self, **kw):
         import argparse

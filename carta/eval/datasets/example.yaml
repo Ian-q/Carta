@@ -1,6 +1,11 @@
 # Carta retrieval eval set.
 # A query "hits" if any `expect` substring appears in a returned result's file_path
 # within top-k. Keep 15-40 queries that cover the documents you actually ask about.
+#
+# Optional per-query fields:
+#   reject: path substrings of plausible-but-wrong docs; ranking one above the gold
+#           (or in the top-k when the gold is absent) counts as a hard-negative violation
+#   tags:   labels such as pdf-deep / vocab-mismatch / why; metrics are broken down per tag
 queries:
   - q: "what baud rate does the serial bridge use"
     expect: ["CLAUDE.md", "serial-bridge"]
@@ -8,3 +13,7 @@ queries:
     expect: ["bench-measurements", "loadcell"]
   - q: "VCU torque versus speed mode bit on CAN 0x200"
     expect: ["main.c", "torque"]
+  - q: "what is the maximum shunt voltage the newer current-sense chip can measure"
+    expect: ["current-monitor-rev-b"]
+    reject: ["current-monitor-rev-a"]
+    tags: [pdf-deep, hard-negative]
