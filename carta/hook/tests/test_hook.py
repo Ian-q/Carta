@@ -446,6 +446,18 @@ def test_extract_query_long_prompt_uses_ollama():
     assert result == "compressed query"
 
 
+def test_extract_query_disables_thinking():
+    """The condenser runs on the reasoning-model judge (qwen3.5:0.8b) under a 4 s budget;
+    with thinking on it never answers in time and always falls back to prompt[-500:]."""
+    from carta.hook.hook import _extract_query
+    cfg = _make_cfg()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"message": {"content": "q"}}
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        _extract_query("x" * 600, cfg)
+    assert mock_post.call_args[1]["json"]["think"] is False
+
+
 def test_extract_query_long_prompt_ollama_failure_fallback():
     """Prompt > 500 chars with Ollama failure: returns last 500 chars."""
     from carta.hook.hook import _extract_query

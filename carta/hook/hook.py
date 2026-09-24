@@ -286,6 +286,7 @@ def _extract_query(prompt: str, cfg: dict) -> str:
                     {"role": "user", "content": prompt[:1000]},
                 ],
                 "stream": False,
+                "think": False,  # reasoning-model judge; see carta/hook/judge.py _NO_THINK
                 "keep_alive": ollama_keep_alive(),
             },
             timeout=4,

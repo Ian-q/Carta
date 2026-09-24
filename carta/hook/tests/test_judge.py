@@ -67,3 +67,32 @@ def test_ollama_json_none_on_http_error(monkeypatch):
         raise RuntimeError("network down")
     monkeypatch.setattr("carta.hook.judge.requests.post", _boom)
     assert judge.ollama_json("http://x", "m", "sys", "usr", timeout_s=1) is None
+
+
+# The default judges are reasoning models. Without an explicit "think": false, Ollama lets them
+# emit a hidden chain of thought before answering — measured at ~3,100 tokens / ~55 s for one
+# hook yes/no on an M3 Max, against a 3 s judge budget, so the judge zone always timed out and
+# failed open to silence. llm_rerank.py has carried this fix since 0.9.0.
+
+def test_ollama_yesno_disables_thinking():
+    with patch("requests.post", return_value=_resp("yes")) as mock_post:
+        ollama_yesno("http://x", "m", "sys", "usr", timeout_s=1)
+    assert mock_post.call_args[1]["json"]["think"] is False
+
+
+def test_ollama_json_keeps_thinking(monkeypatch):
+    """The supersession judge keeps thinking on purpose: turning it off admitted a false
+    positive on the #84 corpus (see the _NO_THINK note in judge.py)."""
+    sent = {}
+
+    class _Resp:
+        def json(self):
+            return {"message": {"content": '{"conflict": false}'}}
+
+    def _post(url, json=None, timeout=None):
+        sent.update(json)
+        return _Resp()
+
+    monkeypatch.setattr("carta.hook.judge.requests.post", _post)
+    judge.ollama_json("http://x", "m", "sys", "usr", timeout_s=1)
+    assert "think" not in sent
