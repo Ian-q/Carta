@@ -301,7 +301,8 @@ def cmd_search(args):
     # Only pay for stage snapshots when --trace will actually read them.
     trace_stages = {} if getattr(args, "trace", None) else None
     try:
-        results = run_search(query, cfg, verbose=True, trace_stages=trace_stages)
+        results = run_search(query, cfg, verbose=True, trace_stages=trace_stages,
+                             hypothetical=getattr(args, "hypothetical", None))
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1219,6 +1220,13 @@ def main():
             "After returning semantic results, also return docs linked via related: "
             "within N hops of each result (default: 0 = no graph expansion)"
         ),
+    )
+    search_p.add_argument(
+        "--hypothetical", metavar="TEXT",
+        help="A short passage phrased the way the docs would state the answer (your best "
+             "guess; it need not be correct). Blended into the semantic match (HyDE) to "
+             "find documents worded differently from the question; keywords still match "
+             "on the query.",
     )
     search_p.add_argument(
         "--trace", metavar="SUBSTRING",
