@@ -23,15 +23,21 @@ Extract the query string. If the user invoked the skill with no query text, ask:
 
 ## Step 2: Run the Carta search command
 
+First write a **hypothetical answer**: 2–5 sentences phrased the way this project's own docs,
+datasheets or plans would state the answer — your best guess, with plausible specifics. It does
+**not** need to be correct; it steers the semantic match toward documents shaped like the answer
+(HyDE), which finds passages worded differently from the question. Use project context you already
+have (e.g. CLAUDE.md) to make it sound like the project. Skip it only for exact-identifier lookups.
+
 Run:
 
 ```bash
-carta search "<query>"
+carta search "<query>" --hypothetical "<your hypothetical answer>"
 ```
 
 > Uses the installed `carta` CLI. If it isn't on your PATH, run `python -m carta search "<query>"` instead (from the repo root).
 
-Replace `<query>` with the user's query string, properly quoted.
+Replace `<query>` with the user's query string and `<your hypothetical answer>` with your passage, both properly quoted.
 
 Wait for the command to complete. Capture stdout and stderr.
 

@@ -281,6 +281,26 @@ without a budget every prompt would stall for the full timeout. Only the hook is
 `carta search`, MCP and `carta eval` keep their generous timeouts, since a slow search there is
 fine and a slow prompt is not.
 
+### Hypothetical answers (HyDE)
+
+A short question and the passage that answers it often share almost no words — especially when
+the answer is buried deep in a long PDF. Give the search a **hypothetical answer** and it blends
+that into the semantic match (the keyword lane still uses the query):
+
+```bash
+carta search "why do cached pages sometimes show old prices" \
+  --hypothetical "Cache entries are invalidated on write, but CDN copies expire only after their TTL."
+```
+
+The MCP `carta_search` tool takes the same `hypothetical` argument, and its description tells
+Claude to write one; the `/doc-search` skill does too. The passage only has to be *shaped* like the
+answer — it does not need to be correct. On an 84-query eval built not to saturate (deep-PDF,
+vocabulary-mismatch and design-rationale questions), Claude-written hypotheticals lifted MRR
+**0.46 → 0.70** and recall@5 **0.54 → 0.77** on the MCP path, and MRR **0.55 → 0.65** on the hybrid
+CLI path. Carta never writes the hypothetical itself: a local `qwen3.5:9b` writer did not help, and
+the caller that benefits is already a frontier model. Full measurement in
+[the design spec](docs/superpowers/specs/2026-09-21-hyde-hypothetical-query-design.md).
+
 ### Graph-aware retrieval (opt-in)
 
 An optional pre-rerank stage walks the `related:` frontmatter graph (undirected, 1 hop) from the

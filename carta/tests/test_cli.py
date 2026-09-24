@@ -352,6 +352,39 @@ class TestCmdEvalReporting:
         assert m["per_query"][0]["first_hit_rank"] == 2
         assert m["recall_at"] == {"1": 0.5, "3": 1.0, "5": 1.0}
 
+class TestCmdSearchHypothetical:
+    """`carta search --hypothetical TEXT` reaches run_search (HyDE)."""
+
+    def _run(self, argv):
+        from unittest.mock import patch
+        from carta import cli
+        captured = {}
+
+        def fake_run_search(query, cfg, **kw):
+            captured.update(kw, query=query)
+            return []
+
+        cfg = {"project_name": "p", "modules": {"doc_search": True}}
+        with patch("carta.cli.find_config", return_value=Path("/fake/.carta/config.yaml")), \
+             patch("carta.config.load_config", return_value=cfg), \
+             patch("carta.embed.pipeline.run_search", side_effect=fake_run_search), \
+             patch("sys.argv", ["carta", *argv]):
+            try:
+                cli.main()
+            except SystemExit:
+                pass
+        return captured
+
+    def test_flag_is_forwarded(self):
+        got = self._run(["search", "stale", "prices", "--hypothetical", "CDN copies expire only after their TTL."])
+        assert got["query"] == "stale prices"
+        assert got["hypothetical"] == "CDN copies expire only after their TTL."
+
+    def test_absent_flag_forwards_none(self):
+        got = self._run(["search", "stale", "prices"])
+        assert got["query"] == "stale prices"          # run_search really was called
+        assert got["hypothetical"] is None
+
 
 class TestCmdEvalJsonRerankGuard:
     """--json must not leave an unmarked file behind when the reranker failed open: A/B
