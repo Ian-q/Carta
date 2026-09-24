@@ -4,6 +4,10 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+### Added
+
+- **`carta eval` can measure what a saturated eval set can't.** At recall@5 ≈ 0.98 the metric no longer moves for a regression or an improvement, so the harness now also reports **recall@1 and recall@3** and accepts two optional per-query fields. `reject:` names plausible-but-wrong docs — a sibling part's datasheet, a superseded plan — and a reject ranked above the first gold hit (or in the top-k when no gold is) counts as a **hard-negative violation**; a path that matches `expect` is never counted as a reject. `tags:` break recall and MRR down per label. `--json PATH` writes the full metrics, per-query ranks included. Existing eval sets load unchanged and the summary line is byte-identical (one recall@1/@3 line now follows it); `--json` is written only after the reranker fail-open check and records the rerank state; blank `reject` entries are dropped for the same reason blank `expect` entries are (CA-26).
+
 ## [0.17.0] — 2026-08-30
 
 **Retrieval is trustworthy again.** Five silent failures across every consumer of the search path, plus the instrumentation whose absence let them survive.
