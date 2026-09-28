@@ -83,13 +83,19 @@ embed:
 # Proactive recall (carta-hook): three-zone relevance gate
 #   score > high_threshold  -> inject immediately (no judge call)
 #   score < low_threshold   -> silent (no injection)
-#   in between (gray zone)  -> small Ollama judge decides
+#   in between (gray zone)  -> the judge decides
+# On the hybrid path the gate reads the dense lane's raw cosine for relevance and the
+# lane RANKS for agreement; low_threshold and agree_rank below are calibrated (#118).
 proactive_recall:
   high_threshold: 0.85
-  low_threshold: 0.60
+  low_threshold: 0.65        # under the weakest relevant top hit, above the no-answer band
+  agree_rank: 1              # rank 0 in BOTH lanes to skip the judge
   max_results: 5
   judge_timeout_s: 3
-  ollama_model: qwen3.5:0.8b
+  judge_backend: auto        # cross-encoder when fastembed is installed, else ollama
+  judge_model: Xenova/ms-marco-MiniLM-L-6-v2
+  judge_threshold: -10.4     # raw cross-encoder logit, NOT a probability
+  ollama_model: qwen3.5:0.8b # used when judge_backend resolves to ollama
 
 # Cross-project recall: suggest docs from other projects
 cross_project_recall:

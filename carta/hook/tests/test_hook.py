@@ -915,7 +915,7 @@ def test_agree_rank_default_registered_in_config():
     """The key must exist in DEFAULTS so `carta init` writes it and a config
     predating this feature still gets a sane value via the deep-merge."""
     from carta.config import DEFAULTS
-    assert DEFAULTS["proactive_recall"]["agree_rank"] == 3
+    assert DEFAULTS["proactive_recall"]["agree_rank"] == 1   # calibrated, #118
 
 
 def test_hook_uses_configured_agree_rank_end_to_end(tmp_path):

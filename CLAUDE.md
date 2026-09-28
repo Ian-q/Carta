@@ -202,8 +202,8 @@ RRF score, whose scale depends on `rrf_k` and lane count:
 1. `dense_score` present and **< `low_threshold`** → **silent** (the only route
    to silent: measured irrelevance). A top hit with no `dense_score` — e.g.
    BM25-only — is never silenced.
-2. else top hit within **`agree_rank`** (default 3, 0-indexed) in **both** lanes
-   → **inject**, no Ollama call.
+2. else top hit within **`agree_rank`** (default **1**, 0-indexed — i.e. rank 0 in both)
+   → **inject**, no judge call.
 3. else → the **gray-zone judge**; inject on yes, silent on no or timeout.
 
 The judge is a local **cross-encoder** by default (`proactive_recall.judge_backend: auto` →
@@ -213,6 +213,13 @@ probability): it scores query-vs-passage directly, needs no Ollama, and costs ~1
 ~0.5 s cold in the fresh process the hook is. `judge_backend: ollama` keeps the yes/no LLM
 judge. Thresholds are derived with `carta/hook/eval/calibrate.py`, not by feel; fastembed
 models cache in `~/.carta/models/fastembed` (never `$TMPDIR`, which the OS reaps).
+
+`low_threshold` (**0.65**) and `agree_rank` (**1**) are calibrated (#118) with
+`calibrate gate`, which sweeps them through this gate over an eval corpus plus off-corpus
+prompts: 0.65 sits under the weakest relevant top hit (0.651) and above the no-answer band
+(0.600–0.659). The dense cosine does **not** otherwise separate relevant from irrelevant top
+hits (they overlap almost entirely), so it is a floor for "nothing answers this", not a
+relevance score — the judge does the discriminating.
 
 Non-hybrid (plain cosine, no lane ranks) collections fall back to the legacy
 `low_threshold` / `high_threshold` gate, which is still calibrated for them.
