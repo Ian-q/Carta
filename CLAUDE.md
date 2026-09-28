@@ -204,7 +204,14 @@ RRF score, whose scale depends on `rrf_k` and lane count:
    BM25-only — is never silenced.
 2. else top hit within **`agree_rank`** (default 3, 0-indexed) in **both** lanes
    → **inject**, no Ollama call.
-3. else → small **Ollama judge**; inject on yes, silent on no or timeout.
+3. else → the **gray-zone judge**; inject on yes, silent on no or timeout.
+
+The judge is a local **cross-encoder** by default (`proactive_recall.judge_backend: crossenc`,
+`judge_model` `Xenova/ms-marco-MiniLM-L-6-v2`, `judge_threshold` −10.4 — a raw logit, not a
+probability): it scores query-vs-passage directly, needs no Ollama, and costs ~10 ms warm /
+~0.5 s cold in the fresh process the hook is. `judge_backend: ollama` keeps the yes/no LLM
+judge. Thresholds are derived with `carta/hook/eval/calibrate.py`, not by feel; fastembed
+models cache in `~/.carta/models/fastembed` (never `$TMPDIR`, which the OS reaps).
 
 Non-hybrid (plain cosine, no lane ranks) collections fall back to the legacy
 `low_threshold` / `high_threshold` gate, which is still calibrated for them.

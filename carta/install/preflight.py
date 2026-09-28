@@ -352,6 +352,12 @@ class PreflightChecker:
                 )
             )
 
+        # Independent of Ollama: the default recall judge is a local cross-encoder,
+        # so this check runs whether or not Ollama is up.
+        from carta.config import DEFAULTS
+        self.checks.append(self._check_judge_model(
+            DEFAULTS["proactive_recall"]["judge_model"]))
+
         # Check ColPali availability separately
         self.checks.append(self._check_colpali_available())
 
@@ -788,6 +794,49 @@ class PreflightChecker:
                 message=f"Could not check model status: {e}",
                 category="models",
             )
+
+    def _check_judge_model(self, model_name: str) -> PreflightCheck:
+        """Check the recall hook's cross-encoder judge model is in the durable cache.
+
+        The hook blocks prompt submission and starts a fresh process per prompt, so a
+        missing model means an ~80MB download on that path — which the judge budget
+        (3s) turns into a timeout and a silent prompt. Warn, and let `doctor --fix`
+        fetch it up front. Absent fastembed is a skip, not a failure: the Ollama judge
+        backend needs none of this.
+        """
+        import importlib.util
+
+        # rerank.py imports fastembed lazily (the hook must not pay it on every prompt),
+        # so importing the module proves nothing — ask for the package itself.
+        if importlib.util.find_spec("fastembed") is None:
+            return PreflightCheck(
+                name="judge_model", status="skip",
+                message="fastembed not installed — the cross-encoder judge is unavailable; "
+                        "set proactive_recall.judge_backend: ollama to use the LLM judge",
+                category="models",
+            )
+        from carta.search import rerank
+        cache = rerank.model_cache_dir()
+        snapshot = cache / f"models--{model_name.replace('/', '--')}"
+        if snapshot.exists():
+            return PreflightCheck(
+                name="judge_model", status="pass",
+                message=f"Recall-judge model '{model_name}' cached",
+                category="models",
+            )
+
+        def _fetch() -> bool:
+            # One scoring call downloads and caches the model.
+            rerank.score_pairs("warmup", ["warmup passage"], model_name)
+            return True
+
+        return PreflightCheck(
+            name="judge_model", status="warn",
+            message=f"Recall-judge model '{model_name}' not cached "
+                    f"(the hook would download it while blocking a prompt)",
+            category="models", fixable=True, auto_fix_func=_fetch,
+            suggestion="Fetch it now with: carta doctor --fix",
+        )
 
     def _check_colpali_available(self) -> PreflightCheck:
         """Check if ColPali dependencies are available."""

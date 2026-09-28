@@ -68,7 +68,8 @@ def _trace_path(project_name: str, when: Optional[str] = None) -> Path:
 
 def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
                        judge: Optional[bool], latency_ms: int, score_kind: str,
-                       rrf_k: Optional[int]) -> dict:
+                       rrf_k: Optional[int], judge_backend: Optional[str] = None,
+                       judge_score: Optional[float] = None) -> dict:
     """Build one trace record from a completed search.
 
     `query` is the DERIVED query (post `_extract_query`), never the raw prompt.
@@ -105,6 +106,11 @@ def build_trace_record(*, query: str, collections: list, hits: list, zone: str,
         "rrf_k": rrf_k,
         "zone": zone,
         "judge": judge,
+        # Which judge answered and with what score — a bare verdict cannot be
+        # recalibrated later, and the threshold is what calibration tunes (#118).
+        # None for the ollama backend, which answers yes/no rather than scoring.
+        "judge_backend": judge_backend,
+        "judge_score": judge_score,
         "latency_ms": latency_ms,
     }
 

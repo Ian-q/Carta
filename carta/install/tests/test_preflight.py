@@ -1,3 +1,4 @@
+from pathlib import Path
 import subprocess
 import requests
 from unittest.mock import patch
@@ -377,3 +378,53 @@ class TestServiceUrlEnvOverrides:
             check = checker._check_ollama_running()
         assert check.status == "pass"
         assert seen["url"].startswith("http://ollama.internal:9998")
+
+
+# ---------------------------------------------------------------------------
+# Recall-judge cross-encoder model (must be cached BEFORE the hook needs it)
+# ---------------------------------------------------------------------------
+
+class TestJudgeModelCheck:
+    """The hook's cross-encoder judge runs on a prompt-blocking path, so the ~80MB model
+    has to be in the durable cache before the first prompt — not downloaded during one."""
+
+    def _checker(self):
+        from carta.install.preflight import PreflightChecker
+        return PreflightChecker(Path("/fake/repo"))
+
+    def test_passes_when_model_is_cached(self, tmp_path, monkeypatch):
+        import carta.search.rerank as rerank
+        cache = tmp_path / "fastembed"
+        (cache / "models--Xenova--ms-marco-MiniLM-L-6-v2").mkdir(parents=True)
+        monkeypatch.setattr(rerank, "model_cache_dir", lambda: cache)
+        c = self._checker()._check_judge_model("Xenova/ms-marco-MiniLM-L-6-v2")
+        assert c.status == "pass"
+
+    def test_warns_and_is_fixable_when_missing(self, tmp_path, monkeypatch):
+        import carta.search.rerank as rerank
+        monkeypatch.setattr(rerank, "model_cache_dir", lambda: tmp_path / "empty")
+        c = self._checker()._check_judge_model("Xenova/ms-marco-MiniLM-L-6-v2")
+        assert c.status == "warn"
+        assert c.fixable and c.auto_fix_func is not None
+        assert "doctor --fix" in (c.suggestion or "") or "carta doctor" in (c.suggestion or "")
+
+    def test_auto_fix_downloads_by_scoring_once(self, tmp_path, monkeypatch):
+        import carta.search.rerank as rerank
+        monkeypatch.setattr(rerank, "model_cache_dir", lambda: tmp_path / "empty")
+        calls = {}
+        monkeypatch.setattr(rerank, "score_pairs",
+                            lambda q, texts, m: calls.setdefault("m", m) or [0.0])
+        c = self._checker()._check_judge_model("Xenova/ms-marco-MiniLM-L-6-v2")
+        assert c.auto_fix_func() is True
+        assert calls["m"] == "Xenova/ms-marco-MiniLM-L-6-v2"
+
+    def test_skips_when_fastembed_absent(self, monkeypatch):
+        """rerank.py imports fastembed lazily, so the check must ask for the PACKAGE:
+        importing carta.search.rerank succeeds even with fastembed uninstalled."""
+        import importlib.util
+        real_find_spec = importlib.util.find_spec
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name, *a, **k: None if name == "fastembed" else real_find_spec(name, *a, **k))
+        c = self._checker()._check_judge_model("Xenova/ms-marco-MiniLM-L-6-v2")
+        assert c.status == "skip"
+        assert "judge_backend: ollama" in c.message
