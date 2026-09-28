@@ -147,7 +147,12 @@ DEFAULTS = {
     },
     "proactive_recall": {
         "high_threshold": 0.85,
-        "low_threshold": 0.60,
+        # Dense-cosine floor for "measurably irrelevant" (hybrid path) — CALIBRATED, see
+        # agree_rank below and carta/hook/eval/calibrate.py. 0.65 sits just under the
+        # weakest relevant top hit observed (0.651) and above the no-answer band
+        # (0.600-0.659): it silences 9 of 10 prompts nothing answers at a cost of zero
+        # relevant hits. 0.68 starts costing recall, 0.70 costs a lot of it.
+        "low_threshold": 0.65,
         "max_results": 5,
         "judge_timeout_s": 3,
         "search_timeout_s": 3,      # wall-clock budget for the recall search (#106)
@@ -170,9 +175,14 @@ DEFAULTS = {
         "judge_threshold": -10.4,
         # Measurably-low dense cosine (< low_threshold) -> silent; else top-N in
         # BOTH lanes -> inject; otherwise -> judge.
-        # Placeholder value: calibrate against ~/.carta/traces + issue #118 usage
-        # labels rather than by feel.
-        "agree_rank": 3,
+        # CALIBRATED (#118) with `python -m carta.hook.eval.calibrate gate` over an
+        # 84-query eval corpus + 15 off-corpus prompts. 1 means "rank 0 in both lanes",
+        # the only bypass strong enough to skip the judge: at 1, zero unrelated and one
+        # plausible-but-wrong top hit inject unvetted, against six and four at the old
+        # placeholder of 3 — while 12 of 40 relevant hits still bypass and the rest go to
+        # a judge that now costs ~10ms (it used to be an LLM call that always timed out,
+        # which is why bypassing it liberally once made sense).
+        "agree_rank": 1,
         # Append one JSONL record per hook invocation to
         # ~/.carta/traces/<project>/hook-YYYY-MM.jsonl (never inside the repo).
         # The record holds the derived query, which for prompts <=500 chars is

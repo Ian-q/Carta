@@ -69,6 +69,23 @@ re-derive.
   however bad they all are. The dense lane's raw cosine is the only absolute measure available. The
   asymmetry is load-bearing: a sparse-only top hit has no cosine and is *judged*, never silenced,
   because silently dropping it is the original defect.
+- **The dense cosine is a floor for "nothing answers this", not a relevance score.** Calibrating
+  the recall gate (#118) measured the top hit's cosine against labelled outcomes: relevant
+  0.651–0.815, plausible-but-wrong 0.714–0.795 (*higher* than relevant, on median), unrelated
+  0.616–0.784. They overlap almost entirely — 71% of unrelated top hits outscore the weakest
+  relevant one — so no threshold separates relevant from irrelevant. What the cosine *does*
+  separate is "nothing in the corpus answers this prompt" (0.600–0.659, measured with off-corpus
+  prompts an eval set cannot supply) from everything else. Hence `low_threshold` 0.65: just under
+  the weakest relevant hit, just above the no-answer band. Discrimination beyond that is the
+  judge's job, which is why the judge got replaced before the thresholds got tuned.
+- **Cheap judges change what the gate should bypass.** `agree_rank` was 3 when the judge was an
+  LLM call that always timed out, so skipping it liberally was the lesser evil. With a ~10 ms
+  cross-encoder the calculus inverts: at `agree_rank: 1` (rank 0 in both lanes) zero unrelated
+  top hits inject unvetted, against six at 3, and everything else is simply judged. Tuning a
+  gate before its judge works measures the wrong thing.
+- **A judge's score must be recorded, not just its verdict.** The hook writes `judge_backend` and
+  `judge_score` into each trace record: a boolean cannot be recalibrated, and the threshold is the
+  only knob calibration has.
 - **A gate zone that cannot be reached is worse than a missing gate.** The first version of that
   gate had a structurally unreachable "silent" branch — a hit deep in both lanes can never be the
   fusion argmax, so the branch guarding against it never ran. It read as defensive and was inert.
@@ -93,9 +110,17 @@ re-derive.
 - **The Qdrant WAL corruption was upstream, not ours.** `wal.rs:150 Utf8Error` was a Qdrant 1.17.0
   WAL-reader regression (qdrant#8455), fixed in 1.17.1. The bind-mount/fsync theory was falsified —
   no data was ever lost, and quarantined collections replay clean on 1.17.1. Hence the image pin.
-- **Judge model size is a per-surface decision, not a global one.** The proactive-recall hook blocks
-  prompt submission, so its judge stays ≤2B. The stale-scan / claude-md supersession judge runs
-  pre-push, so it deliberately uses a larger, higher-precision model.
+- **Judge model size is a per-surface decision — and the recall judge is not an LLM at all.** The
+  hook blocks prompt submission, so its judge is a local cross-encoder (~10 ms warm, ~0.5 s cold,
+  no Ollama): "does this passage answer this query" is exactly what a cross-encoder scores, and it
+  beat every small LLM tried (AUC 0.915 vs 0.78 for a binary `qwen3.5:2b`, 0.58 for `0.8b`). The
+  stale-scan / claude-md supersession judge runs pre-push, so it deliberately keeps a larger,
+  higher-precision LLM — *with* thinking, which it needs for precision and can afford there.
+- **Reasoning models must be told not to think on a budgeted surface.** Ollama lets one emit a
+  hidden chain of thought unless the request says `"think": false`, and it is not reported in
+  `eval_count` when output is format-constrained, so it hides as unexplained latency. One recall
+  judge call measured ~3,100 thinking tokens / ~55 s against a 3 s budget: the judge zone was
+  silent for months. Any new judge/LLM call on a latency-critical path sets `think: false`.
 - **The hook is on the latency budget of every prompt.** It blocks submission, so anything it
   imports is paid per prompt by every project. A single module-level import of a ColPali helper —
   read purely for a boolean — pulled in torch and cost ~3.1 s per prompt until v0.16.1. Imports on
