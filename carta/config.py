@@ -158,8 +158,11 @@ DEFAULTS = {
         # labelled pairs from the 84-query eval corpus it reaches AUC 0.915 against
         # random chunks where the binary qwen3.5:2b judge reaches 0.78, and admits ~5%
         # of random chunks at the threshold below (the 0.8b judge admitted 59%).
-        # "ollama" keeps the yes/no LLM judge (needs its model pulled).
-        "judge_backend": "crossenc",
+        # "ollama" keeps the yes/no LLM judge (needs its model pulled). "auto" (default)
+        # prefers the cross-encoder and falls back to the Ollama judge when fastembed is
+        # not installed — it ships in the optional carta-cc[hybrid] extra, and a plain
+        # install hard-defaulted to crossenc would leave the gray zone silent for good.
+        "judge_backend": "auto",
         "judge_model": "Xenova/ms-marco-MiniLM-L-6-v2",
         # Raw cross-encoder logit, model-specific and NOT a probability. Calibrated with
         # carta/hook/eval/calibrate_gate.py: the point where ~5% of random chunks pass

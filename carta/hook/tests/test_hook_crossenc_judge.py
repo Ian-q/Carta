@@ -53,7 +53,48 @@ def test_crossenc_judge_no_hits_is_false():
     assert hook._call_crossenc_judge("p", [], _cfg()) is False
 
 
-def test_dispatch_defaults_to_crossenc():
+def _fake_find_spec(present: bool):
+    """Pretend fastembed is/isn't installed, so resolution tests don't depend on the env."""
+    import importlib.util
+    real = importlib.util.find_spec
+    return lambda name, *a, **k: (object() if present else None) if name == "fastembed" \
+        else real(name, *a, **k)
+
+
+def test_auto_resolves_to_crossenc_when_fastembed_is_installed(monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(True))
+    assert hook._resolve_judge_backend(_cfg()) == "crossenc"
+
+
+def test_auto_falls_back_to_ollama_without_fastembed(monkeypatch):
+    """fastembed ships in the optional [hybrid] extra — a plain install must still judge,
+    not go permanently silent."""
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(False))
+    assert hook._resolve_judge_backend(_cfg()) == "ollama"
+
+
+def test_auto_treats_a_raising_find_spec_as_absent(monkeypatch):
+    """find_spec can raise rather than return None; that must not break prompt submission."""
+    import importlib.util
+
+    def boom(name, *a, **k):
+        raise ImportError("broken import machinery")
+
+    monkeypatch.setattr(importlib.util, "find_spec", boom)
+    assert hook._resolve_judge_backend(_cfg()) == "ollama"
+
+
+def test_explicit_crossenc_is_honoured_even_without_fastembed(monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(False))
+    assert hook._resolve_judge_backend(_cfg(judge_backend="crossenc")) == "crossenc"
+
+
+def test_dispatch_uses_crossenc_when_resolution_says_so(monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(True))
     with patch("carta.hook.hook._call_crossenc_judge", return_value=True) as ce, \
          patch("carta.hook.hook._call_ollama_judge", return_value=False) as ol:
         assert hook._judge_with_timeout("p", _hits("x"), _cfg(), 3) is True
@@ -67,10 +108,10 @@ def test_dispatch_honours_ollama_backend():
     assert ol.called and not ce.called
 
 
-def test_dispatch_unknown_backend_warns_and_uses_default(capsys):
-    with patch("carta.hook.hook._call_crossenc_judge", return_value=True) as ce:
-        assert hook._judge_with_timeout("p", _hits("x"), _cfg(judge_backend="nope"), 3) is True
-    assert ce.called
+def test_unknown_backend_warns_and_resolves_as_auto(capsys, monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec(True))
+    assert hook._resolve_judge_backend(_cfg(judge_backend="nope")) == "crossenc"
     assert "nope" in capsys.readouterr().err
 
 
@@ -78,7 +119,7 @@ def test_dispatch_records_backend_and_score_for_calibration():
     """The trace is the calibration data (#118); a verdict with no score can't be recalibrated."""
     out = {}
     with patch("carta.search.rerank.score_pairs", return_value=[-9.0]):
-        hook._judge_with_timeout("p", _hits("x"), _cfg(), 3, out=out)
+        hook._judge_with_timeout("p", _hits("x"), _cfg(judge_backend="crossenc"), 3, out=out)
     assert out["backend"] == "crossenc"
     assert out["score"] == -9.0
 
@@ -86,7 +127,7 @@ def test_dispatch_records_backend_and_score_for_calibration():
 def test_crossenc_failure_fails_open_without_injecting():
     """A missing/undownloadable model must not block the prompt, and must not inject unvetted."""
     with patch("carta.search.rerank.score_pairs", side_effect=RuntimeError("no model")):
-        assert hook._judge_with_timeout("p", _hits("x"), _cfg(), 3) is False
+        assert hook._judge_with_timeout("p", _hits("x"), _cfg(judge_backend="crossenc"), 3) is False
 
 
 def test_gray_zone_with_crossenc_default_injects_end_to_end(tmp_path):
@@ -97,7 +138,8 @@ def test_gray_zone_with_crossenc_default_injects_end_to_end(tmp_path):
         "project_name": "test-proj", "qdrant_url": "http://localhost:6333",
         "modules": {"proactive_recall": True},
         "proactive_recall": {"high_threshold": 0.85, "low_threshold": 0.60, "max_results": 5,
-                             "judge_timeout_s": 3, "ollama_model": "m", "trace": False},
+                             "judge_timeout_s": 3, "ollama_model": "m", "trace": False,
+                             "judge_backend": "crossenc"},
         "embed": {"ollama_url": "http://o", "ollama_model": "nomic-embed-text:latest"},
         "search": {"top_n": 5},
     }
@@ -115,13 +157,13 @@ def test_gray_zone_with_crossenc_default_injects_end_to_end(tmp_path):
         except SystemExit as e:
             assert e.code == 0
     out = buf.getvalue()
-    assert sp.called, "the default backend must be the cross-encoder"
+    assert sp.called, "the cross-encoder judge must be the one consulted"
     assert "docs/a.md" in out
 
 
-def test_config_defaults_name_the_crossenc_backend_model_and_threshold():
+def test_config_defaults_name_the_judge_backend_model_and_threshold():
     from carta.config import DEFAULTS
     pr = DEFAULTS["proactive_recall"]
-    assert pr["judge_backend"] == "crossenc"
+    assert pr["judge_backend"] == "auto"
     assert pr["judge_model"] == "Xenova/ms-marco-MiniLM-L-6-v2"
     assert pr["judge_threshold"] == -10.4

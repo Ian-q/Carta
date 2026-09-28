@@ -198,7 +198,7 @@ def test_gray_zone_judge_no_discards(tmp_path):
 def test_gray_zone_judge_yes_case_insensitive(tmp_path):
     """'Yes, it is relevant' is treated as yes (D-17 startswith)."""
     hits = [_make_hit(0.75)]
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "Yes, it is relevant"}}
     with (
@@ -408,7 +408,7 @@ def test_module_disabled_no_output(tmp_path):
 def test_custom_thresholds_respected(tmp_path):
     """high=0.90, low=0.70: score 0.88 falls in gray zone with custom thresholds."""
     hits = [_make_hit(0.88)]
-    cfg = _make_cfg(high=0.90, low=0.70)
+    cfg = _make_cfg(high=0.90, low=0.70, judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
@@ -582,7 +582,7 @@ def test_judge_exception_returns_false():
 def test_judge_yes_returns_true():
     """Successful judge returning True propagates correctly."""
     from carta.hook.hook import _judge_with_timeout
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     hits = [_make_hit(0.75)]
     with patch("carta.hook.hook._call_ollama_judge", return_value=True):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=3)

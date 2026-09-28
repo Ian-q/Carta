@@ -289,8 +289,10 @@ python -m carta.hook.eval.calibrate chunks http://localhost:6333 myproj_doc chun
 python -m carta.hook.eval.calibrate judge .carta/eval/myproj.yaml chunks.jsonl
 ```
 
-Set `proactive_recall.judge_backend: ollama` to use the yes/no LLM judge instead (it needs
-`proactive_recall.ollama_model` pulled). `carta doctor` reports whether the judge model is
+`judge_backend` defaults to `auto`: the cross-encoder when fastembed is installed (it ships in
+the `carta-cc[hybrid]` extra), the yes/no LLM judge when it is not — so a plain install still
+judges instead of going quiet. Force either with `judge_backend: crossenc` / `ollama` (the
+latter needs `proactive_recall.ollama_model` pulled). `carta doctor` reports whether the judge model is
 cached and `--fix` fetches it, so the hook never downloads one while blocking a prompt.
 
 **Search budget.** For the same reason, the hook runs under a wall-clock budget —

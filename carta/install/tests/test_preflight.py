@@ -392,6 +392,15 @@ class TestJudgeModelCheck:
         from carta.install.preflight import PreflightChecker
         return PreflightChecker(Path("/fake/repo"))
 
+    @pytest.fixture(autouse=True)
+    def _pretend_fastembed_installed(self, monkeypatch):
+        """fastembed is an optional extra and CI installs without it; these tests are about
+        the cache check, not about whether this machine happens to have the package."""
+        import importlib.util
+        real = importlib.util.find_spec
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name, *a, **k: object() if name == "fastembed" else real(name, *a, **k))
+
     def test_passes_when_model_is_cached(self, tmp_path, monkeypatch):
         import carta.search.rerank as rerank
         cache = tmp_path / "fastembed"
@@ -418,12 +427,12 @@ class TestJudgeModelCheck:
         assert c.auto_fix_func() is True
         assert calls["m"] == "Xenova/ms-marco-MiniLM-L-6-v2"
 
-    def test_skips_when_fastembed_absent(self, monkeypatch):
+    def test_skips_when_fastembed_absent(self, monkeypatch, request):
         """rerank.py imports fastembed lazily, so the check must ask for the PACKAGE:
         importing carta.search.rerank succeeds even with fastembed uninstalled."""
         import importlib.util
         real_find_spec = importlib.util.find_spec
-        monkeypatch.setattr(importlib.util, "find_spec",
+        monkeypatch.setattr(importlib.util, "find_spec",   # overrides the autouse fixture
                             lambda name, *a, **k: None if name == "fastembed" else real_find_spec(name, *a, **k))
         c = self._checker()._check_judge_model("Xenova/ms-marco-MiniLM-L-6-v2")
         assert c.status == "skip"

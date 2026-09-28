@@ -337,7 +337,33 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: floa
 # ones) for ~4ms more. The Ollama judge keeps 200: that is the shape its numbers were
 # measured at, and this PR does not change that backend.
 _CROSSENC_EXCERPT_CHARS = 400
-_DEFAULT_JUDGE_BACKEND = "crossenc"
+_JUDGE_BACKENDS = ("auto", "crossenc", "ollama")
+
+
+def _resolve_judge_backend(cfg: dict) -> str:
+    """Which judge actually runs: "crossenc" or "ollama".
+
+    The default is "auto" because fastembed — which the cross-encoder needs — is an
+    optional extra (`carta-cc[hybrid]`). A plain install has no cross-encoder, and
+    hard-defaulting to it there would leave the gray zone permanently silent, which is
+    exactly the silent-failure mode this gate has been bitten by before. So: prefer the
+    cross-encoder when it is installed, fall back to the Ollama judge when it is not.
+    An unknown name warns and resolves as "auto" rather than disabling recall.
+    """
+    import importlib.util
+
+    backend = cfg.get("proactive_recall", {}).get("judge_backend", "auto")
+    if backend not in _JUDGE_BACKENDS:
+        print(f"carta-hook: unknown proactive_recall.judge_backend {backend!r} — "
+              f"expected one of {_JUDGE_BACKENDS}; resolving as 'auto'", file=sys.stderr)
+        backend = "auto"
+    if backend == "auto":
+        try:
+            found = importlib.util.find_spec("fastembed") is not None
+        except Exception:
+            found = False   # find_spec can raise (e.g. a missing parent package)
+        return "crossenc" if found else "ollama"
+    return backend
 
 
 def _call_crossenc_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
@@ -367,13 +393,8 @@ def _call_crossenc_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
 
 
 def _judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: float) -> bool:
-    """Route to the configured judge backend. An unknown name warns and uses the default
-    rather than silently disabling recall or silently switching semantics."""
-    backend = cfg.get("proactive_recall", {}).get("judge_backend", _DEFAULT_JUDGE_BACKEND)
-    if backend not in ("crossenc", "ollama"):
-        print(f"carta-hook: unknown proactive_recall.judge_backend {backend!r} — "
-              f"using {_DEFAULT_JUDGE_BACKEND!r}", file=sys.stderr)
-        backend = _DEFAULT_JUDGE_BACKEND
+    """Route to the resolved judge backend (see `_resolve_judge_backend`)."""
+    backend = _resolve_judge_backend(cfg)
     _judge_score_out["backend"] = backend
     if backend == "ollama":
         return _call_ollama_judge(prompt, hits, cfg, timeout_s)
