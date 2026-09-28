@@ -64,7 +64,7 @@ def test_proactive_recall_defaults(tmp_path):
     cfg = load_config(cfg_path)
     pr = cfg["proactive_recall"]
     assert pr["high_threshold"] == 0.85
-    assert pr["low_threshold"] == 0.60
+    assert pr["low_threshold"] == 0.65      # calibrated, #118
     assert pr["max_results"] == 5
     assert pr["judge_timeout_s"] == 3
     assert pr["ollama_model"] == "qwen3.5:0.8b"
