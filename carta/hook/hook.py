@@ -131,10 +131,12 @@ def _run() -> None:
         low=low_threshold, high=high_threshold,
     )
     judge_verdict = None
+    judge_out: dict = {}
     if zone == "judge":
-        judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s)
+        judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s, out=judge_out)
 
-    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg)
+    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg,
+                judge_backend=judge_out.get("backend"), judge_score=judge_out.get("score"))
 
     if zone == "inject" or judge_verdict:
         _inject(hits)
@@ -207,6 +209,8 @@ def _emit_trace(
     judge_verdict: bool | None,
     started_at: float,
     search_cfg: dict,
+    judge_backend: str | None = None,
+    judge_score: float | None = None,
 ) -> None:
     """Append one trace record. Swallows everything — the hook must fail open.
 
@@ -252,6 +256,8 @@ def _emit_trace(
             latency_ms=int((time.monotonic() - started_at) * 1000),
             score_kind="rrf" if is_rrf else "cosine",
             rrf_k=hybrid.get("rrf_k", 2) if is_rrf else None,
+            judge_backend=judge_backend,
+            judge_score=judge_score,
         )
         append_trace(search_cfg.get("project_name", ""), rec)
     except Exception:
@@ -326,18 +332,96 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: floa
     return bool(ollama_yesno(ollama_url, model, system, user_msg, timeout_s=timeout_s))
 
 
+# Excerpt budget for the cross-encoder judge. 400 chars beat 200 on the labelled set
+# (AUC 0.915 vs 0.877 against random chunks, 0.676 vs 0.632 against plausible-but-wrong
+# ones) for ~4ms more. The Ollama judge keeps 200: that is the shape its numbers were
+# measured at, and this PR does not change that backend.
+_CROSSENC_EXCERPT_CHARS = 400
+_JUDGE_BACKENDS = ("auto", "crossenc", "ollama")
+
+
+def _resolve_judge_backend(cfg: dict) -> str:
+    """Which judge actually runs: "crossenc" or "ollama".
+
+    The default is "auto" because fastembed — which the cross-encoder needs — is an
+    optional extra (`carta-cc[hybrid]`). A plain install has no cross-encoder, and
+    hard-defaulting to it there would leave the gray zone permanently silent, which is
+    exactly the silent-failure mode this gate has been bitten by before. So: prefer the
+    cross-encoder when it is installed, fall back to the Ollama judge when it is not.
+    An unknown name warns and resolves as "auto" rather than disabling recall.
+    """
+    import importlib.util
+
+    backend = cfg.get("proactive_recall", {}).get("judge_backend", "auto")
+    if backend not in _JUDGE_BACKENDS:
+        print(f"carta-hook: unknown proactive_recall.judge_backend {backend!r} — "
+              f"expected one of {_JUDGE_BACKENDS}; resolving as 'auto'", file=sys.stderr)
+        backend = "auto"
+    if backend == "auto":
+        try:
+            found = importlib.util.find_spec("fastembed") is not None
+        except Exception:
+            found = False   # find_spec can raise (e.g. a missing parent package)
+        return "crossenc" if found else "ollama"
+    return backend
+
+
+def _call_crossenc_judge(prompt: str, hits: list[dict], cfg: dict) -> bool:
+    """True when the best candidate clears `judge_threshold` on a local cross-encoder.
+
+    A cross-encoder scores "does this passage answer this query" directly — the judge's
+    actual question — with no reasoning model to mis-handle, no Ollama dependency, and
+    ~10ms warm / ~0.5s cold in a fresh process. Scores are raw logits, so the threshold
+    is model-specific (see `carta/hook/eval/calibrate_gate.py` for how it was derived).
+
+    The score is returned via `_judge_score_out` rather than the return value because
+    callers (and the existing tests) treat the judge as a boolean; the trace needs the
+    number to stay recalibratable (#118).
+    """
+    from carta.search.rerank import score_pairs
+
+    if not hits:
+        return False
+    pr = cfg.get("proactive_recall", {})
+    model = pr.get("judge_model", "Xenova/ms-marco-MiniLM-L-6-v2")
+    threshold = pr.get("judge_threshold", -10.4)
+    texts = [(h.get("excerpt") or "")[:_CROSSENC_EXCERPT_CHARS] for h in hits]
+    scores = score_pairs(prompt[:300], texts, model)
+    best = max(scores) if scores else None
+    _judge_score_out["score"] = best
+    return best is not None and best >= threshold
+
+
+def _judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: float) -> bool:
+    """Route to the resolved judge backend (see `_resolve_judge_backend`)."""
+    backend = _resolve_judge_backend(cfg)
+    _judge_score_out["backend"] = backend
+    if backend == "ollama":
+        return _call_ollama_judge(prompt, hits, cfg, timeout_s)
+    return _call_crossenc_judge(prompt, hits, cfg)
+
+
+# Written by the judge call, read by _judge_with_timeout's `out` param. A dict rather
+# than a return value so the boolean contract every caller and test relies on is intact.
+_judge_score_out: dict = {}
+
+
 def _judge_with_timeout(
-    prompt: str, hits: list[dict], cfg: dict, timeout_s: int
+    prompt: str, hits: list[dict], cfg: dict, timeout_s: int, out: dict | None = None
 ) -> bool:
-    """Run Ollama judge in a thread; return False on timeout and on other errors.
+    """Run the judge in a thread; return False on timeout and on other errors.
 
     HOOK-05: on timeout we do NOT inject. The gray-zone hits are exactly the
     borderline ones the judge exists to vet, so injecting them unvetted would be
     the context noise Carta tries to avoid. The hook still exits 0 — the prompt
     proceeds unblocked — it just stays silent.
+
+    `out` (optional) receives {"backend", "score"} for the trace record; the score is
+    None for the ollama backend, which answers yes/no rather than scoring.
     """
+    _judge_score_out.clear()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call_ollama_judge, prompt, hits, cfg, timeout_s)
+        future = executor.submit(_judge, prompt, hits, cfg, timeout_s)
         try:
             return future.result(timeout=timeout_s)
         except concurrent.futures.TimeoutError:
@@ -349,6 +433,9 @@ def _judge_with_timeout(
         except Exception as e:
             print(f"carta-hook: judge exception (fail-open): {e}", file=sys.stderr)
             return False
+        finally:
+            if out is not None:
+                out.update(_judge_score_out)
 
 
 # ---------------------------------------------------------------------------

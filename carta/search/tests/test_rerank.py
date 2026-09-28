@@ -52,3 +52,41 @@ def test_dispatch_routes_to_llm_when_backend_llm():
     ce.assert_not_called()
     assert llm.call_args.kwargs["model"] == "qwen3.5:0.8b"
     assert llm.call_args.kwargs["timeout_s"] == 9
+
+
+# ---------------------------------------------------------------------------
+# Durable model cache + public scorer (the hook judge shares this model)
+# ---------------------------------------------------------------------------
+
+def test_cross_encoder_cache_dir_is_durable_not_tmp(monkeypatch, tmp_path):
+    """fastembed defaults its cache to $TMPDIR/fastembed_cache, which the OS reaps — the
+    hook would then re-download an ~80MB model on a prompt-blocking path."""
+    import carta.search.rerank as r
+    seen = {}
+
+    class FakeEncoder:
+        def __init__(self, model_name=None, cache_dir=None, **kw):
+            seen["model_name"] = model_name
+            seen["cache_dir"] = cache_dir
+
+        def rerank(self, query, texts):
+            return [0.0 for _ in texts]
+
+    monkeypatch.setattr(r, "_TextCrossEncoder", FakeEncoder, raising=False)
+    monkeypatch.setattr(r, "model_cache_dir", lambda: tmp_path / "models/fastembed")
+    r._model.cache_clear()
+    r.score_pairs("q", ["a"], "some/model")
+    assert seen["cache_dir"] == str(tmp_path / "models/fastembed")
+    assert "fastembed_cache" not in seen["cache_dir"]
+
+
+def test_model_cache_dir_is_under_carta_home():
+    from carta.search.rerank import model_cache_dir
+    p = model_cache_dir()
+    assert p.parts[-3:] == (".carta", "models", "fastembed")
+
+
+def test_score_pairs_returns_one_score_per_text(monkeypatch):
+    import carta.search.rerank as r
+    monkeypatch.setattr(r, "_scores", lambda q, texts, m: [float(len(t)) for t in texts])
+    assert r.score_pairs("q", ["ab", "abcd"], "m") == [2.0, 4.0]

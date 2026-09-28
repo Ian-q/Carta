@@ -1,23 +1,51 @@
-"""Local second-stage cross-encoder reranker via fastembed TextCrossEncoder.
+"""Local cross-encoder relevance scoring via fastembed TextCrossEncoder.
 
-Lazy-loaded, cached. Reorders fused candidates by query-chunk relevance and
-truncates to top_n. No API key, CPU/ONNX.
+Lazy-loaded, cached. Used twice: to rerank fused search candidates (`rerank_hits`),
+and by the proactive-recall hook's judge (`score_pairs`), which asks the same
+question — does this passage answer this query — on a prompt-blocking path.
+
+No API key, CPU/ONNX. Models are cached under ~/.carta/models/fastembed, NOT in
+fastembed's default location ($TMPDIR/fastembed_cache): the OS reaps temp files, and
+a reaped cache means re-downloading ~80MB inside a hook that blocks prompt submission.
 """
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-base"
+
+# Indirection so tests can substitute the class without touching fastembed's import.
+_TextCrossEncoder = None
+
+
+def model_cache_dir() -> Path:
+    """Durable cache for fastembed models (machine-level, like ~/.carta/traces)."""
+    return Path.home() / ".carta" / "models" / "fastembed"
 
 
 @lru_cache(maxsize=2)
 def _model(model_name: str):
-    from fastembed.rerank.cross_encoder import TextCrossEncoder
-    return TextCrossEncoder(model_name=model_name)
+    global _TextCrossEncoder
+    if _TextCrossEncoder is None:
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        _TextCrossEncoder = TextCrossEncoder
+    cache = model_cache_dir()
+    cache.mkdir(parents=True, exist_ok=True)
+    return _TextCrossEncoder(model_name=model_name, cache_dir=str(cache))
 
 
 def _scores(query: str, texts: list[str], model_name: str) -> list[float]:
     return [float(s) for s in _model(model_name).rerank(query, texts)]
+
+
+def score_pairs(query: str, texts: list[str], model_name: str) -> list[float]:
+    """Cross-encoder relevance score for each text against *query* (higher is better).
+
+    Raw model logits, unbounded and model-specific: compare them to each other or to a
+    threshold calibrated for that model, never across models.
+    """
+    return _scores(query, texts, model_name)
 
 
 def rerank_hits(query: str, hits: list[dict], model_name: str, top_n: int) -> list[dict]:
