@@ -151,7 +151,23 @@ DEFAULTS = {
         "max_results": 5,
         "judge_timeout_s": 3,
         "search_timeout_s": 3,      # wall-clock budget for the recall search (#106)
-        "ollama_model": "qwen3.5:0.8b",
+        "ollama_model": "qwen3.5:0.8b",   # used when judge_backend == "ollama"
+        # Gray-zone judge. "crossenc" (default) scores query-vs-passage with a local
+        # fastembed cross-encoder: no Ollama, no reasoning model, ~10ms warm and ~0.5s
+        # cold in a fresh process — which is what the hook is, once per prompt. On 229
+        # labelled pairs from the 84-query eval corpus it reaches AUC 0.915 against
+        # random chunks where the binary qwen3.5:2b judge reaches 0.78, and admits ~5%
+        # of random chunks at the threshold below (the 0.8b judge admitted 59%).
+        # "ollama" keeps the yes/no LLM judge (needs its model pulled). "auto" (default)
+        # prefers the cross-encoder and falls back to the Ollama judge when fastembed is
+        # not installed — it ships in the optional carta-cc[hybrid] extra, and a plain
+        # install hard-defaulted to crossenc would leave the gray zone silent for good.
+        "judge_backend": "auto",
+        "judge_model": "Xenova/ms-marco-MiniLM-L-6-v2",
+        # Raw cross-encoder logit, model-specific and NOT a probability. Calibrated with
+        # carta/hook/eval/calibrate_gate.py: the point where ~5% of random chunks pass
+        # while 80% of true passages do. Re-derive it if judge_model changes.
+        "judge_threshold": -10.4,
         # Measurably-low dense cosine (< low_threshold) -> silent; else top-N in
         # BOTH lanes -> inject; otherwise -> judge.
         # Placeholder value: calibrate against ~/.carta/traces + issue #118 usage

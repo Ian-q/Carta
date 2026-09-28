@@ -14,7 +14,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_cfg(high=0.85, low=0.60, max_results=5, judge_timeout_s=3):
+def _make_cfg(high=0.85, low=0.60, max_results=5, judge_timeout_s=3, judge_backend=None):
     return {
         "project_name": "test-proj",
         "qdrant_url": "http://localhost:6333",
@@ -25,6 +25,9 @@ def _make_cfg(high=0.85, low=0.60, max_results=5, judge_timeout_s=3):
             "max_results": max_results,
             "judge_timeout_s": judge_timeout_s,
             "ollama_model": "qwen3.5:0.8b",
+            # None leaves the key out, so the test sees the production default
+            # (cross-encoder). Tests about the Ollama judge pass "ollama" explicitly.
+            **({"judge_backend": judge_backend} if judge_backend else {}),
         },
         "embed": {
             "ollama_url": "http://localhost:11434",
@@ -155,7 +158,7 @@ def test_no_hits_no_output(tmp_path):
 def test_gray_zone_judge_yes_injects(tmp_path):
     """Score 0.75 in gray zone + Ollama says 'yes': inject."""
     hits = [_make_hit(0.75)]
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
@@ -176,7 +179,7 @@ def test_gray_zone_judge_yes_injects(tmp_path):
 def test_gray_zone_judge_no_discards(tmp_path):
     """Score 0.75 in gray zone + Ollama says 'no': no output."""
     hits = [_make_hit(0.75)]
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "no"}}
     with (
@@ -195,7 +198,7 @@ def test_gray_zone_judge_no_discards(tmp_path):
 def test_gray_zone_judge_yes_case_insensitive(tmp_path):
     """'Yes, it is relevant' is treated as yes (D-17 startswith)."""
     hits = [_make_hit(0.75)]
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "Yes, it is relevant"}}
     with (
@@ -213,7 +216,7 @@ def test_gray_zone_judge_yes_case_insensitive(tmp_path):
 def test_gray_zone_judge_maybe_discards(tmp_path):
     """'maybe' does NOT start with 'yes' — should discard."""
     hits = [_make_hit(0.75)]
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "maybe"}}
     with (
@@ -236,7 +239,7 @@ def test_judge_timeout_skips_injection(tmp_path):
     """Ollama judge sleeping 5s with 3s timeout: skips injection (HOOK-05: no
     injection on timeout, prompt proceeds), completes within 6.5s."""
     hits = [_make_hit(0.75)]
-    cfg = _make_cfg(judge_timeout_s=3)
+    cfg = _make_cfg(judge_timeout_s=3, judge_backend="ollama")
 
     def slow_judge(*args, **kwargs):
         time.sleep(5)
@@ -405,7 +408,7 @@ def test_module_disabled_no_output(tmp_path):
 def test_custom_thresholds_respected(tmp_path):
     """high=0.90, low=0.70: score 0.88 falls in gray zone with custom thresholds."""
     hits = [_make_hit(0.88)]
-    cfg = _make_cfg(high=0.90, low=0.70)
+    cfg = _make_cfg(high=0.90, low=0.70, judge_backend="ollama")
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"message": {"content": "yes"}}
     with (
@@ -515,7 +518,7 @@ def test_call_ollama_judge_uses_given_timeout():
 def test_judge_with_timeout_passes_budget_to_inner():
     """_judge_with_timeout forwards its budget to the inner judge so inner <= outer."""
     from carta.hook.hook import _judge_with_timeout
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     captured = {}
 
     def fake_call(prompt, hits, cfg, timeout_s):
@@ -559,7 +562,7 @@ def test_judge_timeout_returns_false():
     """TimeoutError in _judge_with_timeout returns False (HOOK-05: no injection on timeout)."""
     import concurrent.futures
     from carta.hook.hook import _judge_with_timeout
-    cfg = _make_cfg(judge_timeout_s=1)
+    cfg = _make_cfg(judge_timeout_s=1, judge_backend="ollama")
     hits = [_make_hit(0.75)]
     with patch("carta.hook.hook._call_ollama_judge", side_effect=concurrent.futures.TimeoutError):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=1)
@@ -569,7 +572,7 @@ def test_judge_timeout_returns_false():
 def test_judge_exception_returns_false():
     """Non-timeout exception in _judge_with_timeout returns False (fail-closed on errors)."""
     from carta.hook.hook import _judge_with_timeout
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     hits = [_make_hit(0.75)]
     with patch("carta.hook.hook._call_ollama_judge", side_effect=RuntimeError("boom")):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=3)
@@ -579,7 +582,7 @@ def test_judge_exception_returns_false():
 def test_judge_yes_returns_true():
     """Successful judge returning True propagates correctly."""
     from carta.hook.hook import _judge_with_timeout
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     hits = [_make_hit(0.75)]
     with patch("carta.hook.hook._call_ollama_judge", return_value=True):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=3)
@@ -589,7 +592,7 @@ def test_judge_yes_returns_true():
 def test_judge_no_returns_false():
     """Successful judge returning False propagates correctly."""
     from carta.hook.hook import _judge_with_timeout
-    cfg = _make_cfg()
+    cfg = _make_cfg(judge_backend="ollama")
     hits = [_make_hit(0.75)]
     with patch("carta.hook.hook._call_ollama_judge", return_value=False):
         result = _judge_with_timeout("prompt", hits, cfg, timeout_s=3)

@@ -163,7 +163,7 @@ docker run -d -p 6333:6333 -v ~/.carta/qdrant_storage:/qdrant/storage --name qdr
 
 # 2. Ollama — install from ollama.ai, then pull required models
 ollama pull nomic-embed-text   # text embeddings
-ollama pull qwen3.5:0.8b       # hook judge (swap for larger model if preferred)
+ollama pull qwen3.5:0.8b       # only if you set proactive_recall.judge_backend: ollama
 ollama pull qwen3-vl:8b        # vision describer for PDFs with figures/diagrams (needs Ollama >= 0.12.7)
 ollama pull glm-ocr            # OCR for text/tables on image-heavy PDF pages
 ```
@@ -270,6 +270,30 @@ Reranking applies to explicit searches (`carta search`, the MCP `carta_search` t
 eval`). The proactive-recall hook **never reranks** (and never loads ColPali) — it fires on
 every prompt and blocks submission, so it always uses the fast fused order; its gray-zone judge
 handles relevance filtering.
+
+**The gray-zone judge is a cross-encoder, not an LLM.** When retrieval is neither clearly on
+topic nor measurably irrelevant, the hook asks one question — does any of this answer the
+prompt — and a cross-encoder answers exactly that question directly. The default
+(`Xenova/ms-marco-MiniLM-L-6-v2`, via the fastembed dependency Carta already ships for
+reranking) costs ~10 ms warm and ~0.5 s cold in a fresh process, needs no Ollama, and cannot
+be derailed by a reasoning model deciding to think. Measured on 229 labelled passages from an
+84-query eval corpus: it separates relevant passages from unrelated chunks at **AUC 0.915**,
+where the binary `qwen3.5:2b` LLM judge it replaces reached 0.78. At the shipped threshold it
+passes 80% of genuinely relevant passages while admitting **under 5%** of unrelated ones.
+
+`proactive_recall.judge_threshold` (default `-10.4`) is a raw, model-specific logit — not a
+probability. Re-derive it for a different `judge_model`, or for your own corpus:
+
+```bash
+python -m carta.hook.eval.calibrate chunks http://localhost:6333 myproj_doc chunks.jsonl
+python -m carta.hook.eval.calibrate judge .carta/eval/myproj.yaml chunks.jsonl
+```
+
+`judge_backend` defaults to `auto`: the cross-encoder when fastembed is installed (it ships in
+the `carta-cc[hybrid]` extra), the yes/no LLM judge when it is not — so a plain install still
+judges instead of going quiet. Force either with `judge_backend: crossenc` / `ollama` (the
+latter needs `proactive_recall.ollama_model` pulled). `carta doctor` reports whether the judge model is
+cached and `--fix` fetches it, so the hook never downloads one while blocking a prompt.
 
 **Search budget.** For the same reason, the hook runs under a wall-clock budget —
 `proactive_recall.search_timeout_s`, default 3 s — covering the query embed and the Qdrant
