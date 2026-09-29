@@ -342,6 +342,7 @@ class PreflightChecker:
             self.checks.append(self._check_ollama_model("nomic-embed-text"))
             self.checks.append(self._check_ollama_model("qwen3-vl:8b"))
             self.checks.append(self._check_ollama_model("qwen3.5:0.8b"))
+            self.checks.append(self._check_ollama_model("glm-ocr:latest"))
         else:
             self.checks.append(
                 PreflightCheck(
