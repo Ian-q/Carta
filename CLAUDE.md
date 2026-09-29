@@ -136,6 +136,10 @@ Retrieval-quality changes are validated against the ET-embed eval corpus — see
 
 ## Tracking conventions
 
+**Starting a session?** [`docs/HANDOFF.md`](docs/HANDOFF.md) holds the current state, the
+decisions already settled (with their numbers, so they are not re-derived), the release
+mechanics, and the open threads. Rewrite it at each handoff rather than appending.
+
 **Where each fact lives.** Issues + [Project #4](https://github.com/users/Ian-q/projects/4) own
 status, size, area, and sequencing. [`docs/ROADMAP.md`](docs/ROADMAP.md) owns how subsystems relate
 and why approaches were taken or abandoned — it holds **no** per-issue status, deliberately. A
