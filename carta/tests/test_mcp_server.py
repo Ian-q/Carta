@@ -308,3 +308,96 @@ class TestCartaSearchEmbeddingOutage:
         assert result.get("error"), "must report an error, not an empty success list"
         detail = result.get("detail", "").lower()
         assert "embed" in detail or "ollama" in detail
+
+
+# ---------------------------------------------------------------------------
+# carta_impact (graph arm)
+# ---------------------------------------------------------------------------
+
+def _impact_project(root):
+    for rel, text in (
+        ("docs/parser.md", "The framing rules live in `src/parser/frame.py`.\n"),
+        ("docs/overview.md", "Everything under `src/parser/` is covered here.\n"),
+        ("src/parser/frame.py", "x = 1\n"),
+    ):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return root
+
+
+class TestCartaImpact:
+    def _call(self, root, **kwargs):
+        from carta.mcp import server
+        with patch.object(server, "_load_cfg", return_value={"project_name": "p"}), \
+             patch.object(server, "_repo_root_from_cfg", return_value=root):
+            return server._impact(**kwargs)
+
+    def test_carta_impact_returns_cli_json_shape(self, tmp_path):
+        import json as _json
+        from carta.graph.query import run_impact
+        root = _impact_project(tmp_path)
+        out = self._call(root, paths=["src/parser/frame.py"])
+        assert set(out) == {"schema", "query", "store", "results", "unmatched_paths",
+                            "skipped_paths"}
+        assert [r["doc"] for r in out["results"]] == ["docs/parser.md", "docs/overview.md"]
+        assert out["results"][0]["matches"][0]["evidence"] == [
+            {"line": 1, "text": "The framing rules live in `src/parser/frame.py`."}]
+        # Exactly what `carta impact --json` prints for the same query.
+        assert out == run_impact(root, {"project_name": "p"}, paths=["src/parser/frame.py"])
+        _json.dumps(out)
+
+    def test_carta_impact_passes_top_k_kinds_and_include_docs(self, tmp_path):
+        root = _impact_project(tmp_path)
+        out = self._call(root, paths=["src/parser/frame.py"], top_k=1, kinds=["mention"])
+        assert out["query"]["top"] == 1 and len(out["results"]) == 1
+        with patch("carta.graph.query.run_impact", return_value={"ok": True}) as run:
+            self._call(root, diff="", include_docs=True)
+        assert run.call_args.kwargs["diff"] == ""
+        assert run.call_args.kwargs["include_docs"] is True
+        assert run.call_args.kwargs["paths"] == []
+
+    def test_carta_impact_no_paths_and_no_diff_is_invalid_request(self, tmp_path):
+        out = self._call(_impact_project(tmp_path))
+        assert out["error"] == "invalid_request" and "path" in out["detail"]
+        out = self._call(tmp_path, paths=["src/a.py"], diff="main...HEAD")
+        assert out["error"] == "invalid_request"
+        out = self._call(tmp_path, paths=["src/a.py"], kinds=["nope"])
+        assert out["error"] == "invalid_request"
+
+    def test_carta_impact_bad_graph_config_is_invalid_request(self, tmp_path):
+        from carta.mcp import server
+        cfg = {"project_name": "p", "graph": {"patterns": [{"name": "bad", "regex": "("}]}}
+        with patch.object(server, "_load_cfg", return_value=cfg), \
+             patch.object(server, "_repo_root_from_cfg", return_value=_impact_project(tmp_path)):
+            out = server._impact(paths=["src/parser/frame.py"])
+        assert out["error"] == "invalid_request" and "bad" in out["detail"]
+
+    def test_carta_impact_config_missing_is_service_unavailable(self):
+        from carta.mcp import server
+        with patch.object(server, "_load_cfg", side_effect=FileNotFoundError("no .carta")):
+            out = server._impact(paths=["src/a.py"])
+        assert out == {"error": "service_unavailable", "detail": "no .carta"}
+
+    def test_carta_impact_unexpected_error_is_caught_and_never_prints(self, tmp_path, capsys):
+        with patch("carta.graph.query.run_impact", side_effect=RuntimeError("boom")):
+            out = self._call(tmp_path, paths=["src/a.py"])
+        assert out == {"error": "service_unavailable", "detail": "boom"}
+        assert capsys.readouterr().out == ""
+
+    def test_carta_impact_never_prints_on_success(self, tmp_path, capsys):
+        self._call(_impact_project(tmp_path), paths=["src/parser/frame.py"])
+        assert capsys.readouterr().out == ""
+
+    def test_carta_impact_is_registered_as_a_tool(self):
+        # FastMCP is mocked in this module, so read the decorator off the source.
+        import ast
+        import carta.mcp.server as server
+        tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+        (func,) = [n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "carta_impact"]
+        assert [ast.unparse(d) for d in func.decorator_list] == ["mcp_server.tool()"]
+        assert [a.arg for a in func.args.args] == [
+            "paths", "diff", "top_k", "kinds", "include_docs"]
+        doc = ast.get_docstring(func)
+        assert "before or after changing source files" in doc and "evidence" in doc
