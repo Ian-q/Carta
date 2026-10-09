@@ -98,3 +98,20 @@ def test_fingerprint_is_stable_across_calls_and_key_order():
     b = graph_settings({"graph": {"doc_globs": ["*.md"], "identifiers": {"stoplist": ["a_a", "b_b"]}}})
     assert a.fingerprint() == b.fingerprint() == a.fingerprint()
     assert len(a.fingerprint()) == 64
+
+
+# -- review round 2 ----------------------------------------------------------------
+
+@pytest.mark.parametrize("section, message", [
+    ({"enabled": "no"}, "graph.enabled"),
+    ({"enabled": 0}, "graph.enabled"),
+    ({"identifiers": {"enabled": "false"}}, "graph.identifiers.enabled"),
+    ({"scan": {"missing_paths": "off"}}, "graph.scan.missing_paths"),
+    ({"impact": {"top": 0}}, "graph.impact.top"),
+    ({"impact": {"top": -3}}, "graph.impact.top"),
+    ({"impact": {"min_score": float("nan")}}, "graph.impact.min_score"),
+    ({"impact": {"min_score": float("inf")}}, "graph.impact.min_score"),
+])
+def test_booleans_and_impact_limits_are_type_checked(section, message):
+    with pytest.raises(GraphConfigError, match=message):
+        graph_settings({"graph": section})

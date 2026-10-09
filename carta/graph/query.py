@@ -15,11 +15,12 @@ from bisect import bisect_left
 from pathlib import Path
 from typing import Collection, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from carta.graph.build import build_graph
-from carta.graph.gitio import GitError, default_branch, diff_names
+from carta.graph.build import build_graph, decode_text, list_repo_paths
+from carta.graph.gitio import GitError, default_branch, diff_name_status
+from carta.graph.mentions import extract_mentions
 from carta.graph.model import KINDS, MENTION_EXTRACTOR, Edge
-from carta.graph.paths import glob_to_regex, is_doc_path
-from carta.graph.settings import graph_settings
+from carta.graph.paths import PathIndex, glob_to_regex, in_path_set, is_doc_path
+from carta.graph.settings import GraphSettings, graph_settings
 from carta.graph.store import EdgeStore, StoreVersionError, store_path
 
 IMPACT_SCHEMA = 1
@@ -126,7 +127,9 @@ class ImpactIndex:
         parts = q.rstrip("/").split("/")
         for i in range(1, len(parts)):
             parent = "/".join(parts[:i]) + "/"
-            if self._types.get((kind, parent)) == "dir":
+            # A directory that no longer exists is stored as ``missing``; it
+            # still covers the files that were under it.
+            if self._types.get((kind, parent)) in ("dir", "missing"):
                 out.append((parent, "dir", 1.0 / (1 + len(parts) - i)))
         if not q.endswith("/"):
             for glob in self._globs.get(kind, ()):
@@ -306,18 +309,49 @@ def normalise_query_paths(repo_root: Path, cwd: Path,
     return sorted(paths), [{"path": p, "reason": skipped[p]} for p in sorted(skipped)]
 
 
-def _diff_paths(repo_root: Path, diff: str) -> Tuple[str, List[str]]:
+def _diff_paths(repo_root: Path, diff: str) -> Tuple[str, Dict[str, str]]:
+    """The range as used, and ``path -> A | D | M`` for what it changed."""
     range_spec = diff
     try:
         if not range_spec:
             range_spec = f"{default_branch(repo_root)}...HEAD"
-        return range_spec, diff_names(repo_root, range_spec)
+        return range_spec, diff_name_status(repo_root, range_spec)
     except GitError as exc:
         if diff and os.path.lexists(os.path.join(str(repo_root), diff)):
             raise ImpactError(
                 f"`{diff}` is a path, not a range; pass it without --diff") from exc
         raise ImpactError(
             f"`{range_spec}` is not a revision range git can diff here: {exc}") from exc
+
+
+def _edges_before(repo_root: Path, settings: GraphSettings, gone: Sequence[str],
+                  came: Sequence[str]) -> List[Edge]:
+    """Mention edges as they were before ``gone`` went away, extracted in memory.
+
+    The store is built from the working tree, where a deleted path can no
+    longer be resolved: a suffix or a bare filename names nothing, a glob
+    matches no file, a link is read beside the doc. Those are exactly the docs
+    a deletion leaves stale. So the docs are read once more against the path
+    set with the deleted paths put back (and the paths the change added taken
+    out), and the edges that gives are ranked together with the stored ones.
+    Nothing is written.
+    """
+    current = list_repo_paths(repo_root)
+    added = set(came)
+    before = PathIndex(sorted((set(current) - added) | {p for p in gone if in_path_set(p)}))
+    out: List[Edge] = []
+    for doc in current:
+        if not is_doc_path(doc, settings):
+            continue
+        try:
+            data = (repo_root / doc).read_bytes()
+        except OSError:
+            continue
+        if b"\0" in data:
+            continue
+        out.extend(e for e in extract_mentions(doc, decode_text(data), before, settings)
+                   if e.kind == "mention")
+    return out
 
 
 def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
@@ -351,6 +385,10 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
             f"unknown edge kind {unknown[0]!r} (known kinds: {', '.join(KINDS)})")
     use_top = settings.impact_top if top is None else int(top)
     use_min = settings.impact_min_score if min_score is None else float(min_score)
+    if use_top < 1:
+        raise ImpactError(f"--top must be at least 1, got {use_top}")
+    if not math.isfinite(use_min):
+        raise ImpactError(f"--min-score must be a finite number, got {use_min}")
 
     in_diff: frozenset = frozenset()
     range_spec: Optional[str] = None
@@ -358,6 +396,8 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
     if diff is not None:
         range_spec, changed = _diff_paths(repo_root, diff)
         in_diff = frozenset(changed)
+        gone = [p for p, status in changed.items() if status == "D"]
+        came = [p for p, status in changed.items() if status == "A"]
         query = []
         for path in changed:
             if not include_docs and is_doc_path(path, settings):
@@ -366,6 +406,9 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
                 query.append(path)
     else:
         query, skipped = normalise_query_paths(repo_root, cwd or repo_root, paths)
+        gone = [q for q in query if not q.endswith("/")
+                and not os.path.lexists(os.path.join(str(repo_root), q))]
+        came = []
 
     try:
         if build:
@@ -381,9 +424,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         total_edges = store.counts()["edges"]
         digest = store.edges_digest((MENTION_EXTRACTOR,))
 
+    if build and gone and "mention" in use_kinds:
+        edges.extend(_edges_before(repo_root, settings, gone, came))
     index = ImpactIndex(edges, n_docs)
-    ranked = rank_impact(index, query, kinds=use_kinds, weights=dict(settings.impact_weights),
-                         top=use_top, min_score=use_min)
+    matched = rank_impact(index, query, kinds=use_kinds, weights=dict(settings.impact_weights),
+                          top=None)
+    ranked = [item for item in matched if item["score"] >= use_min][:use_top]
     results = []
     for item in ranked:
         matches = [dict(match, contribution=round(match["contribution"], 6))
@@ -396,6 +442,7 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         "query": {"paths": query, "diff": range_spec, "kinds": use_kinds, "top": use_top,
                   "min_score": use_min},
         "store": {"docs": n_docs, "edges": total_edges, "digest": digest, "built": bool(build)},
+        "matched_docs": len(matched),
         "results": results,
         "unmatched_paths": [q for q in query if not index.is_matched(q, use_kinds)],
         "skipped_paths": skipped,
@@ -426,10 +473,19 @@ def format_impact(result: dict) -> str:
     noun = "changed path" if query["diff"] else "path"
     corpus = f"({_count(store['docs'], 'doc')}, {_count(store['edges'], 'edge')})"
     lines: List[str] = []
-    if results:
+    matched = result.get("matched_docs", len(results))
+    n_paths = _count(len(query["paths"]), noun)
+    if results and matched > len(results):
+        lines.append(f"Top {len(results)} of {_count(matched, 'doc')} that mention "
+                     f"{n_paths} {corpus}")
+    elif results:
         verb = "mentions" if len(results) == 1 else "mention"
-        lines.append(f"{_count(len(results), 'doc')} {verb} "
-                     f"{_count(len(query['paths']), noun)} {corpus}")
+        lines.append(f"{_count(len(results), 'doc')} {verb} {n_paths} {corpus}")
+    elif matched:
+        verb = "mentions" if matched == 1 else "mention"
+        lines.append(f"{_count(matched, 'doc')} {verb} the "
+                     f"{_count(len(query['paths']), 'queried ' + noun)}, but none scores at "
+                     f"least {query['min_score']:g} (--min-score) {corpus}")
     else:
         lines.append(f"No doc mentions the {_count(len(query['paths']), 'queried ' + noun)} "
                      f"{corpus}")

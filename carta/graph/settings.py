@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -99,6 +100,13 @@ def _number(value: Any, where: str, kind: type) -> Any:
     return kind(value)
 
 
+def _flag(value: Any, where: str) -> bool:
+    """A real boolean. ``"no"`` and ``"false"`` are truthy strings, so they are refused."""
+    if not isinstance(value, bool):
+        raise GraphConfigError(f"{where} must be true or false, got {value!r}")
+    return value
+
+
 def _patterns(value: Any) -> tuple:
     if not isinstance(value, (list, tuple)):
         raise GraphConfigError("graph.patterns must be a list of pattern mappings")
@@ -143,20 +151,26 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
     replay = _mapping(g["replay"], "graph.replay")
     weights = _mapping(impact["weights"], "graph.impact.weights")
     excluded = cfg.get("excluded_paths", DEFAULTS["excluded_paths"])
+    top = _number(impact["top"], "graph.impact.top", int)
+    if top < 1:
+        raise GraphConfigError(f"graph.impact.top must be at least 1, got {top}")
+    min_score = _number(impact["min_score"], "graph.impact.min_score", float)
+    if not math.isfinite(min_score):
+        raise GraphConfigError(f"graph.impact.min_score must be a finite number, got {min_score}")
     return GraphSettings(
-        enabled=bool(g["enabled"]),
+        enabled=_flag(g["enabled"], "graph.enabled"),
         doc_globs=_str_list(g["doc_globs"], "graph.doc_globs", non_empty=True),
         excluded_paths=_str_list(excluded or [], "excluded_paths"),
-        ident_enabled=bool(ident["enabled"]),
+        ident_enabled=_flag(ident["enabled"], "graph.identifiers.enabled"),
         ident_min_length=_number(ident["min_length"], "graph.identifiers.min_length", int),
         ident_stoplist=frozenset(_str_list(ident["stoplist"], "graph.identifiers.stoplist")),
         patterns=_patterns(g["patterns"]),
-        impact_top=_number(impact["top"], "graph.impact.top", int),
-        impact_min_score=_number(impact["min_score"], "graph.impact.min_score", float),
+        impact_top=top,
+        impact_min_score=min_score,
         impact_kinds=_str_list(impact["kinds"], "graph.impact.kinds"),
         impact_weights=tuple(sorted(
             (str(k), _number(v, f"graph.impact.weights.{k}", float)) for k, v in weights.items())),
-        scan_missing_paths=bool(scan["missing_paths"]),
+        scan_missing_paths=_flag(scan["missing_paths"], "graph.scan.missing_paths"),
         scan_ignore_docs=_str_list(scan["ignore_docs"], "graph.scan.ignore_docs"),
         scan_history_limit=_number(scan["history_limit"], "graph.scan.history_limit", int),
         replay_hub_share=_number(replay["hub_share"], "graph.replay.hub_share", float),

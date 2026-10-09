@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from carta.graph.gitio import (
-    BlobReader, GitError, default_branch, deleted_and_renamed, diff_names, first_parent_log,
+    BlobReader, GitError, default_branch, deleted_and_renamed, diff_name_status, diff_names, first_parent_log,
     ignored_paths, ls_tree, rev_list_first_parent, rev_parse, toplevel,
 )
 from carta.graph.tests.conftest import requires_git
@@ -261,3 +261,21 @@ def test_history_readers_outside_a_repository_raise(tmp_path):
         first_parent_log(tmp_path, "HEAD")
     with pytest.raises(GitError):
         ls_tree(tmp_path, "HEAD")
+
+
+@requires_git
+def test_diff_name_status_tells_added_deleted_and_modified_apart(git_repo):
+    git_repo.write("src/keep.py", "k = 1\n")
+    git_repo.write("src/old name.py", "a body long enough for a rename to be detected\n" * 3)
+    git_repo.write("src/gone.py", "g = 1\n")
+    git_repo.commit("first", 0)
+    git_repo.write("src/keep.py", "k = 2\n")
+    git_repo.git("mv", "src/old name.py", "src/new.py")
+    git_repo.rm("src/gone.py")
+    git_repo.write("src/fresh.py", "f = 1\n")
+    git_repo.commit("second", 1)
+    assert diff_name_status(git_repo.root, "HEAD~1..HEAD") == {
+        "src/fresh.py": "A", "src/gone.py": "D", "src/keep.py": "M", "src/new.py": "A",
+        "src/old name.py": "D"}
+    with pytest.raises(GitError):
+        diff_name_status(git_repo.root, "--output=/tmp/x")

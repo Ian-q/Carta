@@ -119,8 +119,8 @@ def test_impact_paths_human_and_json(project, monkeypatch, capsys):
     code, out, err = run(monkeypatch, capsys, "impact", "src/parser/frame.py", "--json")
     result = json.loads(out)                               # the object and nothing else
     assert (code, err) == (0, "")
-    assert set(result) == {"schema", "query", "store", "results", "unmatched_paths",
-                           "skipped_paths"}
+    assert set(result) == {"schema", "query", "store", "matched_docs", "results",
+                           "unmatched_paths", "skipped_paths"}
     assert [r["doc"] for r in result["results"]] == ["docs/parser.md", "docs/overview.md"]
 
 

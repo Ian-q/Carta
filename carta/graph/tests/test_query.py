@@ -377,8 +377,8 @@ def test_top_kinds_and_min_score_default_from_config_and_can_be_overridden(tree)
 
 def test_json_shape_is_exactly_the_spec(tree):
     out = run_impact(tree, {}, paths=["src/parser/frame.py", "tools/gen_tables.py"])
-    assert set(out) == {"schema", "query", "store", "results", "unmatched_paths",
-                        "skipped_paths"}
+    assert set(out) == {"schema", "query", "store", "matched_docs", "results",
+                        "unmatched_paths", "skipped_paths"}
     assert out["schema"] == 1
     assert set(out["query"]) == {"paths", "diff", "kinds", "top", "min_score"}
     assert set(out["store"]) == {"docs", "edges", "digest", "built"}
@@ -497,3 +497,96 @@ def test_diff_with_no_non_doc_changes_is_an_empty_query_not_an_error(repo):
 def test_diff_outside_a_git_repository_is_a_clear_error(tree):
     with pytest.raises(ImpactError, match="git"):
         run_impact(tree, {}, diff="main...HEAD")
+
+
+# -- review round 2: deletions, and filters that hide everything -------------------
+
+def test_a_missing_directory_target_still_covers_the_files_that_were_under_it():
+    edges = [m("docs/a.md", "src/legacy/", "missing"), m("docs/b.md", "src/other.py")]
+    out = rank(edges, ["src/legacy/a.py", "src/legacy/sub/b.py"], 4)
+    assert [r["doc"] for r in out] == ["docs/a.md"]
+    assert {x["match"] for x in out[0]["matches"]} == {"dir"}
+    index = ImpactIndex(edges, 4)
+    assert index.is_matched("src/legacy/a.py", ["mention"])
+    # a missing *file* target is never a parent
+    assert rank([m("docs/a.md", "src/legacy", "missing")], ["src/legacy/a.py"], 4) == []
+
+
+@pytest.fixture
+def deletion_repo(git_repo):
+    """Four docs naming code four ways (directory, link, suffix, glob and basename)."""
+    r = git_repo
+    r.write("src/legacy/a.py", "a = 1\n")
+    r.write("src/legacy/sub/b.py", "b = 1\n")
+    r.write("src/core/engine.py", "e = 1\n")
+    r.write("src/keep.py", "k = 1\n")
+    r.write("tools/gen.py", "g = 1\n")
+    r.write("docs/dirdoc.md", "Everything in `src/legacy/` is old.\n")
+    r.write("docs/linkdoc.md", "Tables come from [gen](tools/gen.py).\n")
+    r.write("docs/suffixdoc.md", "The loop is `core/engine.py`; run `./../tools/gen.py`.\n")
+    r.write("docs/globdoc.md", "See `src/legacy/*.py` and `engine.py`.\n")
+    r.write("docs/other.md", "Unrelated: `src/keep.py`.\n")
+    r.commit("base", 0)
+    return r
+
+
+DELETED = ["src/core/engine.py", "src/legacy/a.py", "src/legacy/sub/b.py", "tools/gen.py"]
+FOUR = ["docs/dirdoc.md", "docs/globdoc.md", "docs/linkdoc.md", "docs/suffixdoc.md"]
+
+
+@requires_git
+def test_diff_that_deletes_the_mentioned_paths_finds_the_same_docs_as_before(deletion_repo):
+    r = deletion_repo
+    before = run_impact(r.root, {}, paths=DELETED)
+    assert sorted(x["doc"] for x in before["results"]) == FOUR
+    r.git("checkout", "-q", "-b", "feat")
+    r.git("rm", "-q", "-r", "src/legacy", "tools/gen.py", "src/core/engine.py")
+    r.commit("remove the old code", 1)
+    after = run_impact(r.root, {}, diff="main..feat")
+    assert after["query"]["paths"] == DELETED
+    assert sorted(x["doc"] for x in after["results"]) == FOUR
+    assert after["unmatched_paths"] == before["unmatched_paths"] == ["src/legacy/sub/b.py"]
+    # the store on disk is still the working tree's, untouched by the query
+    assert after["store"]["digest"] == run_impact(r.root, {}, paths=["src/keep.py"])["store"]["digest"]
+
+
+@requires_git
+def test_querying_a_deleted_path_by_name_finds_the_docs_that_named_it(deletion_repo):
+    r = deletion_repo
+    r.git("rm", "-q", "-r", "src/legacy", "tools/gen.py", "src/core/engine.py")
+    r.commit("remove the old code", 1)
+    out = run_impact(r.root, {}, paths=DELETED)
+    assert sorted(x["doc"] for x in out["results"]) == FOUR
+    assert out["unmatched_paths"] == ["src/legacy/sub/b.py"]      # only a grandparent names it
+
+
+@requires_git
+def test_a_rename_in_the_diff_finds_docs_under_the_old_name(deletion_repo):
+    r = deletion_repo
+    r.git("checkout", "-q", "-b", "feat")
+    r.git("mv", "src/core/engine.py", "src/core/motor.py")
+    r.commit("rename", 1)
+    out = run_impact(r.root, {}, diff="main..feat")
+    assert out["query"]["paths"] == ["src/core/engine.py", "src/core/motor.py"]
+    assert sorted(x["doc"] for x in out["results"]) == ["docs/globdoc.md", "docs/suffixdoc.md"]
+
+
+def test_top_and_min_score_are_validated(tree):
+    for top in (0, -1):
+        with pytest.raises(ImpactError, match="top"):
+            run_impact(tree, {}, paths=["src/parser/frame.py"], top=top)
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ImpactError, match="min-score"):
+            run_impact(tree, {}, paths=["src/parser/frame.py"], min_score=bad)
+
+
+def test_empty_result_says_when_the_filter_hid_the_matches(tree):
+    out = run_impact(tree, {}, paths=["src/parser/frame.py"], min_score=1000.0)
+    assert out["results"] == [] and out["matched_docs"] == 2
+    assert format_impact(out).splitlines()[0] == (
+        "2 docs mention the 1 queried path, but none scores at least 1000 "
+        "(--min-score) (3 docs, 4 edges)")
+    out = run_impact(tree, {}, paths=["src/parser/frame.py"], top=1)
+    assert out["matched_docs"] == 2
+    assert format_impact(out).splitlines()[0] == (
+        "Top 1 of 2 docs that mention 1 path (3 docs, 4 edges)")

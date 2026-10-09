@@ -78,11 +78,26 @@ def diff_names(repo: Path, range_spec: str) -> List[str]:
     Renames are not followed: a moved file is listed under both names.
     Raises ``GitError`` when the range is not a revision range.
     """
+    return list(diff_name_status(repo, range_spec))
+
+
+def diff_name_status(repo: Path, range_spec: str) -> Dict[str, str]:
+    """``path -> status`` (``A``, ``D`` or ``M``) across a revision range, relative to ``repo``.
+
+    Renames are not followed: a moved file is a ``D`` and an ``A``. Every
+    status other than added and deleted is reported as ``M``. Raises
+    ``GitError`` when the range is not a revision range.
+    """
     if not range_spec or range_spec.startswith("-"):
         raise GitError(f"{range_spec!r} is not a revision range")
-    out = run_git(repo, "diff", "--name-only", "--no-renames", "--relative", "-z",
+    out = run_git(repo, "diff", "--name-status", "--no-renames", "--relative", "-z",
                   range_spec, "--")
-    return sorted(set(_names(out)))
+    tokens = _names(out)
+    found: Dict[str, str] = {}
+    for i in range(0, len(tokens) - 1, 2):
+        status = tokens[i][:1]
+        found[tokens[i + 1]] = status if status in ("A", "D") else "M"
+    return {path: found[path] for path in sorted(found)}
 
 
 _STATUS_RE = re.compile(r"^[DR][0-9]*$")
