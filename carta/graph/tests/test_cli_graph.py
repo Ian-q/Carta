@@ -255,3 +255,75 @@ def test_graph_commands_never_load_the_vector_stack(project):
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stderr.strip().splitlines()[-1]) == []
     assert "2 docs mention 1 path" in proc.stdout
+
+
+# -- carta graph replay ------------------------------------------------------
+
+def _replay_repo(git_repo):
+    git_repo.write("docs/parser.md", "Framing lives in `src/frame.py`.\n")
+    git_repo.write("src/frame.py", "X = 1\n")
+    git_repo.commit("root", 0)
+    for n in (2, 3):
+        git_repo.write("src/frame.py", f"X = {n}\n")
+        git_repo.write("docs/parser.md", f"Framing lives in `src/frame.py`. v{n}\n")
+        git_repo.commit(f"change {n}", n)
+    return git_repo.root
+
+
+@requires_git
+def test_cli_graph_replay_json_and_text(git_repo, tmp_path, monkeypatch, capsys):
+    root = _replay_repo(git_repo)
+    elsewhere = tmp_path / "elsewhere"            # no Carta config anywhere near
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    code, out, err = run(monkeypatch, capsys, "graph", "replay", "--repo", str(root),
+                         "--no-cache", "--resamples", "50")
+    assert code == 0, err
+    assert out.splitlines()[1] == "Population: 3 commits scanned, 2 eligible (66.7%)"
+    assert "graph[mention]" in out and "commits/s" in err
+
+    code, out, err = run(monkeypatch, capsys, "graph", "replay", "--repo", str(root),
+                         "--no-cache", "--resamples", "50", "--last", "1", "--json")
+    assert code == 0, err
+    report = json.loads(out)
+    assert report["population"]["commits_scanned"] == 1
+    assert report["methods"]["graph[mention]"]["any_hit_at"]["1"] == 1.0
+    assert not (root / ".carta").exists()
+
+    monkeypatch.chdir(root)                       # --repo defaults to where you are
+    code, out, _err = run(monkeypatch, capsys, "graph", "replay", "--no-cache",
+                          "--resamples", "50")
+    assert code == 0 and out.startswith("Replay  repo=")
+
+
+@requires_git
+def test_cli_graph_replay_help_and_errors(git_repo, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code, out, _err = run(monkeypatch, capsys, "graph", "replay", "--help")
+    assert code == 0 and "usage: carta graph replay" in out and "--arm" in out
+    code, _out, err = run(monkeypatch, capsys, "graph", "replay", "--no-cache")
+    assert code == 1 and "not inside a git repository" in err
+    code, _out, err = run(monkeypatch, capsys, "graph", "replay", "--no-such-flag")
+    assert code == 2 and "usage: carta graph replay" in err
+    code, _out, err = run(monkeypatch, capsys, "graph")
+    assert code == 1 and "replay" in err
+
+
+@requires_git
+def test_cli_graph_replay_touches_no_vector_stack(git_repo, tmp_path):
+    import os
+    import subprocess
+    import sys
+    root = _replay_repo(git_repo)
+    code = _FOOTPRINT.replace(
+        '(["graph", "build"], ["graph", "status"], ["impact", "src/parser/frame.py"])',
+        '(["graph", "replay", "--repo", %r, "--no-cache", "--resamples", "20"],)' % str(root))
+    assert "replay" in code
+    checkout = str(Path(cli.__file__).resolve().parent.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [checkout, env.get("PYTHONPATH")]))
+    proc = subprocess.run([sys.executable, "-c", code], cwd=str(tmp_path),
+                          capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stderr.strip().splitlines()[-1]) == []
+    assert proc.stdout.startswith("Replay  repo=")

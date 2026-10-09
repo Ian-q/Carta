@@ -1097,6 +1097,11 @@ def cmd_graph(args):
     from carta.config import ConfigError
 
     action = getattr(args, "graph_action", None)
+    if action == "replay":
+        # The eval needs no Carta config and reads git objects only; it owns
+        # its own options so it can also run as `python -m carta.graph.eval.replay`.
+        from carta.graph.eval.replay import main as replay_main
+        sys.exit(replay_main(args.replay_args))
     if action not in ("build", "status"):
         print(args.graph_usage, file=sys.stderr, end="")
         sys.exit(1)
@@ -1459,6 +1464,10 @@ def main():
     graph_status = graph_sub.add_parser(
         "status", help="Describe the edge store and whether it is stale (never builds)")
     graph_status.add_argument("--json", action="store_true", help="Print the status as JSON")
+    graph_replay = graph_sub.add_parser(
+        "replay", add_help=False,
+        help="Score the graph arm against this repository's history (PR replay); "
+             "`carta graph replay --help` lists its options")
     graph_p.set_defaults(graph_usage=graph_p.format_usage())
 
     impact_p = sub.add_parser(
@@ -1484,7 +1493,13 @@ def main():
     impact_p.add_argument("--json", action="store_true", help="Print the result as JSON")
     impact_p.set_defaults(impact_usage=impact_p.format_usage())
 
-    args = parser.parse_args()
+    # `graph replay` owns its options (it also runs as a module), so they are
+    # passed through untouched; every other command rejects unknown arguments.
+    args, extra = parser.parse_known_args()
+    if args.command == "graph" and getattr(args, "graph_action", None) == "replay":
+        args.replay_args = extra
+    elif extra:
+        parser.error("unrecognized arguments: " + " ".join(extra))
 
     dispatch = {
         "init": cmd_init,
