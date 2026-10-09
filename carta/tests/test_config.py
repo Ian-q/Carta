@@ -194,3 +194,21 @@ def test_ollama_keep_alive_default_and_env_override(monkeypatch):
 
 def test_search_dedupe_results_default_on():
     assert DEFAULTS["search"]["dedupe_results"] is True
+
+
+def test_defaults_have_graph_section_and_search_graph_is_untouched():
+    """The graph arm has its own top-level section; search.graph keeps its four keys."""
+    from carta.config import DEFAULTS
+    assert DEFAULTS["graph"]["enabled"] is True
+    assert DEFAULTS["graph"]["doc_globs"] == ["**/*.md"]
+    assert DEFAULTS["graph"]["impact"]["kinds"] == ["mention"]
+    assert set(DEFAULTS["search"]["graph"]) == {"enabled", "hops", "seed_count", "candidate_depth"}
+
+
+def test_load_config_rejects_non_mapping_graph(tmp_path):
+    import pytest
+    from carta.config import ConfigError, load_config
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("project_name: demo\nqdrant_url: http://localhost:6333\ngraph: nope\n")
+    with pytest.raises(ConfigError, match="graph"):
+        load_config(cfg)
