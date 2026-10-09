@@ -242,10 +242,16 @@ print(json.dumps(bad), file=sys.stderr)
 
 
 def test_graph_commands_never_load_the_vector_stack(project):
+    import os
     import subprocess
     import sys
+    # The child runs in the project directory, so point it at this checkout
+    # explicitly rather than relying on how the package was installed.
+    checkout = str(Path(cli.__file__).resolve().parent.parent)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [checkout, env.get("PYTHONPATH")]))
     proc = subprocess.run([sys.executable, "-c", _FOOTPRINT], cwd=str(project),
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=env)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stderr.strip().splitlines()[-1]) == []
     assert "2 docs mention 1 path" in proc.stdout
