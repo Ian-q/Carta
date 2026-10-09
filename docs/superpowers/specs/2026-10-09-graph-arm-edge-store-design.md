@@ -907,6 +907,64 @@ were accepted with a narrower change than suggested, noted in the table.
 | A17 | minor | `BEGIN IMMEDIATE` needs explicit transaction control on 3.10; version mismatch deletes in both directions. | Accepted, both. |
 | A18 | minor | The case-hump rule admits product and exception names as identifiers. | Accepted. Builtin exception names stoplisted; `graph status` reports the count; precision recorded as unmeasured. |
 
+## Implementation notes: store, extractor, build
+
+Details settled while writing the first third of the work. Each is pinned by a test; none
+changes the architecture.
+
+**Stage 1**
+- A fence may be indented by any amount (fences inside list items are common), not only up to
+  three spaces.
+- A frontmatter token is a candidate only when it contains `/` or `.`; a bare word cannot be a
+  path and is never an identifier.
+- Any `](target)` is read as a link, which also catches an image nested in a link's text.
+  Footnote definitions (`[^1]: ...`) are not reference definitions.
+
+**Stage 2**
+- N1 also strips a matching pair of parentheses or backticks around the candidate, and bold
+  markers that ended up inside a span (`**src/a.py**`); a real glob keeps its stars because they
+  sit next to a slash.
+- N2 cuts `?query` in links only. Elsewhere `?` is a glob character.
+- N4 rejects anything that still contains `:` after N2 (an scp-style remote, a `module:attr`
+  reference).
+- N7: after normalising, a glob must still contain a `/` or begin `*.`, and must have at least
+  one literal letter or digit outside character classes. `*/`, `**/` and a pasted regex such as
+  `[^/]*` are not globs.
+- A bare name (no `/`) is handled by N12 alone, so `` `Makefile` `` and `` `LICENSE` `` in
+  backticks stay words. A link is explicit, so a bare link target resolves to a sibling or a root
+  file whatever its name, and never by basename search: a link whose target is elsewhere is
+  broken, and becomes a `missing` edge at the sibling path.
+- A candidate written as a directory (`x.py/`) that names a file gives no edge.
+- N11: two or more suffix matches give no edge at all, not a `missing` one. The path exists; it
+  is the mention that is ambiguous.
+- `dst_type='doc'` means the target is a **source** doc: it matches `doc_globs` and is not
+  excluded. An excluded markdown file is a `file` target.
+- An `ident` edge has `meta` `{"call": true}` when it was written with call parentheses, as a
+  hint for #131. Python builtin function names (`len()`, `open()`) are in the keyword stoplist.
+
+**Store**
+- `replace_source` refuses an edge whose `src` or `extractor` is not the source being written
+  (`ValueError`), so one extractor cannot write into another's rows. Two edges with one identity
+  in a single write: the last wins.
+- `EdgeStore.open_existing(path)` returns `None` when the file is absent and creates nothing;
+  `graph_status` uses it.
+- Opening creates `.carta/graph/.gitignore` (`*`) when it is missing.
+
+**Build**
+- The report also carries `enabled`, `written` (sources whose stored rows actually changed, which
+  is 1 when adding a file resolves one doc's `missing` edge even though all docs were
+  re-extracted) and `skipped` (docs that could not be read).
+- A doc containing a NUL byte is not text: it is kept as a source with no edges. Other bytes are
+  decoded as UTF-8 with replacement, so a doc with a stray invalid byte still yields its edges.
+- `graph_status` reasons: `no_store`, `newer_schema`, `extractor_changed`, `settings_changed`,
+  `paths_changed`, `docs_changed`, in that order.
+- `gitio.py` holds only `run_git`, `is_work_tree` and `ls_files` so far; the history readers the
+  eval needs are added with it. git is always run with `GIT_DIR`, `GIT_WORK_TREE` and
+  `GIT_INDEX_FILE` removed from the environment, so a build started from inside a git hook reads
+  the repository it was pointed at.
+- Measured on this repository (324 paths, 113 docs): 7.3k edges extracted in 0.3 s. The budget
+  test (500 docs of 16 kB, 55,000 mentions) runs in under 4 s locally against a 10 s limit.
+
 ## Deferred
 
 - Comparing derived edges with hand-declared source-glob lists in frontmatter (the issue's third
