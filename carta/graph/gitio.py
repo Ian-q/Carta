@@ -96,8 +96,14 @@ def deleted_and_renamed(repo: Path, limit: int) -> Tuple[FrozenSet[str], Dict[st
     record only, its newest: a file renamed away and later re-created and
     deleted is in ``deleted``.
     """
-    out = run_git(repo, "log", "--no-merges", "-M", "--diff-filter=DR", "--name-status",
-                  "--format=", "-z", "--relative", "-n", str(max(0, int(limit))))
+    # Two steps, because ``git log -n`` counts the commits it prints: with a
+    # diff filter it would walk all of history looking for ``limit`` commits
+    # that deleted something. The bound is on commits searched.
+    commits = run_git(repo, "rev-list", "--no-merges", "-n", str(max(0, int(limit))), "HEAD")
+    if not commits.strip():
+        return frozenset(), {}
+    out = run_git(repo, "log", "--no-walk=unsorted", "--stdin", "-M", "--diff-filter=DR",
+                  "--name-status", "--format=", "-z", "--relative", input_bytes=commits)
     tokens = [t.lstrip("\n") for t in out.decode("utf-8", "surrogateescape").split("\0")]
     tokens = [t for t in tokens if t]
     deleted: Set[str] = set()

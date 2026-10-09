@@ -48,6 +48,15 @@ with EdgeStore(store_path(root)) as store:
     assert [e.dst for e in store.iter_edges(kinds=("mention",))] == ["src/frame.py"]
 """
 
+_QUERY = r"""
+from carta.graph.query import run_impact
+from carta.graph.scan import missing_path_findings
+cfg = {"qdrant_url": "http://127.0.0.1:9", "embed": {"ollama_url": "http://127.0.0.1:9"}}
+result = run_impact(root, cfg, paths=["src/frame.py"])
+assert [r["doc"] for r in result["results"]] == ["docs/parser.md"], result
+assert missing_path_findings(root, cfg) == []
+"""
+
 
 def _run(code: str) -> dict:
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
@@ -98,3 +107,9 @@ def test_git_repo_fixture_is_reproducible(make_git_repo):
         repo.write("b.md", "world\n")
         shas.append(repo.commit("second", 1))
     assert shas[0] == shas[1]
+
+
+def test_running_an_impact_query_and_the_scan_finding_pulls_no_vector_stack():
+    out = _run(_IMPORT_ALL + _BUILD + _QUERY + _REPORT)
+    assert {"carta.graph.query", "carta.graph.scan"} <= set(out["imported"])
+    assert out["bad"] == []
