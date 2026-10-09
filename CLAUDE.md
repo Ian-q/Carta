@@ -188,7 +188,7 @@ keeping the board honest.
 | `hook` | Install/run the stale-reference git hook (`hook install`, `hook check`; pre-push default) |
 | `claude-md` | Reconcile CLAUDE.md against the docs graph: `check` reports superseded sections (JSON), `record` stamps the sync sidecar. Pairs with the `/claude-md-sync` skill |
 | `impact` | Reverse lookup over the graph arm: `impact <path>...` or `impact --diff [range]` → the docs that name those paths, ranked, with evidence lines (`--json`). No model, Qdrant or Ollama (`carta/graph/query.py`) |
-| `graph` | The deterministic edge store at `.carta/graph/edges.db`: `graph build` (incremental by content hash; `--force`), `graph status` (never builds) |
+| `graph` | The deterministic edge store at `.carta/graph/edges.db`: `graph build` (incremental by content hash; `--force`), `graph status` (never builds), `graph replay` (PR-replay eval over git history against popularity and basename baselines; reads git objects only, needs no config; `carta/graph/eval/`) |
 | `export` / `import` | Share / restore embeddings + sidecars |
 | `update` | Self-update the installed package |
 
@@ -267,8 +267,8 @@ embed-integrity scan · `eval/` retrieval eval · `vision/` PDF routing/OCR/ColP
 `mcp/` MCP server · `hook/` recall judge (`hooks/` = shell entry) · `memory/` note
 capture · `install/` bootstrap/preflight/auto-fix · `update/` self-update · `ui/`
 status rendering · `graph/` the deterministic arm: mention extractor, SQLite edge store,
-`carta impact` ranking, the `missing_path_mention` scan finding (stdlib + PyYAML only;
-must never import the vector stack or `carta.scanner`).
+`carta impact` ranking, the `missing_path_mention` scan finding, and `graph/eval/` the
+PR-replay eval (stdlib + PyYAML only; must never import the vector stack or `carta.scanner`).
 
 ### Which command? (full table in README / AGENTS.md)
 

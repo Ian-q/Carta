@@ -1035,6 +1035,82 @@ Details settled while writing the second third of the work. Each is pinned by a 
 - Measured on this repository's history at the time of writing: 6 findings, all true (a renamed
   `conftest.py`, a deleted workflow file named by three docs, a deleted planning file), in 0.5 s.
 
+## Implementation notes: the replay eval
+
+What was settled while building `carta/graph/eval/`, where it refines or departs from the text
+above. Where the two disagree, this section describes the code.
+
+**Modules.** `metrics.py` (`score_ranking`, `aggregate`, `bootstrap_ci`, `paired_bootstrap`),
+`baselines.py` (`popularity_ranking`, `PopularityWindow`, `basename_tokens`, `basename_ranking`,
+`basename_idf_ranking`, `BasenameIndex`), `incremental.py` (`MentionState`), `cache.py`
+(`ReplayCache`, `default_cache_path`), `replay.py` (`run_replay`, `classify_commit`,
+`format_replay`, `main`, `Snapshot`, `EdgeProvider`, `PROVIDERS`, `register_provider`). The git
+readers the walk needs are in `gitio.py`: `first_parent_log`, `ls_tree`, `BlobReader`,
+`rev_list_first_parent`, `rev_parse`, `toplevel`.
+
+**One git process for the walk, with blob ids.** The log is read with `--raw --no-abbrev`
+instead of `--name-status`, so every added or modified path arrives with its new blob id and no
+`ls-tree` is needed per commit. `ls-tree` runs once, at the parent of the first scanned commit,
+to seed the tree; from there the path set, the blob map and the doc set are advanced by each
+commit's changes. Submodule entries are dropped from both. The **whole** first-parent history up
+to the range end is always walked, whatever the window: commits before the window warm up the
+popularity counts and are handed to every provider's `observe`.
+
+**Selective re-resolution is by recorded lookups, not by path segments** (a stronger form of
+A8). The segment rule in the Algorithm section is correct but weak in practice: every doc that
+names anything under `src/` shares the segment `src` with every file added under it, so most docs
+were re-resolved on most commits. `MentionState` instead resolves each doc through a recorder
+that notes every question asked of the path index (`has_file`, `has_dir`, `by_basename`,
+`suffix_matches`, a top-level directory test, `glob_matches`), and re-resolves a doc only when an
+added or deleted path could change one of those answers: the same file path, the same basename, a
+matching suffix, a directory that came into or went out of existence, or a path matching one of
+its globs. The recorder offers only those lookups, so a new lookup in the resolver fails loudly
+instead of becoming an untracked dependency. Checked against from-scratch resolution on random
+histories (`test_replay_state.py`), on a 200-commit synthetic history, and by `incremental=False`
+on real histories (identical reports). On a repository with several hundred docs this took the
+walk from about 14,000 doc resolutions to about 3,000.
+
+**Ranking reads a reduced edge set.** To rank one commit the mention provider hands
+`rank_impact` only the edges whose target can match the query (the queried paths, the directories
+above them, and every glob). Rarity is counted per target and every edge of a returned target is
+included, so the ranking is identical to ranking over all edges; a test asserts it. A provider
+opts in by defining `relevant_edges(snapshot, paths)`; without it `edges_at(snapshot)` is used.
+
+**Providers are factories.** `PROVIDERS` maps a kind to `factory(ReplayContext) -> EdgeProvider`,
+because a provider is stateful and belongs to one run. `register_provider(kind, factory)` adds
+one. A test registers a toy co-change provider and scores `mention`, `cochange` and their union
+in one run, and asserts the order of calls: `observe` once per mainline commit, in order, and
+`edges_at` never before the commits preceding it were observed. Arms are paired with every
+baseline **and with each other**, which is the comparison #130 needs.
+
+**Hubs without a second pass.** Every method's full ranking is kept for each eligible commit, and
+the no-hub variant filters hubs out of it before truncating. That equals passing them as
+`exclude_docs` (a test pins the equivalence) and needs no second walk.
+
+**What counts.** `new_docs_not_gold` and `excluded_doc_paths` leave out the root commit, which
+creates everything. Paths under `.git/` and `.carta/` are not part of the path set and are
+dropped from a commit's changes before it is classified. A type change (`T`) is a modification.
+A doc rename is a delete plus an add, so the old path is gold and the new one is a created doc.
+
+**Judgement.** Each arm gets `pass` (every paired MRR interval against a baseline lies above
+zero), `fail`, or `inconclusive` (fewer than `graph.replay.min_population` eligible commits), in
+both variants; the no-hub one is the one that counts.
+
+**Report additions.** `judgement`, `population.conclusive`, `population.excluded_doc_paths`,
+`no_hub.population.dropped`, and a paired `recall_at_5` beside the paired `mrr`. Run counters and
+timings (`stats`) are deliberately outside the report, which stays a function of the history and
+the settings; the command prints one timing line on stderr.
+
+**Command line.** `carta graph replay` forwards its arguments to `replay.main`, which is also
+`python -m carta.graph.eval.replay`. Added options: `--min-population`, `--resamples`,
+`--exclude PATTERN` (an extra `excluded_paths` entry). When `<repo>/.carta/config.yaml` exists
+its `graph:` and `excluded_paths` are honoured; nothing else in it is read and no other key is
+required. `--json` alone prints JSON; `--json PATH` writes it and prints the text.
+
+**Cache.** Payloads are zlib-compressed JSON. The in-memory layer is bounded (512 entries per
+table), since a long history has far more doc blobs than a walk needs at once. An unreadable or
+unwritable cache file degrades to memory without an error.
+
 ## Deferred
 
 - Comparing derived edges with hand-declared source-glob lists in frontmatter (the issue's third
@@ -1047,5 +1123,92 @@ Details settled while writing the second third of the work. Each is pinned by a 
 
 ## Results
 
-To be appended after implementation: the replay report on real history (population first), and
-the comparison with the three baselines, with and without hub docs.
+Replay of this repository's own mainline (`carta graph replay --range origin/main --no-cache`),
+at `792b6690`, default settings. All numbers are from that one command; `--no-cache`, a cold
+cache and a warm cache give byte-identical JSON.
+
+```
+Population: 403 commits scanned, 54 eligible (13.4%)
+  skipped: no_docs_edited 203, docs_only 128, only_new_docs 14, empty 2, bulk 1, root_commit 1
+  gold docs per eligible commit: mean 2.0, median 2
+  docs in corpus at range end: 111     created-in-commit docs not counted as gold: 106
+
+                R@1    R@3    R@5    R@10   P@5    any@5  MRR    returned
+graph[mention]  0.035  0.182  0.210  0.262  0.063  0.278  0.166  7.7
+popularity      0.302  0.791  0.885  0.944  0.319  0.981  0.731  9.6
+basename        0.073  0.201  0.259  0.340  0.093  0.370  0.221  7.9
+basename_idf    0.077  0.194  0.228  0.290  0.078  0.296  0.200  7.9
+
+graph[mention] vs popularity    dMRR -0.565 [-0.684, -0.441]   better 4 / worse 43 / tied 7
+graph[mention] vs basename      dMRR -0.055 [-0.120, +0.004]   better 9 / worse 15 / tied 30
+graph[mention] vs basename_idf  dMRR -0.034 [-0.106, +0.028]   better 9 / worse 8 / tied 37
+
+Without hub docs (>20% of eligible commits: CHANGELOG.md 50%, README.md 50%, CLAUDE.md 24%): 21 eligible
+graph[mention]  0.111  0.270  0.270  0.270  0.086  0.333  0.262  5.6
+popularity      0.270  0.529  0.781  0.810  0.248  0.905  0.563  9.2
+basename        0.111  0.254  0.317  0.413  0.114  0.381  0.281  6.2
+basename_idf    0.111  0.254  0.270  0.317  0.105  0.333  0.261  6.2
+
+graph[mention] vs popularity    dMRR -0.301 [-0.470, -0.124]   better 1 / worse 14 / tied 6
+graph[mention] vs basename      dMRR -0.019 [-0.090, +0.043]   better 2 / worse 3 / tied 16
+graph[mention] vs basename_idf  dMRR +0.001 [-0.071, +0.058]   better 2 / worse 1 / tied 18
+graph[mention]: INCONCLUSIVE (21 eligible commits, fewer than the 30 needed to call it either way)
+
+Source-only commits (203, unlabelled): share with any prediction / mean returned at 5
+graph[mention] 0.872 / 3.49    popularity 1.000 / 5.00    basename 0.887 / 3.30
+```
+
+**What this shows.** The acceptance test set out under *How results will be judged* is **not
+met** on this repository. Formally the no-hub variant is inconclusive, as predicted (A5): 21
+commits. But the direction is not in doubt for popularity, which beats the mention arm in both
+variants with intervals well clear of zero, and against the two basename baselines the mention
+arm is indistinguishable (every paired interval includes zero). Nothing here supports a claim
+that mention edges rank better than `grep` for a basename.
+
+**Why, from reading the commits.** Three rows were re-derived independently (each doc read with
+`git show <parent>:<doc>`, edges extracted from scratch, popularity recounted from `git log`, the
+basename match redone with a plain regex) and agreed with the replay on query, gold and all
+three ranks: `2b3d0f92` (graph 1, popularity 5, basename 1), `21242250` (graph none, popularity
+1, basename none) and `854290c6` (graph 5, popularity 3, basename 1). They show the two causes:
+
+1. *The docs this project edits with its code do not name files.* In 33 of the 54 eligible
+   commits the only gold docs are `README.md`, `CHANGELOG.md` and `CLAUDE.md`, which describe
+   behaviour and commands. In `21242250` the README gained a section on export and import and
+   names none of `carta/cli.py`, `carta/share.py`, `carta/tests/test_share.py`. No reading of
+   doc text can find that link; it is what co-change edges (#130) are for.
+2. *The docs that do name files are mostly frozen.* The plans and specs under
+   `docs/superpowers/` name nearly every source file, many times, and are never edited again.
+   They fill the top of the mention ranking: in `854290c6` four dated plans outrank `CLAUDE.md`,
+   the doc that was edited, although it names `carta/cli.py` and the `carta/` tree.
+
+**A check on cause 2.** Treating the planning archive as not-docs
+(`--exclude docs/superpowers/`) leaves 53 eligible commits and changes the picture:
+
+```
+                R@1    R@3    R@5    R@10   P@5    any@5  MRR    returned
+graph[mention]  0.175  0.369  0.599  0.621  0.189  0.792  0.453  4.9
+popularity      0.308  0.816  0.933  0.962  0.336  1.000  0.742  8.5
+basename        0.159  0.328  0.394  0.419  0.147  0.547  0.385  5.6
+basename_idf    0.160  0.328  0.384  0.419  0.140  0.547  0.360  5.6
+
+graph[mention] vs popularity    dMRR -0.290 [-0.428, -0.150]   better 10 / worse 33 / tied 10
+graph[mention] vs basename      dMRR +0.067 [-0.006, +0.137]   better 25 / worse 5 / tied 23
+graph[mention] vs basename_idf  dMRR +0.092 [+0.005, +0.168]   better 29 / worse 3 / tied 21
+```
+
+MRR goes from 0.166 to 0.453, the commits with no gold doc in the top ten from 35 to 10, and the
+mention arm now beats `basename_idf` with an interval that excludes zero (with all docs it did
+not). It still loses to popularity, and the no-hub variant (20 commits) is still inconclusive.
+This run was chosen after seeing the first one, so it is a diagnosis and not a result: it says
+frozen docs are a large part of the gap, not that the arm passes.
+
+**What follows.** (a) `carta impact` needs a way to keep frozen docs out of its ranking, or
+below living ones: an `ignore_docs` list as the scan finding already has, or a recency prior.
+(b) Popularity is a strong prior on any repository with a changelog and should be treated as a
+feature to combine with, not only as a baseline. (c) The headline number has to come from a
+larger history with more non-hub commits; this one cannot decide it. (d) #130 is the arm that
+addresses cause 1, and the replay already scores `mention`, `cochange` and their union in one run.
+
+**Speed.** 403 commits (257 of them ranked, 111 docs at the end) replay in 1.2 s with no cache,
+about 330 commits per second, and 0.7 s with a warm cache, on an Apple-silicon laptop. The cost
+is roughly linear in doc resolutions, not in commits times docs.

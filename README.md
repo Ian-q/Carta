@@ -455,8 +455,20 @@ basename grep with the same rarity weighting). Read the **population line first*
 many commits were scanned, how many were eligible and why the rest were skipped, and a result on
 too few commits is labelled inconclusive rather than a pass or a fail. The report also repeats
 every table without "hub" docs such as a changelog, which every method predicts correctly.
-Design and measured results:
-[the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md).
+
+```bash
+carta graph replay                          # the whole mainline history of this repository
+carta graph replay --last 300 --json out.json
+carta graph replay --repo ../other-repo --exclude docs/archive/    # needs no Carta config there
+```
+
+It reads git objects only (never the working tree or the edge store), so it can be pointed at
+any repository, and a doc is judged on what it said at the commit's *parent*, not on what the
+commit itself added. On this repository's own history the mention arm does **not** beat the
+baselines yet: the docs edited alongside code here (README, changelog) do not name files, and
+the docs that do name files are dated plans nobody edits again. Numbers, populations and the
+reading of them are in
+[the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
 
 ### Capturing notes (quirks, bug notes, helpful notes)
 
