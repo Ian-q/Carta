@@ -12,7 +12,7 @@
 
 ## Global constraints
 
-- **Work only in this worktree.** Python: `/Users/ian/.carta/venvs/graph-dev/bin/python`. Full suite:
+- **Work only in this worktree**, with a Python that has an editable install of it plus pytest. Full suite:
   `python -m pytest carta/ -q -p no:cacheprovider` (baseline 1481 passed, 2 skipped). It stays green after every task.
 - **TDD.** Each task: write the listed tests, run them and see them fail for the right reason, implement, see them pass, run the package's tests, commit. Do not write code that no test asked for.
 - **No new dependencies. Python 3.10 only:** no `tomllib`, `typing.Self`, `datetime.UTC`, `itertools.batched`, `except*`, or parenthesised-context-manager-only idioms that 3.10 rejects.
