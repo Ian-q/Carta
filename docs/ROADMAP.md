@@ -40,12 +40,21 @@ flowchart TD
         HOOK["#10 stale-ref hook (4 slices)"]
         SYNC["claude-md-sync (#87)"]
     end
+    subgraph second_arm["Graph arm (deterministic, no vector stack)"]
+        MENTION["mention edges + carta impact<br/>(doc names a path)"]
+        COCHANGE["co-change edges<br/>(files and docs edited together)"]
+        SYMBOL["symbol resolution<br/>(identifier to defining file)"]
+    end
     VIS -- "removed the storage cause<br/>#73 was masking" --> DEDUP
     DEDUP -- "saturated the eval; residual<br/>miss is an OCR data gap" --> RERANK
     REPAIR -- "made the lanes observable;<br/>fusion is now client-side" --> DEDUP
     REPAIR -- "gate reads rank + cosine,<br/>never the fused score" --> HOOK
     DEEP -- "covers what a text layer<br/>cannot answer" --> VIS
     HOOK --> SYNC
+    HOOK -- "a named path is a cheaper,<br/>stronger signal than a cosine" --> MENTION
+    MENTION -- "which source change<br/>invalidates which section" --> SYNC
+    MENTION -- "same store,<br/>new edge kind" --> COCHANGE
+    MENTION -- "stored identifiers<br/>are its input" --> SYMBOL
     FOCUS -- "deep partner to search<br/>(locate → go deep)" --> DEDUP
     RERANK -- "saturation made the next<br/>lever unmeasurable" --> EVAL2
     EVAL2 -- "re-exposed a first-stage<br/>lever: +0.24 MRR on MCP" --> HYDE
@@ -107,6 +116,26 @@ re-derive.
   "the bus runs at 250 kbps" and "…500 kbps" embed together; subtracting a wrong answer is
   neutral-to-harmful and its opposite vector is simply off-topic (0/84 found, dense-only).
   [Spec with the full table](superpowers/specs/2026-09-21-hyde-hypothetical-query-design.md).
+- **Carta has a second arm, and it shares no code with the first.** The embedding arm answers
+  "which passage is about this?"; it cannot answer the reverse question an agent has while editing
+  code, "which docs describe the file I am changing?". A doc that names `src/parser/frame.py` has
+  declared that relation more reliably than any cosine can, and reading it needs no model. So the
+  graph arm (`carta/graph/`) is deterministic: extraction is a pure function of (doc path, doc
+  text, the set of repo paths), the same tree always yields the same edges, and the store is a
+  cache that can be deleted and rebuilt. **It imports nothing from the vector stack** (stdlib and
+  PyYAML only, pinned by a subprocess test), because its whole value is being available when
+  Qdrant and Ollama are not, and being cheap enough to run on every diff. One SQLite edge store
+  holds every kind: mention edges today, with a schema that already fits co-change and symbol
+  edges, so each later kind is a new writer, not a new subsystem.
+- **The graph arm is judged by PR replay, not by the retrieval eval.** Every mainline commit that
+  touched both code and docs is a free labelled example: the code it touched is the query, the
+  docs it edited are the answer. Edges are extracted from the commit's *parent* tree through git
+  objects, so nothing leaks. Three rules keep the number honest: state the population (commits
+  scanned, eligible, and why the rest were skipped); score baselines on the identical commits
+  (most-edited docs, basename grep, basename grep with the same rarity weighting, since a win over
+  an unweighted baseline could be the weighting rather than the edges); and repeat every table
+  without "hub" docs such as a changelog, which every method predicts correctly. A win that
+  appears only with hubs included proves nothing.
 - **The Qdrant WAL corruption was upstream, not ours.** `wal.rs:150 Utf8Error` was a Qdrant 1.17.0
   WAL-reader regression (qdrant#8455), fixed in 1.17.1. The bind-mount/fsync theory was falsified —
   no data was ever lost, and quarantined collections replay clean on 1.17.1. Hence the image pin.

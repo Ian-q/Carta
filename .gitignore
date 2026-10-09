@@ -38,6 +38,7 @@ build/
 .carta/embed-status.json
 .carta/visual_cache/
 .carta/traces/
+.carta/graph/
 
 # Design source files
 *.afdesign

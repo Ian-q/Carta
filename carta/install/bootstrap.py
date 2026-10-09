@@ -405,6 +405,8 @@ def _update_gitignore(project_root: Path) -> None:
         # contain the verbatim derived query text — but a project that ran an
         # earlier build may already have one of these on disk.
         ".carta/traces/",
+        # The graph arm's edge store: a derived cache, rebuilt by `carta graph build`.
+        ".carta/graph/",
     ]
     existing_lines = gitignore.read_text().splitlines() if gitignore.exists() else []
     parent_globs = {".carta/", ".carta/*"}

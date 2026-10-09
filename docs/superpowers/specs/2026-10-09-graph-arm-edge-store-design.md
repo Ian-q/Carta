@@ -965,6 +965,76 @@ changes the architecture.
 - Measured on this repository (324 paths, 113 docs): 7.3k edges extracted in 0.3 s. The budget
   test (500 docs of 16 kB, 55,000 mentions) runs in under 4 s locally against a 10 s limit.
 
+## Implementation notes: query, CLI, MCP, scan finding
+
+Details settled while writing the second third of the work. Each is pinned by a test.
+
+**Ranking (`query.py`)**
+- `rank_impact` returns unrounded scores (`run_impact` rounds to 6 places for output) and accepts
+  `top=None` for "everything", which the replay needs.
+- `idf` uses `N = max(n_docs, docs seen in the edges, df)`, so a caller passing a stale or zero
+  `n_docs` can never produce a negative or undefined weight.
+- When several kinds are read, a doc's value for one queried path is the **maximum** over kinds,
+  the literal reading of the formula. Whether independent kinds should instead add is a question
+  for #130 to settle with the replay; the per-kind arms make it measurable.
+- A file-sourced row is worth `w_kind * weight` and is reported as match `cochange` with
+  `target` = the queried path. It counts as a strong match, alongside `exact` and `under`.
+- A queried directory (`src/parser/`) matches a `dir` target of the same name as `exact`, targets
+  beneath it as `under`, and a `dir` target above it as `dir`. For `under`, a doc contributes its
+  single best target beneath the directory; naming five files under it is not worth more than
+  naming one. A queried path never matches a glob when it is itself a directory.
+- **Reported contributions.** A `dir` or `glob` target contributes once (A7); in the output that
+  amount is split evenly over the paths assigned to it, so a result's match contributions always
+  sum to its score.
+- **What A7 does and does not guarantee.** With per-target aggregation a directory mention
+  covering `n` changed files is worth `0.5 * idf * (1 + ln n)`. At equal rarity that passes an
+  exact mention of one file once `n >= 3`. The "exact beats a directory that covers ten" test
+  holds because the directory is named by more docs (5 of 20 against 1 of 20), which is the usual
+  case but not a law. Before A7 the same directory mention was worth `0.5 * idf * n`.
+- `ImpactIndex.is_matched(path, kinds)` is the `unmatched_paths` rule: exact, `under`, glob, a
+  file-sourced row, or a directory target exactly one level up.
+
+**Query inputs**
+- `normalise_query_paths(repo_root, cwd, raw) -> (paths, skipped)`. `./x` and `../x` are read from
+  the current directory; otherwise the reading that exists on disk wins (current directory
+  first) and a path that exists under neither is taken as repo-relative, which is what asking
+  about a deleted file needs. Skip reasons: `outside_repo`, `repo_root`, and `doc` (diff mode).
+- An explicit path query keeps docs in the query (doc-to-doc mentions answer "who links to this
+  page"); only `--diff` drops changed docs, unless `--include-docs`.
+- `git diff` is run as `git diff --name-only --no-renames --relative -z <range> --`, so a value
+  that is not a revision can never be read as a pathspec, and a value starting with `-` is refused.
+- `run_impact(..., cwd=None)`: the CLI passes the process directory, the MCP tool the repo root.
+- `ImpactError` is a `ValueError`: the CLI prints it and exits 1; the MCP tool maps it, and a
+  `GraphConfigError`, to `invalid_request`.
+- `store.docs` is the number of mention sources; `store.edges` counts every edge in the store,
+  identifiers included, so it equals what `carta graph status` prints.
+
+**CLI**
+- `carta graph` with no subcommand prints its usage to stderr and exits 1. `--json` on `build`
+  and `status` prints the report dict with sorted keys. A disabled graph arm is exit 0 with a
+  one-line notice.
+- None of the three commands calls the update notifier, and a subprocess test asserts that
+  running them loads no module of the vector stack.
+
+**Scan finding**
+- The history search is bounded by commits **walked**: `git rev-list --no-merges -n <limit> HEAD`
+  piped into `git log --no-walk=unsorted --stdin -M --diff-filter=DR --name-status --format= -z
+  --relative`. A single `git log -n` counts the commits it *prints*, so with a diff filter it
+  would walk all of history looking for `limit` commits that deleted something.
+- A path has one history record, its newest. Rename chains are followed (at most 32 hops) to the
+  surviving name; when the chain ends at a path that is gone too, the finding keeps
+  `reason='renamed'`, carries no `renamed_to`, and says "renamed, then removed".
+- A directory that is still on disk but holds no file is treated as removed: git does not track
+  directories, and an empty one is commonly left behind.
+- `broken_link` is limited to file-form link targets (a link to a missing *directory* is only
+  reported with history), requires the doc-glob extension or an indexed parent directory (the
+  repo root counts), is dropped when a doc with the same stem sits beside it (`setup.html` next
+  to `setup.md` is a rendered name), and is dropped when `git check-ignore` matches.
+- `run_scan` shows a "checking mentioned paths" step and calls the finding through the module
+  (`carta.graph.scan.missing_path_findings`), so it can be patched in tests.
+- Measured on this repository's history at the time of writing: 6 findings, all true (a renamed
+  `conftest.py`, a deleted workflow file named by three docs, a deleted planning file), in 0.5 s.
+
 ## Deferred
 
 - Comparing derived edges with hand-declared source-glob lists in frontmatter (the issue's third

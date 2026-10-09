@@ -187,12 +187,15 @@ keeping the board honest.
 | `statusline` | Status-line widget output (embed progress) |
 | `hook` | Install/run the stale-reference git hook (`hook install`, `hook check`; pre-push default) |
 | `claude-md` | Reconcile CLAUDE.md against the docs graph: `check` reports superseded sections (JSON), `record` stamps the sync sidecar. Pairs with the `/claude-md-sync` skill |
+| `impact` | Reverse lookup over the graph arm: `impact <path>...` or `impact --diff [range]` → the docs that name those paths, ranked, with evidence lines (`--json`). No model, Qdrant or Ollama (`carta/graph/query.py`) |
+| `graph` | The deterministic edge store at `.carta/graph/edges.db`: `graph build` (incremental by content hash; `--force`), `graph status` (never builds) |
 | `export` / `import` | Share / restore embeddings + sidecars |
 | `update` | Self-update the installed package |
 
 ### MCP — `carta-mcp` (stdio, `carta/mcp/server.py`)
 
-Claude-initiated tools: `carta_search`, `carta_focus`, `carta_embed`, `carta_scan`, `carta_remember`.
+Claude-initiated tools: `carta_search`, `carta_focus`, `carta_embed`, `carta_scan`, `carta_remember`,
+`carta_impact` (the `carta impact --json` object; the graph package is imported inside the handler).
 `carta_search` takes an optional `hypothetical` (HyDE) — the calling agent writes it; Carta never
 generates one (a local 9b writer did not help — see the HyDE spec).
 
@@ -263,11 +266,14 @@ retrieval/RRF/rerank/related-graph · `scanner/` structural scan · `audit/`
 embed-integrity scan · `eval/` retrieval eval · `vision/` PDF routing/OCR/ColPali ·
 `mcp/` MCP server · `hook/` recall judge (`hooks/` = shell entry) · `memory/` note
 capture · `install/` bootstrap/preflight/auto-fix · `update/` self-update · `ui/`
-status rendering.
+status rendering · `graph/` the deterministic arm: mention extractor, SQLite edge store,
+`carta impact` ranking, the `missing_path_mention` scan finding (stdlib + PyYAML only;
+must never import the vector stack or `carta.scanner`).
 
 ### Which command? (full table in README / AGENTS.md)
 
 `carta scan` / `/doc-audit` = doc structure · `carta audit` / `carta doctor` =
-embed-data integrity & environment · `carta eval` = retrieval quality.
+embed-data integrity & environment · `carta eval` = retrieval quality ·
+`carta impact` = which docs describe the files I changed.
 
 <!-- Carta is active. Collections: doc-audit-cc_doc, doc-audit-cc_session, doc-audit-cc_notes -->
