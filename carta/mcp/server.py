@@ -715,7 +715,8 @@ def carta_impact(
                already edits are marked in_diff.
 
     Returns:
-        {"schema", "query", "store", "results", "unmatched_paths", "skipped_paths"}.
+        {"schema", "query", "store", "matched_docs", "results", "unmatched_paths",
+        "skipped_paths"}. "matched_docs" counts the docs that matched before top_k cut them.
         Each result has "rank", "doc", "score", "in_diff" and "matches"; each match
         gives the queried "path", the "target" the doc names, how it matched
         (exact | dir | glob | under), "df" (how many docs name that target) and

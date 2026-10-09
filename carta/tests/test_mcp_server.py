@@ -338,8 +338,8 @@ class TestCartaImpact:
         from carta.graph.query import run_impact
         root = _impact_project(tmp_path)
         out = self._call(root, paths=["src/parser/frame.py"])
-        assert set(out) == {"schema", "query", "store", "results", "unmatched_paths",
-                            "skipped_paths"}
+        assert set(out) == {"schema", "query", "store", "matched_docs", "results",
+                            "unmatched_paths", "skipped_paths"}
         assert [r["doc"] for r in out["results"]] == ["docs/parser.md", "docs/overview.md"]
         assert out["results"][0]["matches"][0]["evidence"] == [
             {"line": 1, "text": "The framing rules live in `src/parser/frame.py`."}]
