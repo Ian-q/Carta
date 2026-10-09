@@ -18,7 +18,7 @@ from carta.graph.mentions import extract_mentions
 from carta.graph.model import MENTION_EXTRACTOR, MENTION_EXTRACTOR_VERSION
 from carta.graph.paths import PathIndex, in_path_set, is_doc_path, is_excluded_rel
 from carta.graph.settings import GraphSettings, graph_settings
-from carta.graph.store import EdgeStore, StoreVersionError, store_path
+from carta.graph.store import EdgeStore, StoreUnreadableError, StoreVersionError, store_path
 
 META_SETTINGS = "mention.settings_sha"
 META_PATHS = "mention.paths_sha"
@@ -162,7 +162,9 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
 
     ``stale`` is true when a build would change the store; ``stale_reasons``
     lists why, from ``no_store``, ``newer_schema``, ``extractor_changed``,
-    ``settings_changed``, ``paths_changed`` and ``docs_changed``.
+    ``settings_changed``, ``paths_changed``, ``docs_changed`` and ``unreadable``
+    (the file is damaged or is not a store; it is left exactly as found, and
+    the next build replaces it).
     """
     repo_root = Path(repo_root)
     settings = graph_settings(cfg)
@@ -170,9 +172,12 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
               "extractor_version": None, "docs": 0, "edges": 0, "by_kind": {},
               "by_dst_type": {}, "digest": "", "stale": True, "stale_reasons": ["no_store"]}
     try:
-        store = EdgeStore.open_existing(store_path(repo_root))
+        store = EdgeStore.open_readonly(store_path(repo_root))
     except StoreVersionError:
         status.update(exists=True, stale_reasons=["newer_schema"])
+        return status
+    except StoreUnreadableError:
+        status.update(exists=True, stale_reasons=["unreadable"])
         return status
     if store is None:
         return status

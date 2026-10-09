@@ -21,7 +21,7 @@ from carta.graph.mentions import extract_mentions
 from carta.graph.model import KINDS, MENTION_EXTRACTOR, Edge
 from carta.graph.paths import PathIndex, glob_to_regex, in_path_set, is_doc_path
 from carta.graph.settings import GraphSettings, graph_settings
-from carta.graph.store import EdgeStore, StoreVersionError, store_path
+from carta.graph.store import EdgeStore, StoreUnreadableError, StoreVersionError, store_path
 
 IMPACT_SCHEMA = 1
 DEFAULT_KIND_WEIGHTS: Dict[str, float] = {"mention": 1.0, "symbol": 0.8, "cochange": 0.5}
@@ -413,9 +413,11 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
     try:
         if build:
             build_graph(repo_root, cfg)
-        store = EdgeStore.open_existing(store_path(repo_root))
+        store = EdgeStore.open_readonly(store_path(repo_root))
     except StoreVersionError as exc:
         raise ImpactError(str(exc)) from exc
+    except StoreUnreadableError as exc:
+        raise ImpactError(f"{exc}; run `carta graph build` to rebuild it") from exc
     if store is None:
         raise ImpactError("no edge store yet; run `carta graph build` (or drop --no-build)")
     with store:

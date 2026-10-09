@@ -1138,6 +1138,10 @@ def cmd_graph(args):
         print("The edge store was written by a newer Carta. Upgrade Carta, or delete "
               ".carta/graph/edges.db to rebuild it.")
         return
+    if report["stale_reasons"] == ["unreadable"]:
+        print("The edge store at .carta/graph/edges.db cannot be read (damaged, or not a "
+              "store). It was left as found; run `carta graph build` to rebuild it.")
+        return
     if report["stale"]:
         state = f"stale ({', '.join(report['stale_reasons'])}); run `carta graph build`"
     else:

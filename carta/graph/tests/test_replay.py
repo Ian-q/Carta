@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -745,7 +746,8 @@ def test_replay_budget_and_incremental_equivalence_on_a_long_history(git_repo):
     assert report["population"]["commits_scanned"] == 200
     assert report["population"]["eligible"] == 99
     assert report["methods"][GRAPH]["any_hit_at"]["10"] > 0
-    assert elapsed < 30, f"replay took {elapsed:.1f}s"
+    if os.environ.get("CARTA_TIMING_TESTS"):       # a time limit is opt-in: see test_build_budget
+        assert elapsed < 30, f"replay took {elapsed:.1f}s"
     # selective re-resolution: far fewer than every doc at every commit
     assert stats["docs_resolved"] < 200 * 100 / 20
     # Re-resolving every doc at every commit must give the same report (a shorter

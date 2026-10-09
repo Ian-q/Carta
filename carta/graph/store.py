@@ -61,6 +61,10 @@ class StoreVersionError(RuntimeError):
     """The store on disk was written by a newer Carta than this one."""
 
 
+class StoreUnreadableError(RuntimeError):
+    """The file is there but is not a store this Carta can read (damaged, or not SQLite)."""
+
+
 def store_path(repo_root: Path) -> Path:
     """Where a repository's edge store lives."""
     return Path(repo_root) / ".carta" / "graph" / "edges.db"
@@ -101,6 +105,43 @@ class EdgeStore:
         if not Path(db_path).is_file():
             return None
         return cls(db_path)
+
+    @classmethod
+    def open_readonly(cls, db_path: Path) -> Optional["EdgeStore"]:
+        """Open an existing store for reading, and never write: not the file, not beside it.
+
+        ``None`` when there is no file. Raises ``StoreUnreadableError`` for a
+        file that is not a usable store (where a normal open would rebuild it)
+        and ``StoreVersionError`` for one written by a newer Carta.
+        """
+        path = Path(db_path)
+        if not path.is_file():
+            return None
+        con = None
+        try:
+            con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0,
+                                  isolation_level=None)
+            version = con.execute("PRAGMA user_version").fetchone()[0]
+            tables = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        except sqlite3.Error as exc:
+            if con is not None:
+                con.close()
+            raise StoreUnreadableError(f"{path} is not a readable edge store: {exc}") from exc
+        if version > SCHEMA_VERSION:
+            con.close()
+            raise StoreVersionError(
+                f"{path} was written by a newer Carta (schema {version}, this version "
+                f"reads {SCHEMA_VERSION}). Upgrade Carta, or delete the file to rebuild it.")
+        if version != SCHEMA_VERSION or not {"meta", "sources", "edges"} <= tables:
+            con.close()
+            raise StoreUnreadableError(
+                f"{path} is not an edge store this Carta can read (schema {version})")
+        store = cls.__new__(cls)
+        store.path = path
+        store._depth = 0
+        store._con = con
+        return store
 
     # -- opening ----------------------------------------------------------
 
