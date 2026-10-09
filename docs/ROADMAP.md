@@ -135,7 +135,11 @@ re-derive.
   (most-edited docs, basename grep, basename grep with the same rarity weighting, since a win over
   an unweighted baseline could be the weighting rather than the edges); and repeat every table
   without "hub" docs such as a changelog, which every method predicts correctly. A win that
-  appears only with hubs included proves nothing.
+  appears only with hubs included proves nothing, so when hubs exist the verdict is given on the
+  no-hub table alone. Two more things belong in every report because they change the number
+  without changing the history: where the settings came from (the command reads
+  `.carta/config.yaml` from the work tree, and `excluded_paths` decides which docs can be gold),
+  and an MRR that reads the whole ranking so it does not move with the cutoffs asked for.
 - **The Qdrant WAL corruption was upstream, not ours.** `wal.rs:150 Utf8Error` was a Qdrant 1.17.0
   WAL-reader regression (qdrant#8455), fixed in 1.17.1. The bind-mount/fsync theory was falsified —
   no data was ever lost, and quarantined collections replay clean on 1.17.1. Hence the image pin.

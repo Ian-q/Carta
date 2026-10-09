@@ -463,3 +463,23 @@ Before writing code, read `carta/scanner/tests/test_scanner.py` for `run_scan` t
 Feeding mention edges into `run_search` expansion; co-change and symbol providers; comparing
 derived edges with hand-declared frontmatter glob lists; changing the `claude-md-sync` skill; a
 stage-1 cache inside the store. Each is recorded under *Deferred* in the spec with its reason.
+
+## Addendum: second review
+
+Three reviewers ran the finished implementation. Their findings and what changed are tabled in
+the spec under *Amendments from the second review* (B1 to B15); each fix landed test first. Where
+this plan and the code now differ:
+
+- Task 8: `test_build_budget` asserts its wall-clock limit only with `CARTA_TIMING_TESTS=1` (the
+  replay budget test likewise). By default it builds 100 docs and asserts the work done.
+  `graph_status` opens the store read-only and can report `unreadable`.
+- Tasks 2 to 5: the extractor is at version 2 (literal names before globs, `#` kept in a real
+  path, `:L10-L20`, `--flag=path`, `./` tried from the repo root in code, both readings of a
+  link that is not found).
+- Task 9: `run_impact` re-reads the docs against the pre-change path set when the query holds
+  deleted paths; the result carries `matched_docs`; `top` below 1 and a non-finite `min_score`
+  are errors.
+- Task 12: history hits are filtered through `git check-ignore`.
+- Tasks 13 to 15: MRR is not truncated at `max(k)`; the report records `settings.config` and
+  `settings.excluded_paths`; `--no-config`; a range off the first-parent line is refused; the
+  text gives the verdict on the no-hub table when hubs exist.

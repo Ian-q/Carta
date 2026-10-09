@@ -753,10 +753,11 @@ def format_replay(report: dict) -> str:
     _tables(lines, report["methods"], report["paired"], report["judgement"], ks,
             pop["conclusive"], cfg["min_population"], n, verdict=not hubs)
     if hubs and n:
-        lines.append(f"Note: {_plural(len(no_hub['hub_docs']), 'hub doc')} "
-                     f"({'is' if len(no_hub['hub_docs']) == 1 else 'are'} gold in more than "
-                     f"{pct} of eligible commits), so the table above mostly measures who "
-                     f"predicts the hubs. The verdict is given on the table without them.")
+        count = len(no_hub["hub_docs"])
+        lines.append(f"Note: {_plural(count, 'hub doc')} {'is' if count == 1 else 'are'} gold "
+                     f"in more than {pct} of eligible commits, so the table above mostly "
+                     f"measures who predicts the hubs. The verdict is given on the table "
+                     f"without them.")
     lines.append("")
     if hubs:
         named = ", ".join(f"{h['doc']} {100 * h['share']:.0f}%" for h in no_hub["hub_docs"])

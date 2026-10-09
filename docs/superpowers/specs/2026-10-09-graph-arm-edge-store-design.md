@@ -259,18 +259,18 @@ identifier filter).
 | # | Rule |
 |---|---|
 | N1 | Strip surrounding whitespace, matching quotes and `<>`. Strip trailing `.,;:!` and an unbalanced trailing `)`. Keep a trailing `/`. A `ctx='link'` target is percent-decoded (`My%20Notes.md` is `My Notes.md`); a link target is therefore the one context in which a path may contain a space (A11). |
-| N2 | Cut a suffix: `#fragment`, `?query`, `:LINE`, `:LINE:COL`, `:LINE-LINE`, and, after a filename that has an extension, `::anything` or `:identifier` (a pytest node id `tests/test_x.py::test_y`, or `file.py:func`) (A12). A candidate that is only a fragment (`#section`) is rejected. |
+| N2 | Cut a suffix: `#fragment` (unless the text with the `#` kept names an existing file or directory, as in `src/C#/x.cs`), `?query`, `:LINE`, `:LINE:COL`, `:LINE-LINE`, `:L10-L20`, and, after a filename that has an extension, `::anything` or `:identifier` (a pytest node id `tests/test_x.py::test_y`, or `file.py:func`) (A12). A candidate that is only a fragment (`#section`) is rejected. |
 | N3 | Reject if empty, longer than 300 characters, or containing whitespace, a backslash, `$`, `<`, `>`, `\|`, `"`, `'`, `…` or `...`. |
 | N4 | Reject URLs and non-paths: a scheme (`^[A-Za-z][A-Za-z0-9+.-]*:`), a leading `//`, `www.`, `~`, `-` or `@`, or an e-mail shape. |
 | N5 | Leading `/`: in `ctx='link'` it means the repo root (the hosting convention) and is stripped; in every other context it is an absolute filesystem path and is rejected. |
 | N6 | Braces: expand one level of `{a,b,c}` into separate candidates (at most 16); any other `{` or `}` rejects (template placeholder). |
-| N7 | If it now contains `*`, `?` or `[`, it is a **glob**: see below. |
-| N8 | Resolve to a repo-relative path with `posixpath.normpath`. `ctx='link'`: relative to the doc's directory first, then from the repo root. Other contexts: from the repo root first, then the doc's directory, then each ancestor of the doc's directory, nearest first (`meta.via='relative'` when a non-root base resolved it), so a README inside a subproject can name `src/main.c` relative to itself (A11b); a candidate starting `./` or `../` resolves from the doc's directory only. N9 and N10 are tried at each base in turn before the next base. A result that begins with `..` is outside the repo and is rejected. |
+| N7 | If it now contains `*`, `?` or `[`, it is first tried as a literal name through N8 to N10 (a route directory such as `src/app/[id]/page.tsx` is a real file); only when no such file or directory exists is it a **glob**: see below. |
+| N8 | Resolve to a repo-relative path with `posixpath.normpath`. `ctx='link'`: relative to the doc's directory first, then from the repo root. Other contexts: from the repo root first, then the doc's directory, then each ancestor of the doc's directory, nearest first (`meta.via='relative'` when a non-root base resolved it), so a README inside a subproject can name `src/main.c` relative to itself (A11b); a candidate starting `../` resolves from the doc's directory only; one starting `./` resolves from the doc's directory and then from the repo root (commands in docs are commonly written from the root). N9 and N10 are tried at each base in turn before the next base. A result that begins with `..` is outside the repo and is rejected. |
 | N9 | Exact file in the index: an edge with `dst_type='doc'` if the target is itself a doc (matches `doc_globs`), otherwise `'file'`. |
 | N10 | Directory: the candidate ends with `/`, or has two or more segments, and names a directory in the index (any directory that contains at least one path). Edge with `dst` in canonical form (trailing `/`), `dst_type='dir'`. A single bare word without a trailing slash is never a directory mention (`tests`, `docs` and `build` are words). |
 | N11 | Suffix match, for a candidate with two or more segments that did not resolve: if exactly one indexed file (or directory) ends with `/` + candidate on a segment boundary, resolve to it, with `meta.via='suffix'`. Two or more matches: no edge. |
 | N12 | Bare filename (no `/`), only for `ctx` `code` (single-token), `link` or `frontmatter`, and only when it has an extension matching `\.[A-Za-z0-9]{1,8}$` with a non-numeric extension: resolve to the repo-root file, else the sibling in the doc's directory, else the one file in the repo with that basename (`meta.via='basename'`). Two or more matches: no edge. |
-| N13 | **Missing**: nothing resolved, `ctx` is not `fence`, the candidate has a `/`, and it has one of two shapes: (a) two or more segments and a last segment with a non-numeric extension, whatever its first segment is (so a mention of anything under a top-level directory that was since removed is still recorded); or (b) it ends with `/` and its first segment is a top-level directory in the index. For `ctx='link'` a bare filename with an extension also qualifies (a broken sibling link). It is **not** a placeholder: no adjacent segment pair `path/to`, and no segment that, compared whole and case-insensitively (the last segment by its stem), is one of `foo`, `bar`, `baz`, `qux`, `example`, `placeholder`, `xxx`, `your`, or begins `your-`, `your_`, `my-`, `my_`; a segment that names an existing directory at that position is never a placeholder (so `examples/`, `bazel/`, and a real `foo/` are ordinary directories). Its first segment is not `.git` or `.carta`, which are outside the path set by design. Edge with `dst` = the normalised path, `dst_type='missing'`. Precision for the *scan finding* comes from the history gate, not from this rule (A10). |
+| N13 | **Missing**: nothing resolved, `ctx` is not `fence`, the candidate has a `/`, and it has one of two shapes: (a) two or more segments and a last segment with a non-numeric extension, whatever its first segment is (so a mention of anything under a top-level directory that was since removed is still recorded); or (b) it ends with `/` and its first segment is a top-level directory in the index. For `ctx='link'` a bare filename with an extension also qualifies (a broken sibling link). It is **not** a placeholder: no adjacent segment pair `path/to`, and no segment that, compared whole and case-insensitively (the last segment by its stem), is one of `foo`, `bar`, `baz`, `qux`, `example`, `placeholder`, `xxx`, `your`, or begins `your-`, `your_`, `my-`, `my_`; a segment that names an existing directory at that position is never a placeholder (so `examples/`, `bazel/`, and a real `foo/` are ordinary directories). Its first segment is not `.git` or `.carta`, which are outside the path set by design. Edge with `dst` = the normalised path, `dst_type='missing'`. A link that is neither rooted nor explicit has two readings, beside the doc and from the repo root: the first is the edge above and the second is recorded as well with `meta.alt = true`, so that history and an impact query can find the doc under either. `./x` in inline code from a doc in a subdirectory has two readings too and is recorded under neither. Precision for the *scan finding* comes from the history gate, not from this rule (A10). |
 | N14 | Drop a self-mention (`dst == doc_path`). |
 
 Matching is case-sensitive throughout. A target is never dropped for being under
@@ -533,6 +533,7 @@ At most 3 evidence lines are printed per target (all of them are in the JSON).
   "query": {"paths": ["src/parser/frame.py", "tools/gen_tables.py"],
             "diff": "main...HEAD", "kinds": ["mention"], "top": 10, "min_score": 0.0},
   "store": {"docs": 74, "edges": 1912, "digest": "9f2c...", "built": true},
+  "matched_docs": 1,
   "results": [
     {"rank": 1, "doc": "docs/design/parser.md", "score": 5.83, "in_diff": false,
      "matches": [
@@ -547,7 +548,9 @@ At most 3 evidence lines are printed per target (all of them are in the JSON).
 ```
 
 `diff` is `null` for an explicit path query. Keys are always present; lists are empty rather than
-absent.
+absent. `matched_docs` is how many docs matched before `top` and `min_score` were applied, so an
+empty or cut result can say so. `top` below 1 and a non-finite `min_score` are errors, on the
+command line and in the config.
 
 ```
 carta graph build [--force] [--json]
@@ -602,10 +605,16 @@ a finding only if it also passes all of:
      evidenced when any deleted path lies under it (git lists files only) (A10);
    - the mention is a markdown link target (`meta.ctx == 'link'`) **and** the target's extension
      matches a doc glob or its parent directory exists in the index, **and**
-     `git check-ignore` does not match it. This is the only history-free reason, and the two
+     `git check-ignore` does not match it, **and** the edge is not an `alt` reading. This is
+     the only history-free reason, and the two
      conditions keep it off site-root links (`/guide/setup/`), rendered names (`setup.html` for
      `setup.md`) and links into generated output (`htmlcov/index.html`) (A11). Those cases, and a
      percent-encoded link to a file with a space in its name, are rows in the precision table.
+
+A history hit is dropped as well when `git check-ignore` matches the path: a build output or a
+local config that was committed once, then untracked and ignored, is not "deleted from the
+repository", it is simply not generated on this checkout. When history confirms one reading of
+a link, the other reading of the same link is not also reported as broken.
 
 A path that never existed and was written in backticks (a planned file, an output name, an
 illustrative path) produces no finding. That is the precision choice: the finding fires when Carta
@@ -780,7 +789,9 @@ Per eligible commit, with ranked list `R` and gold set `G`:
 - `recall@k = |R[:k] ∩ G| / |G|`
 - `precision@k = |R[:k] ∩ G| / k` (divided by `k`, not by how many were returned)
 - `any_hit@k = 1 if R[:k] ∩ G else 0`
-- `rr = 1 / rank` of the first gold doc within the top `max(k)`, else 0; **MRR** is its mean
+- `rr = 1 / rank` of the first gold doc anywhere in the ranking, 0 when there is none; **MRR**
+  is its mean. It is deliberately not truncated at `max(k)`: a truncated value, and with it the
+  paired interval and the verdict, would move with the `--k` list
 
 for `k` in 1, 3, 5, 10, macro-averaged over eligible commits, plus the mean number of docs
 returned. Each method gets a 95% bootstrap interval on recall@5, any_hit@5 and MRR, and each
@@ -946,8 +957,9 @@ changes the architecture.
 - `replace_source` refuses an edge whose `src` or `extractor` is not the source being written
   (`ValueError`), so one extractor cannot write into another's rows. Two edges with one identity
   in a single write: the last wins.
-- `EdgeStore.open_existing(path)` returns `None` when the file is absent and creates nothing;
-  `graph_status` uses it.
+- `EdgeStore.open_existing(path)` returns `None` when the file is absent and creates nothing,
+  but like any normal open it rebuilds a damaged file. `EdgeStore.open_readonly(path)` never
+  writes; `graph_status` and `impact --no-build` use it.
 - Opening creates `.carta/graph/.gitignore` (`*`) when it is missing.
 
 **Build**
@@ -956,14 +968,18 @@ changes the architecture.
   re-extracted) and `skipped` (docs that could not be read).
 - A doc containing a NUL byte is not text: it is kept as a source with no edges. Other bytes are
   decoded as UTF-8 with replacement, so a doc with a stray invalid byte still yields its edges.
-- `graph_status` reasons: `no_store`, `newer_schema`, `extractor_changed`, `settings_changed`,
-  `paths_changed`, `docs_changed`, in that order.
+- `graph_status` reasons: `no_store`, `newer_schema`, `unreadable`, `extractor_changed`,
+  `settings_changed`, `paths_changed`, `docs_changed`, in that order. `unreadable` is a file that
+  is damaged or is not a store; status opens it read-only (`EdgeStore.open_readonly`) and leaves
+  it exactly as found.
 - `gitio.py` holds only `run_git`, `is_work_tree` and `ls_files` so far; the history readers the
   eval needs are added with it. git is always run with `GIT_DIR`, `GIT_WORK_TREE` and
   `GIT_INDEX_FILE` removed from the environment, so a build started from inside a git hook reads
   the repository it was pointed at.
 - Measured on this repository (324 paths, 113 docs): 7.3k edges extracted in 0.3 s. The budget
   test (500 docs of 16 kB, 55,000 mentions) runs in under 4 s locally against a 10 s limit.
+  The limit is asserted only with `CARTA_TIMING_TESTS=1`; the default run builds a fifth of that
+  corpus and asserts the work done, because a wall-clock limit fails on a loaded machine.
 
 ## Implementation notes: query, CLI, MCP, scan finding
 
@@ -1105,7 +1121,11 @@ the settings; the command prints one timing line on stderr.
 `python -m carta.graph.eval.replay`. Added options: `--min-population`, `--resamples`,
 `--exclude PATTERN` (an extra `excluded_paths` entry). When `<repo>/.carta/config.yaml` exists
 its `graph:` and `excluded_paths` are honoured; nothing else in it is read and no other key is
-required. `--json` alone prints JSON; `--json PATH` writes it and prints the text.
+required. That file is read from the **work tree**, tracked or not, so it is an input the
+history does not fix: the report records `settings.config` (`defaults`, `.carta/config.yaml`,
+with ` + command line` when `--doc-glob` or `--exclude` was given) and `settings.excluded_paths`,
+prints both, and `--no-config` ignores the file. `--json` alone prints JSON; `--json PATH`
+writes it and prints the text.
 
 **Cache.** Payloads are zlib-compressed JSON. The in-memory layer is bounded (512 entries per
 table), since a long history has far more doc blobs than a walk needs at once. An unreadable or
@@ -1123,9 +1143,14 @@ unwritable cache file degrades to memory without an error.
 
 ## Results
 
-Replay of this repository's own mainline (`carta graph replay --range origin/main --no-cache`),
-at `792b6690`, default settings. All numbers are from that one command; `--no-cache`, a cold
-cache and a warm cache give byte-identical JSON.
+Replay of this repository's own mainline
+(`carta graph replay --range origin/main --no-cache --no-config`), at `792b6690`, extractor
+version 2. `--no-config` means the built-in defaults: `**/*.md` are docs, and the default
+`excluded_paths` apply (`node_modules/`, `.venv/`, `*.tmp`, `.planning/`, `.worktrees/`,
+`.claude/worktrees/`, `.carta/`, `.pio/`, `build/`, `temp/`). Without `--no-config` the command
+picks up this repository's own `.carta/config.yaml`, whose shorter exclusion list gives the same
+54 commits and the same numbers. `--no-cache`, a cold cache and a warm cache give byte-identical
+JSON. MRR reads the whole ranking (see *Amendments from the second review*).
 
 ```
 Population: 403 commits scanned, 54 eligible (13.4%)
@@ -1134,29 +1159,38 @@ Population: 403 commits scanned, 54 eligible (13.4%)
   docs in corpus at range end: 111     created-in-commit docs not counted as gold: 106
 
                 R@1    R@3    R@5    R@10   P@5    any@5  MRR    returned
-graph[mention]  0.035  0.182  0.210  0.262  0.063  0.278  0.166  7.7
+graph[mention]  0.035  0.182  0.210  0.262  0.063  0.278  0.191  7.7
 popularity      0.302  0.791  0.885  0.944  0.319  0.981  0.731  9.6
-basename        0.073  0.201  0.259  0.340  0.093  0.370  0.221  7.9
-basename_idf    0.077  0.194  0.228  0.290  0.078  0.296  0.200  7.9
+basename        0.073  0.201  0.259  0.340  0.093  0.370  0.226  7.9
+basename_idf    0.077  0.194  0.228  0.290  0.078  0.296  0.215  7.9
 
-graph[mention] vs popularity    dMRR -0.565 [-0.684, -0.441]   better 4 / worse 43 / tied 7
-graph[mention] vs basename      dMRR -0.055 [-0.120, +0.004]   better 9 / worse 15 / tied 30
-graph[mention] vs basename_idf  dMRR -0.034 [-0.106, +0.028]   better 9 / worse 8 / tied 37
+graph[mention] vs popularity    dMRR -0.540 [-0.654, -0.423]   better 4 / worse 43 / tied 7
+graph[mention] vs basename      dMRR -0.036 [-0.103, +0.023]   better 25 / worse 17 / tied 12
+graph[mention] vs basename_idf  dMRR -0.024 [-0.095, +0.039]   better 30 / worse 8 / tied 16
 
 Without hub docs (>20% of eligible commits: CHANGELOG.md 50%, README.md 50%, CLAUDE.md 24%): 21 eligible
-graph[mention]  0.111  0.270  0.270  0.270  0.086  0.333  0.262  5.6
-popularity      0.270  0.529  0.781  0.810  0.248  0.905  0.563  9.2
-basename        0.111  0.254  0.317  0.413  0.114  0.381  0.281  6.2
-basename_idf    0.111  0.254  0.270  0.317  0.105  0.333  0.261  6.2
+graph[mention]  0.111  0.270  0.270  0.270  0.086  0.333  0.276  5.6
+popularity      0.270  0.529  0.781  0.810  0.248  0.905  0.564  9.2
+basename        0.111  0.254  0.317  0.413  0.114  0.381  0.287  6.2
+basename_idf    0.111  0.254  0.270  0.317  0.105  0.333  0.273  6.2
 
-graph[mention] vs popularity    dMRR -0.301 [-0.470, -0.124]   better 1 / worse 14 / tied 6
-graph[mention] vs basename      dMRR -0.019 [-0.090, +0.043]   better 2 / worse 3 / tied 16
-graph[mention] vs basename_idf  dMRR +0.001 [-0.071, +0.058]   better 2 / worse 1 / tied 18
+graph[mention] vs popularity    dMRR -0.288 [-0.456, -0.113]   better 2 / worse 15 / tied 4
+graph[mention] vs basename      dMRR -0.011 [-0.080, +0.049]   better 4 / worse 4 / tied 13
+graph[mention] vs basename_idf  dMRR +0.003 [-0.068, +0.060]   better 5 / worse 2 / tied 14
 graph[mention]: INCONCLUSIVE (21 eligible commits, fewer than the 30 needed to call it either way)
 
 Source-only commits (203, unlabelled): share with any prediction / mean returned at 5
 graph[mention] 0.872 / 3.49    popularity 1.000 / 5.00    basename 0.887 / 3.30
 ```
+
+**How to read the two tables.** The first one is not a fair fight and is not the verdict. Three
+docs are gold in a quarter to a half of the eligible commits, so a method that always answers
+"the changelog and the README" scores an MRR of 0.73 without reading anything. That table mostly
+measures who predicts the hubs. The table without hubs is the one to judge by, and here it has
+21 commits, below the 30 needed to call it. So on this repository's public history there is no
+conclusive hub-free comparison yet, for this arm or for any later one: #130 must be judged on the
+no-hub table of a larger history, never on the first table. Also, P@5 divides by 5, so it is not
+comparable between a method that returns one doc and one that always returns ten.
 
 **What this shows.** The acceptance test set out under *How results will be judged* is **not
 met** on this repository. Formally the no-hub variant is inconclusive, as predicted (A5): 21
@@ -1182,25 +1216,27 @@ three ranks: `2b3d0f92` (graph 1, popularity 5, basename 1), `21242250` (graph n
    the doc that was edited, although it names `carta/cli.py` and the `carta/` tree.
 
 **A check on cause 2.** Treating the planning archive as not-docs
-(`--exclude docs/superpowers/`) leaves 53 eligible commits and changes the picture:
+(`--no-config --exclude docs/superpowers/`) leaves 53 eligible commits and changes the picture:
 
 ```
                 R@1    R@3    R@5    R@10   P@5    any@5  MRR    returned
 graph[mention]  0.175  0.369  0.599  0.621  0.189  0.792  0.453  4.9
 popularity      0.308  0.816  0.933  0.962  0.336  1.000  0.742  8.5
-basename        0.159  0.328  0.394  0.419  0.147  0.547  0.385  5.6
-basename_idf    0.160  0.328  0.384  0.419  0.140  0.547  0.360  5.6
+basename        0.159  0.328  0.394  0.419  0.147  0.547  0.387  5.6
+basename_idf    0.160  0.328  0.384  0.419  0.140  0.547  0.362  5.6
 
 graph[mention] vs popularity    dMRR -0.290 [-0.428, -0.150]   better 10 / worse 33 / tied 10
-graph[mention] vs basename      dMRR +0.067 [-0.006, +0.137]   better 25 / worse 5 / tied 23
-graph[mention] vs basename_idf  dMRR +0.092 [+0.005, +0.168]   better 29 / worse 3 / tied 21
+graph[mention] vs basename      dMRR +0.066 [-0.008, +0.135]   better 25 / worse 5 / tied 23
+graph[mention] vs basename_idf  dMRR +0.091 [+0.003, +0.166]   better 29 / worse 3 / tied 21
 ```
 
-MRR goes from 0.166 to 0.453, the commits with no gold doc in the top ten from 35 to 10, and the
+MRR goes from 0.191 to 0.453, the commits with no gold doc in the top ten from 35 to 10, and the
 mention arm now beats `basename_idf` with an interval that excludes zero (with all docs it did
-not). It still loses to popularity, and the no-hub variant (20 commits) is still inconclusive.
-This run was chosen after seeing the first one, so it is a diagnosis and not a result: it says
-frozen docs are a large part of the gap, not that the arm passes.
+not). It still loses to popularity, and the no-hub variant (20 commits; mention 0.375, basename
+0.365, popularity 0.669) is still inconclusive. This run was chosen after seeing the first one,
+so it is a diagnosis and not a result: it says frozen docs are a large part of the gap, not that
+the arm passes. Its report is told apart from the headline run by `settings.config`
+(`defaults + command line`) and the extra entry in `settings.excluded_paths`.
 
 **What follows.** (a) `carta impact` needs a way to keep frozen docs out of its ranking, or
 below living ones: an `ignore_docs` list as the scan finding already has, or a recency prior.
@@ -1209,6 +1245,50 @@ feature to combine with, not only as a baseline. (c) The headline number has to 
 larger history with more non-hub commits; this one cannot decide it. (d) #130 is the arm that
 addresses cause 1, and the replay already scores `mention`, `cochange` and their union in one run.
 
-**Speed.** 403 commits (257 of them ranked, 111 docs at the end) replay in 1.2 s with no cache,
-about 330 commits per second, and 0.7 s with a warm cache, on an Apple-silicon laptop. The cost
-is roughly linear in doc resolutions, not in commits times docs.
+**Speed.** 403 commits (257 of them ranked, 111 docs at the end) replay in 1.3 s with no cache,
+about 310 commits per second, on an Apple-silicon laptop. The cost is roughly linear in doc
+resolutions, not in commits times docs.
+
+## Amendments from the second review
+
+Three reviewers ran the implementation against throwaway repositories and this one's history.
+What changed, and what was left:
+
+| # | Finding | Change |
+|---|---|---|
+| B1 | `carta impact --diff` lost most of its recall on a change that **deletes** the paths a doc names: the store is built from the working tree, where a suffix, a bare filename, a glob and a root-relative link no longer resolve, and a removed directory is stored as `missing`. | For a diff that deletes paths, and for a queried path that is not on disk, the docs are read once more in memory against the path set with the deleted paths put back (and the added ones taken out), and those edges are ranked with the stored ones. Nothing is written. A `missing` target ending in `/` covers the files that were under it. A test compares impact before the deletion with `--diff` after it. |
+| B2 | The scan finding reported a once-tracked path that git now ignores (a build output, a local config) as "deleted from the repository". | `git check-ignore` is applied to history hits as well as to broken links. |
+| B3 | A link that is not found was recorded beside the doc only, so a root-relative link from a doc in a subdirectory was never confirmed by history. | Both readings are recorded; the second carries `meta.alt` and is never a `broken_link` by itself. |
+| B4 | `--top 0`, a negative `top`, `--min-score nan` hid every result and the output said no doc mentions the paths. | Refused in the query and in the config. `matched_docs` in the JSON; the text says when a filter hid the matches or `top` cut them. |
+| B5 | `./x` in inline code resolved beside the doc only. | The repo root is tried second. With two readings and neither found, no `missing` edge. |
+| B6 | A name containing `[`, `?` or `*` could never be mentioned; `#` always cut; `:L10-L20` and `--flag=path` were not read. | Literal lookup before the glob branch; `#` kept when the full text names a real path; `:L` line suffixes; code tokens holding a `/` are split on `=` (never a URL). |
+| B7 | `graph.enabled: "no"` was truthy. | Boolean keys must be booleans. |
+| B8 | `--resamples 0` crashed, `--last -5` meant "all", an unwritable `--json` path raised. | Usage errors. |
+| B9 | `carta graph status` replaced a damaged store with an empty one. | Read-only open; `unreadable` is reported and the file is left as found. |
+| B10 | The replay CLI read the work-tree config and the report did not say so; `excluded_paths` sets the population. | `settings.config`, `settings.excluded_paths`, a `Settings:` line, `--no-config`. The published run uses `--no-config`. |
+| B11 | The column labelled MRR was truncated at `max(--k)`, so it moved with `--k`. | The reciprocal rank reads the whole ranking. All published MRR values were regenerated; they rise slightly for the methods with deep first hits and the verdicts do not change. |
+| B12 | A range not on one first-parent line (`main...feat`) was silently truncated. | Refused with a message. |
+| B13 | The main table is gameable by predicting hubs. | The text gives the verdict on the no-hub table only when hubs exist, and says why; `verdict_table` in the JSON; P@k is footnoted. |
+| B14 | Wall-clock asserts in two tests failed on a loaded machine. | Opt-in through `CARTA_TIMING_TESTS=1`. |
+| B15 | README and changelog said an exact mention always outranks a directory mention. | Reworded to what holds: per changed path it does (half weight per level), but a directory mention grows as `1 + ln(n)` with the changed files it covers and passes an exact mention of one file from three covered files up, at equal rarity. |
+
+**Extractor version 2.** B3, B5 and B6 change what the extractor emits, so
+`MENTION_EXTRACTOR_VERSION` is 2: stores are re-extracted on the next build and replay caches
+keyed by the old fingerprint are not read.
+
+**Left open.**
+
+- *Combining edge kinds.* A reviewer registered a toy co-change provider (edge weight = raw
+  co-edit count) and scored `mention`, `cochange` and their union on the same 54 commits: MRR
+  0.166 / 0.683 / 0.296 under the truncated metric. The union scored far below the better kind.
+  The provider was a toy, so the absolute numbers mean little, but the combination rule (best
+  value per queried path across kinds, with per-kind weights and unnormalised co-change
+  weights) is not settled. #130 must add a replay test with two providers of known quality and
+  choose between summing across kinds and normalising scores per kind before its `both` arm is
+  read.
+- *Renames in an impact query.* The path set "before" a diff is rebuilt from the working tree,
+  not read from the merge base, and doc text is the working tree's. A doc that was itself edited
+  in the same change to stop naming the path is not found; that is the intended reading (it was
+  updated).
+- *A queried path that never existed* triggers the same in-memory pass as a deleted one. It costs
+  one extraction over the docs and cannot produce a wrong match, only an unneeded pass.

@@ -392,26 +392,47 @@ Range: main...HEAD
         L5: See [the frame source](../../src/parser/old_frame.py) for the state table.
       src/parser/checksum.py  exact, named by 1 doc
         L4: The checksum is `src/parser/checksum.py`, and the old path was `src/parser/legacy.py`.
+      src/parser/legacy.py  exact, named by 1 doc
+        L4: The checksum is `src/parser/checksum.py`, and the old path was `src/parser/legacy.py`.
  2. docs/overview.md  [already in this diff]  score 1.654053
       src/parser/checksum.py  via src/parser/ (dir), named by 1 doc
         L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+      src/parser/frame.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+      src/parser/legacy.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+      src/parser/old_frame.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+
+Skipped: docs/overview.md (doc)
 ```
+
+(The range here renames `old_frame.py` to `frame.py`, deletes `legacy.py` and edits
+`checksum.py` and `docs/overview.md`.)
 
 Each result carries the lines that made the edge, so you can go straight to the sentence that may
 now be wrong. **Rarer targets count for more**: a file named by 2 docs is more telling than one
-named by 60. A doc that names the exact file outranks one that names its directory, and a
-directory or glob mention is counted once however many changed files it covers. With `--diff`,
+named by 60. For any one changed path, a doc that names the exact file scores above one that
+names its directory (a directory mention is worth half per level above the file). A directory or
+glob mention is counted once per target, growing only as `1 + ln(n)` with the `n` changed files
+it covers, so on a large change a doc naming the directory can still pass a doc naming one of
+the files. **Deleted and renamed paths are found too**: when a range deletes a path (or you ask
+about a path that is no longer on disk), the docs are read against the path set as it was
+before the deletion, so a doc that named the file by a partial path, a bare filename, a glob or
+a link still comes back. That is the case where the doc most needs an edit. With `--diff`,
 docs the range already edits are marked `[already in this diff]`, and docs changed in the range
 are left out of the query unless you pass `--include-docs`. Changed paths that no doc names are
 listed at the end (`No doc mentions: ...`). Other flags: `--top N`, `--min-score X`, `--kinds`,
-`--no-build`. The same query is available to agents as the `carta_impact` MCP tool, which returns
+`--no-build` (reads the store as it is and never writes; `carta graph status` likewise, and both
+report a damaged store instead of replacing it). The same query is available to agents as the `carta_impact` MCP tool, which returns
 the `--json` object.
 
 **`carta scan` uses the same edges** to report a doc that names a path which no longer exists
 (`missing_path_mention`). It fires only when Carta can show the path was real: git history
 deleted or renamed it (the finding then names the new path), or it is a markdown link pointing
 into the repository. A path that never existed, a URL, a placeholder such as `path/to/file.py`,
-anything inside a fenced block, and anything in a changelog produce no finding.
+a path git ignores (a build output or local config that was tracked once), anything inside a
+fenced block, and anything in a changelog produce no finding.
 
 ```yaml
 graph:
@@ -454,20 +475,31 @@ rate against three baselines scored on the same commits (most-edited docs, basen
 basename grep with the same rarity weighting). Read the **population line first**: it says how
 many commits were scanned, how many were eligible and why the rest were skipped, and a result on
 too few commits is labelled inconclusive rather than a pass or a fail. The report also repeats
-every table without "hub" docs such as a changelog, which every method predicts correctly.
+every table without "hub" docs such as a changelog. **When there are hubs, judge by that second
+table**: a method that always answers "the changelog" scores well on the first one without
+reading anything, so the first table mostly measures who predicts the hubs, and the verdict line
+is printed under the second only.
 
 ```bash
 carta graph replay                          # the whole mainline history of this repository
 carta graph replay --last 300 --json out.json
 carta graph replay --repo ../other-repo --exclude docs/archive/    # needs no Carta config there
+carta graph replay --no-config              # ignore .carta/config.yaml, use the built-in defaults
 ```
 
-It reads git objects only (never the working tree or the edge store), so it can be pointed at
-any repository, and a doc is judged on what it said at the commit's *parent*, not on what the
-commit itself added. On this repository's own history the mention arm does **not** beat the
-baselines yet: the docs edited alongside code here (README, changelog) do not name files, and
-the docs that do name files are dated plans nobody edits again. Numbers, populations and the
-reading of them are in
+Trees and file contents come from git objects only (never the working tree or the edge store),
+so it can be pointed at any repository, and a doc is judged on what it said at the commit's
+*parent*, not on what the commit itself added. The one thing it takes from the working tree is
+its settings: `graph:` and `excluded_paths` from `.carta/config.yaml` when that file exists.
+Those decide which paths are docs and therefore which commits count, so the report states where
+its settings came from and lists the exclusions (`Settings:` line, `settings` in the JSON).
+
+On this repository's own history (`--range origin/main --no-config`, 403 commits scanned, 54
+eligible) the mention arm does **not** beat the baselines: MRR 0.191 against 0.731 for
+most-edited docs and 0.226 for basename grep. Without the three hub docs only 21 commits are
+left, which is too few to call (0.276 against 0.564 and 0.287). The docs edited alongside code
+here (README, changelog) do not name files, and the docs that do name files are dated plans
+nobody edits again. Numbers, populations and the reading of them are in
 [the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
 
 ### Capturing notes (quirks, bug notes, helpful notes)
