@@ -35,7 +35,7 @@ def _scratch(doc, cands, paths):
 
 
 def test_incremental_state_equals_from_scratch_on_random_histories():
-    for seed in range(6):
+    for seed in range(12):
         rng = random.Random(seed)
         all_paths = sorted({f"{d}/{n}" for d in DIRS for n in NAMES} | set(NAMES))
         paths = set(rng.sample(all_paths, 12))
@@ -110,9 +110,13 @@ def test_non_incremental_state_resolves_every_doc_every_time():
     assert {e.dst_type for e in lean.doc_edges("a.md")} == {"file"}
     lean.set_doc("glob.md", scan_text("`src/*.py`\n"))
     lean.refresh(index)
-    index.remove("zzz/unrelated.txt")           # any change re-resolves a doc holding a glob
+    index.remove("zzz/unrelated.txt")           # a glob is re-counted only for a matching path
     lean.paths_changed(deleted=["zzz/unrelated.txt"])
+    assert lean.refresh(index) == 0
+    index.add("src/new.py")
+    lean.paths_changed(added=["src/new.py"])
     assert lean.refresh(index) == 1
+    assert '"matches":4' in lean.doc_edges("glob.md")[0].meta
 
 
 def test_recorder_refuses_lookups_it_does_not_track():
@@ -121,6 +125,7 @@ def test_recorder_refuses_lookups_it_does_not_track():
     recorder = _Recorder(PathIndex(["src/a.py"]))
     assert recorder.has_file("src/a.py") and "src" in recorder.top_level_dirs
     assert recorder.deps == {"f:src/a.py", "d:src"}
+    assert recorder.glob_matches("src/*.py") == 1 and recorder.globs == {"src/*.py"}
     with pytest.raises(AttributeError):
         recorder.paths()
 

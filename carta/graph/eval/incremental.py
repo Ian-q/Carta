@@ -5,8 +5,8 @@ re-resolves every doc at every commit. ``MentionState`` records, for each
 doc, every question its resolution asked of the path index (does this file
 exist, does this directory, what ends with this suffix, which files have this
 basename) and re-resolves a doc only when a change to the path set could
-alter one of those answers, or when the doc's own text changed. A doc that
-holds a glob is re-resolved on any change. Nothing is inferred about the
+alter one of those answers, or when the doc's own text changed. A glob is
+re-counted only when an added or deleted path matches it. Nothing is inferred about the
 resolver: a lookup it makes is a dependency, and a lookup the recorder does
 not know raises. A test checks the result against extraction from scratch on
 random histories.
@@ -17,7 +17,7 @@ from typing import Dict, Iterable, List, Sequence, Set
 
 from carta.graph.mentions import resolve_candidates
 from carta.graph.model import Candidate, Edge
-from carta.graph.paths import PathIndex
+from carta.graph.paths import PathIndex, glob_to_regex
 from carta.graph.settings import GraphSettings
 
 
@@ -42,7 +42,7 @@ class _Recorder:
     def __init__(self, index: PathIndex) -> None:
         self._index = index
         self.deps: Set[str] = set()
-        self.glob = False
+        self.globs: Set[str] = set()
 
     def has_file(self, path: str) -> bool:
         self.deps.add("f:" + path)
@@ -61,7 +61,7 @@ class _Recorder:
         return self._index.suffix_matches(candidate)
 
     def glob_matches(self, pattern: str) -> int:
-        self.glob = True
+        self.globs.add(pattern)
         return self._index.glob_matches(pattern)
 
     @property
@@ -88,7 +88,8 @@ class MentionState:
         self._cands: Dict[str, Sequence[Candidate]] = {}
         self._deps: Dict[str, frozenset] = {}
         self._watch: Dict[str, Set[str]] = {}                     # lookup key -> docs
-        self._glob_docs: Set[str] = set()
+        self._globs: Dict[str, frozenset] = {}                    # doc -> glob patterns asked
+        self._glob_watch: Dict[str, Set[str]] = {}                # glob pattern -> docs
         self._dir_count: Dict[str, int] = {}                      # directory -> files beneath
         self._edges: Dict[str, List[Edge]] = {}
         self._targets: Dict[str, Dict[str, List[Edge]]] = {}     # mention dst -> doc -> edges
@@ -149,7 +150,11 @@ class MentionState:
             keys.add("f:" + path)
             keys.add("b:" + path.rsplit("/", 1)[-1])
             keys.update("s:" + s for s in _suffixes(path))
-        self._dirty.update(self._glob_docs)
+        changed = (*added, *deleted)
+        for pattern, docs in self._glob_watch.items():
+            regex = glob_to_regex(pattern)
+            if any(regex.match(path) for path in changed):
+                self._dirty.update(docs)
         watch = self._watch
         for key in keys:
             hit = watch.get(key)
@@ -168,8 +173,10 @@ class MentionState:
             self._deps[doc] = deps
             for key in deps:
                 self._watch.setdefault(key, set()).add(doc)
-            if recorder.glob:
-                self._glob_docs.add(doc)
+            if recorder.globs:
+                self._globs[doc] = frozenset(recorder.globs)
+                for pattern in recorder.globs:
+                    self._glob_watch.setdefault(pattern, set()).add(doc)
             self._replace_edges(doc, edges)
         return len(dirty)
 
@@ -180,7 +187,12 @@ class MentionState:
                 bucket.discard(doc)
                 if not bucket:
                     del self._watch[key]
-        self._glob_docs.discard(doc)
+        for pattern in self._globs.pop(doc, ()):
+            bucket = self._glob_watch.get(pattern)
+            if bucket is not None:
+                bucket.discard(doc)
+                if not bucket:
+                    del self._glob_watch[pattern]
 
     def _replace_edges(self, doc: str, edges) -> None:
         for edge in self._edges.pop(doc, ()):

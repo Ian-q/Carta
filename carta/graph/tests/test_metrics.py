@@ -111,3 +111,17 @@ def test_paired_bootstrap_counts_and_sign():
 def test_paired_requires_equal_lengths():
     with pytest.raises(ValueError):
         paired_bootstrap([1.0], [1.0, 0.0])
+
+
+def test_bootstrap_equals_the_plain_definition_and_the_streamed_path(monkeypatch):
+    import random
+
+    from carta.graph.eval import metrics
+    values = [((i * 37) % 11) / 10 for i in range(53)]
+    rng = random.Random(0)
+    means = sorted(sum(rng.choices(values, k=len(values))) / len(values) for _ in range(400))
+    expected = (means[int(0.025 * 400)], means[int(0.975 * 400) - 1])
+    got = bootstrap_ci(values, resamples=400)
+    assert got == pytest.approx(expected, abs=1e-12)
+    monkeypatch.setattr(metrics, "_SHARED_LIMIT", 0)            # force the streamed path
+    assert bootstrap_ci(values, resamples=400) == got

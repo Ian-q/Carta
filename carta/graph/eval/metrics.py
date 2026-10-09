@@ -59,6 +59,32 @@ def _percentiles(means: List[float]) -> Tuple[float, float]:
     return means[int(0.025 * n)], means[min(n - 1, int(math.ceil(0.975 * n)) - 1)]
 
 
+_SHARED_LIMIT = 4_000_000        # index entries kept in memory for reuse (about 32 MB)
+_shared: Dict[Tuple[int, int, int], List[List[int]]] = {}
+
+
+def _resamples(n: int, resamples: int, seed: int):
+    """``resamples`` index samples of size ``n`` from ``random.Random(seed)``.
+
+    Every series of one report has the same length and seed, so they all use
+    the same samples; drawing them once makes a report several times faster
+    and changes no number. Large populations are streamed instead of kept.
+    """
+    if n * resamples > _SHARED_LIMIT:
+        rng = random.Random(seed)
+        population = range(n)
+        return (rng.choices(population, k=n) for _ in range(resamples))
+    key = (n, resamples, seed)
+    hit = _shared.get(key)
+    if hit is None:
+        rng = random.Random(seed)
+        population = list(range(n))
+        hit = [rng.choices(population, k=n) for _ in range(resamples)]
+        _shared.clear()                 # one population size at a time is all a report needs
+        _shared[key] = hit
+    return hit
+
+
 def bootstrap_ci(values: Sequence[float], *, resamples: int = RESAMPLES,
                  seed: int = 0) -> Tuple[float, float]:
     """A 95% percentile interval on the mean of ``values``. ``(0, 0)`` when empty."""
@@ -66,8 +92,8 @@ def bootstrap_ci(values: Sequence[float], *, resamples: int = RESAMPLES,
     n = len(values)
     if not n:
         return (0.0, 0.0)
-    rng = random.Random(seed)
-    means = [math.fsum(rng.choices(values, k=n)) / n for _ in range(resamples)]
+    pick = values.__getitem__
+    means = [math.fsum(map(pick, sample)) / n for sample in _resamples(n, resamples, seed)]
     return _percentiles(means)
 
 
