@@ -10,13 +10,27 @@
 
 **Tech stack:** Python 3.10+, stdlib (`sqlite3`, `subprocess`, `re`, `json`, `hashlib`, `pathlib`, `posixpath`, `random`), PyYAML, pytest.
 
+## Amendments after review (these override the task text below)
+
+The spec was amended after an adversarial review (its *Review amendments* table, A1 to A18).
+Where a task below disagrees with the spec, the spec wins. The differences that change a task:
+
+- **Imports (Tasks 0, 2, 8):** `carta.scanner.scanner` is NOT an allowed import; `is_excluded_rel` is reimplemented in `paths.py` and parity-tested. `carta.registry` is allowed.
+- **Model and store (Tasks 0, 6):** `Edge.key`; `UNIQUE (kind, src, dst, line, key)`; `sources.meta`; `MENTION_EXTRACTOR_VERSION` (per extractor); `edges_digest(extractors)`; a newer schema raises `StoreVersionError` instead of being deleted; `isolation_level=None`. The contract test inserts two `symbol` rows on one doc line to one file.
+- **Paths (Task 2):** `PathIndex` is mutable (`add`, `remove`) and dict-indexed.
+- **Extractor (Tasks 3 to 5):** call spans with arguments are single candidates; N1 percent-decodes links; N2 cuts `::name`; N8 tries the doc's directory and its ancestors; N13 no longer needs a known top-level directory and matches placeholders as whole segments. `nope/x.py` now gives a `missing` edge.
+- **Build (Task 8):** nested-repo entries and `.carta/` are never in the path set; the budget test uses realistic doc sizes.
+- **Query and CLI (Tasks 9, 10):** per-target aggregation of dir/glob matches; `PATH` and `--diff` are mutually exclusive.
+- **Scan (Task 12):** gated `broken_link`; directory evidence; `--relative`.
+- **Eval (Tasks 13 to 15, 17):** hubs over the eligible population and removed before truncation; `basename_idf` baseline; stateful providers with `observe`; doc-side-only exclusion; cache under the carta home with a tokenizer version; `--last 0` default; minimum population and "inconclusive"; a second public repository for headline numbers.
+
 ## Global constraints
 
 - **Work only in this worktree**, with a Python that has an editable install of it plus pytest. Full suite:
   `python -m pytest carta/ -q -p no:cacheprovider` (baseline 1481 passed, 2 skipped). It stays green after every task.
 - **TDD.** Each task: write the listed tests, run them and see them fail for the right reason, implement, see them pass, run the package's tests, commit. Do not write code that no test asked for.
 - **No new dependencies. Python 3.10 only:** no `tomllib`, `typing.Self`, `datetime.UTC`, `itertools.batched`, `except*`, or parenthesised-context-manager-only idioms that 3.10 rejects.
-- **Import hygiene.** Nothing under `carta/graph/` may import `qdrant_client`, `fastembed`, `torch`, `requests`, `carta.embed.*` or `carta.search.*`. Allowed inside the package: stdlib, `yaml`, `carta.config`, `carta.scanner.scanner`. (Test modules may import more when a test is about parity.)
+- **Import hygiene.** Nothing under `carta/graph/` may import `qdrant_client`, `fastembed`, `torch`, `requests`, `carta.embed.*` or `carta.search.*`. Allowed inside the package: stdlib, `yaml`, `carta.config`, `carta.registry`. (Test modules may import more when a test is about parity.)
 - **Determinism.** Every list returned or written is explicitly sorted. No `set` iteration order reaches output. No timestamps, absolute paths, hostnames or mtimes in stored rows or reports. Floats rounded only at output.
 - **Tests are offline.** No network, Qdrant, Ollama, or model. Git tests use the `git_repo` fixture from Task 0 and are skipped when `git` is not on PATH.
 - **Public-repo hygiene.** Fixtures are invented and generic (`src/parser/frame.py`, `docs/design/parser.md`). No content, names or paths from any private project, in code, tests, docs or commit messages.

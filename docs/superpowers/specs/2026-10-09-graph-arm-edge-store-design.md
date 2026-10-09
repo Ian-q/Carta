@@ -22,7 +22,7 @@ Qdrant and Ollama switched off.
 ## Scope
 
 In: the edge store; the mention extractor; `carta impact`; `carta graph build|status|replay`; the
-`carta_impact` MCP tool; one `carta scan` finding; a config section; the PR-replay eval with two
+`carta_impact` MCP tool; one `carta scan` finding; a config section; the PR-replay eval with three
 baselines.
 
 Out (each has a reason in *Decisions*): feeding these edges into `run_search` graph expansion;
@@ -33,10 +33,10 @@ parsing source code; any model on the extraction path; wikilinks.
 
 | Property | How it is held |
 |---|---|
-| No vector stack | `carta/graph/` imports only the stdlib, PyYAML, `carta.config` and `carta.scanner.scanner`. A subprocess test imports the package, runs a build and an impact query, and asserts `qdrant_client`, `fastembed`, `torch`, `requests` and `carta.embed.pipeline` are absent from `sys.modules`. |
+| No vector stack | `carta/graph/` imports only the stdlib, PyYAML, `carta.config` and `carta.registry` (for the carta-home helper). It does **not** import `carta.scanner.scanner`: that module imports `carta.embed.induct` at the top and with it the whole vector stack (A1). The exclusion rule is reimplemented in `paths.py` and pinned to the scanner's by a parity test; the scanner importing `carta.graph.scan` lazily is the only allowed direction. A subprocess test imports the package, runs a build and an impact query, and asserts `qdrant_client`, `fastembed`, `torch`, `requests` and `carta.embed.pipeline` are absent from `sys.modules`. |
 | Deterministic | Extraction is a pure function. Stored rows hold no timestamps, no absolute paths, no mtimes. Output order is always an explicit sort. `edges_digest()` (below) is equal for a fresh build and for any sequence of incremental builds that ends at the same tree. |
-| Rebuildable | The store is a derived cache. Delete it and `carta graph build` reproduces the same digest. A schema-version mismatch deletes and rebuilds; there are no migrations. |
-| No new dependencies | stdlib `sqlite3`, `subprocess` (git), `re`, `json`, `hashlib`, `pathlib`, `posixpath`, `random` (seeded) plus PyYAML. Python 3.10 syntax and APIs only. |
+| Rebuildable | The store is a derived cache. Delete it and `carta graph build` reproduces the same digest. A store written by an **older** schema is deleted and rebuilt; there are no migrations. A store written by a **newer** schema is left untouched and opening it raises `StoreVersionError` ("written by a newer Carta"), so two installs of different versions pointed at one repo do not delete each other's store on every call (A17). |
+| No new dependencies | stdlib `sqlite3`, `subprocess` (git), `re`, `json`, `hashlib`, `pathlib`, `posixpath`, `urllib.parse`, `random` (seeded) plus PyYAML. Python 3.10 syntax and APIs only; in particular `sqlite3.connect(autocommit=...)` (3.12) is forbidden. |
 | Offline tests | No test touches the network, Qdrant, Ollama or a model. Tests that need git build a throwaway repository in `tmp_path` with a fixed identity and fixed dates. |
 
 Note that `carta.embed.lifecycle.compute_file_hash` cannot be reused: that module imports
@@ -48,7 +48,7 @@ normalisation, and a test (which is allowed to import the embed package) pins th
 ```
 carta/graph/
   __init__.py     docstring only
-  model.py        Edge, Candidate, constants (kinds, dst types, EXTRACTOR_VERSION, SCHEMA_VERSION)
+  model.py        Edge, Candidate, constants (kinds, dst types, MENTION_EXTRACTOR_VERSION, SCHEMA_VERSION)
   settings.py     GraphSettings (frozen), graph_settings(cfg), fingerprint
   paths.py        glob_to_regex, expand_braces, PathIndex, is_doc_path, is_excluded_rel
   markdown.py     scan_text(text, patterns) -> list[Candidate]          (stage 1, text only)
@@ -72,7 +72,9 @@ carta/graph/
 One SQLite file at `<repo>/.carta/graph/edges.db`. The directory is created with its own
 `.gitignore` containing `*`, so the store never shows as untracked in an install whose root
 `.gitignore` predates this feature. Journal mode stays at the default (no `-wal`/`-shm` files);
-`busy_timeout` is 5000 ms; each build is one `BEGIN IMMEDIATE` transaction.
+`busy_timeout` is 5000 ms; each build is one `BEGIN IMMEDIATE` transaction. The connection is
+opened with `isolation_level=None` and `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` are issued
+explicitly, which behaves the same on Python 3.10, 3.11 and 3.12 (A17).
 
 ```sql
 PRAGMA user_version = 1;                 -- SCHEMA_VERSION
@@ -87,6 +89,7 @@ CREATE TABLE sources (
   path              TEXT    NOT NULL,    -- repo-relative POSIX
   sha256            TEXT    NOT NULL,    -- LF-normalised content hash
   extractor_version INTEGER NOT NULL,
+  meta              TEXT    NOT NULL DEFAULT '{}',     -- canonical JSON; per-node state (A3)
   PRIMARY KEY (extractor, path)
 ) WITHOUT ROWID;
 
@@ -98,12 +101,13 @@ CREATE TABLE edges (
   dst               TEXT    NOT NULL,
   dst_type          TEXT    NOT NULL,    -- file | doc | dir | glob | missing | token | pattern
   line              INTEGER NOT NULL DEFAULT 0,        -- 1-based; 0 = not line-anchored
+  key               TEXT    NOT NULL DEFAULT '',       -- discriminator: the identifier for symbol edges (A2)
   evidence          TEXT    NOT NULL DEFAULT '',
   weight            REAL    NOT NULL DEFAULT 1.0,
   meta              TEXT    NOT NULL DEFAULT '{}',     -- canonical JSON object
   extractor         TEXT    NOT NULL,
   extractor_version INTEGER NOT NULL,
-  UNIQUE (kind, src, dst, line)
+  UNIQUE (kind, src, dst, line, key)
 );
 CREATE INDEX edges_dst ON edges (dst, kind);
 CREATE INDEX edges_src ON edges (src, kind);
@@ -117,8 +121,8 @@ extraction), `mention.paths_sha` (sha256 over the sorted path set), `mention.ext
 
 | Later writer | Rows |
 |---|---|
-| #130 co-change | `kind='cochange'`, `src_type='file'`, `dst_type='file'` (or `doc`), `line=0`, `weight` = the normalised score, `meta` = `{"support": n, "first": sha, "last": sha}`, `evidence` = a generated phrase such as "changed together in 9 commits". Its incremental cursor is a `meta` key (`cochange.last_commit`), since its input is history, not a hashed file. One row per ordered pair, so both directions are indexed by `edges_dst`. |
-| #131 symbol | `kind='symbol'`, `src_type='doc'`, `dst` = defining file, `dst_type='file'`, `line` = the doc line, `evidence` = the doc line, `meta` = `{"name": "...", "symbol_kind": "function", "def_line": 42}`. It reads its input from the `kind='ident'` rows this work stores. The symbol-index file gets a `sources` row under `extractor='symbol'`. |
+| #130 co-change | `kind='cochange'`, `src_type='file'`, `dst_type='file'` (or `doc`), `line=0`, `weight` = the normalised score, `meta` = `{"support": n, "first": sha, "last": sha}`, `evidence` = a generated phrase such as "changed together in 9 commits". Its incremental cursor is a `meta` key (`cochange.last_commit`), since its input is history, not a hashed file. One row per ordered pair, so both directions are indexed by `edges_dst`. **Per-file state** (each file's own commit count, which confidence and lift need and which must be updated per commit from the cursor) lives in `sources` rows under `extractor='cochange'`: `path` = the file, `sha256` = `''`, `meta` = `{"commits": n}`; the total commit count is a `meta` key (A3). |
+| #131 symbol | `kind='symbol'`, `src_type='doc'`, `dst` = defining file, `dst_type='file'`, `line` = the doc line, `key` = the identifier (so two identifiers on one doc line that are defined in one file are two rows, A2), `evidence` = the doc line, `meta` = `{"name": "...", "symbol_kind": "function", "def_line": 42}`. It reads its input from the `kind='ident'` rows this work stores. The symbol-index file gets a `sources` row under `extractor='symbol'`. |
 | #107 annotated `related:` | `kind='related'`, `dst_type='doc'`, `evidence` = the author's reason. |
 
 **`evidence` is one slot with one meaning:** the human-readable reason this edge exists. For a
@@ -130,7 +134,7 @@ asks to share.
 
 ```python
 class EdgeStore:
-    def __init__(self, db_path: Path) -> None            # creates dir, .gitignore and schema; rebuilds on version mismatch
+    def __init__(self, db_path: Path) -> None            # creates dir, .gitignore and schema; rebuilds an older or corrupt file; raises StoreVersionError on a newer one
     def close(self) -> None
     def __enter__(self) -> "EdgeStore"; def __exit__(self, *exc) -> None
     def transaction(self)                                 # context manager, BEGIN IMMEDIATE .. COMMIT/ROLLBACK
@@ -138,19 +142,26 @@ class EdgeStore:
     def set_meta(self, key: str, value: str) -> None
     def source_hashes(self, extractor: str) -> dict[str, str]             # path -> sha256
     def replace_source(self, extractor: str, path: str, sha256: str,
-                       extractor_version: int, edges: list[Edge]) -> None  # delete that source's rows, insert, upsert sources
+                       extractor_version: int, edges: list[Edge], meta: str = "{}") -> None  # delete that source's rows, insert, upsert sources
+    def source_meta(self, extractor: str) -> dict[str, str]                # path -> canonical JSON
+    def set_source_meta(self, extractor: str, path: str, meta: str) -> None
+    def source_edges(self, extractor: str, path: str) -> list[Edge]
     def remove_source(self, extractor: str, path: str) -> None
     def clear_extractor(self, extractor: str) -> None
     def iter_edges(self, kinds: Optional[Sequence[str]] = None,
-                   dst_types: Optional[Sequence[str]] = None) -> Iterator[Edge]   # ORDER BY kind, src, dst, line
+                   dst_types: Optional[Sequence[str]] = None,
+                   extractors: Optional[Sequence[str]] = None) -> Iterator[Edge]   # ORDER BY kind, src, dst, line, key
     def counts(self) -> dict                              # {"sources": n, "edges": n, "by_kind": {...}, "by_dst_type": {...}}
-    def edges_digest(self) -> str                         # sha256 over the canonical dump
+    def edges_digest(self, extractors: Optional[Sequence[str]] = None) -> str   # sha256 over the canonical dump
 ```
 
 `edges_digest()` hashes one line per edge, in `iter_edges()` order, each line the JSON array
-`[kind, src, src_type, dst, dst_type, line, evidence, weight, meta, extractor, extractor_version]`
+`[kind, src, src_type, dst, dst_type, line, key, evidence, weight, meta, extractor, extractor_version]`
 with `ensure_ascii=False` and compact separators, followed by one line per `sources` row. The row
-`id` is excluded. This is the equality the determinism tests assert; the file's bytes are not
+`id` is excluded. With `extractors` given, only edges and sources written by those extractors are
+hashed: once co-change rows exist the all-edges digest moves with every commit, so each arm's
+determinism is asserted on its own digest (the mention tests use `edges_digest(("mention",))`)
+(A3). This is the equality the determinism tests assert; the file's bytes are not
 compared, because SQLite page layout depends on write order.
 
 ### The edge record (`carta/graph/model.py`)
@@ -163,12 +174,13 @@ class Edge:
     dst: str
     dst_type: str
     line: int = 0
+    key: str = ""                    # discriminator inside (kind, src, dst, line); '' for mentions
     evidence: str = ""
     weight: float = 1.0
     meta: str = "{}"                 # canonical JSON: sort_keys=True, separators=(",", ":")
     src_type: str = "doc"
     extractor: str = "mention"
-    extractor_version: int = EXTRACTOR_VERSION
+    extractor_version: int = MENTION_EXTRACTOR_VERSION
 
 @dataclass(frozen=True)
 class Candidate:
@@ -180,8 +192,10 @@ class Candidate:
     pattern: str = ""                # pattern name when ctx == 'pattern'
 ```
 
-`EXTRACTOR_VERSION = 1`. Any change to what the extractor emits for an unchanged input bumps it,
-which invalidates every stored source and every replay cache entry.
+`MENTION_EXTRACTOR_VERSION = 1`. Versions are **per extractor** (A3): #130 and #131 carry their
+own constants and stamp their own rows, so bumping one arm never invalidates another. Any change
+to what the mention extractor emits for an unchanged input bumps its version, which invalidates
+every stored mention source and every replay cache entry.
 
 ## Mention extraction
 
@@ -201,8 +215,8 @@ def extract_mentions(doc_path: str, text: str, repo_paths, settings: GraphSettin
 
 `repo_paths` is either an iterable of repo-relative POSIX paths or an already built `PathIndex`.
 None of the three functions reads the filesystem, the clock, the environment or git. The returned
-list is sorted (`Edge` ordering) and de-duplicated on `(kind, src, dst, line)`, keeping the
-highest `weight`.
+list is sorted (`Edge` ordering) and de-duplicated on `(kind, src, dst, line, key)`, keeping the
+highest `weight` (ties: the smallest edge in `Edge` ordering).
 
 ### Stage 1: where candidates come from
 
@@ -222,7 +236,10 @@ over the original lines):
    and reference definitions `[label]: target`. The target is a candidate with `ctx='link'`.
    Angle-bracket autolinks and wikilinks are not read.
 4. **Inline code spans** outside fences: text between matching backtick runs on one line. A span
-   with no whitespace is one candidate, `ctx='code'`, `single=True`. A span with whitespace (a
+   with no whitespace is one candidate, `ctx='code'`, `single=True`. A span that as a whole is an
+   identifier followed by one balanced parenthesised argument list (`parse_frame(buf, n)`) is
+   also one `single=True` candidate, decided **before** the whitespace test, so a call written
+   with its arguments reaches the identifier filter (A12). Any other span with whitespace (a
    command line) is split on whitespace and each token containing `/` becomes a candidate with
    `single=False`. A link target inside a code span is read as code only.
 5. **Project patterns**: every configured regex is run over each line in its `where` scope
@@ -241,19 +258,19 @@ identifier filter).
 
 | # | Rule |
 |---|---|
-| N1 | Strip surrounding whitespace, matching quotes and `<>`. Strip trailing `.,;:!` and an unbalanced trailing `)`. Keep a trailing `/`. |
-| N2 | Cut a suffix: `#fragment`, `?query`, `:LINE`, `:LINE:COL`, `:LINE-LINE`. A candidate that is only a fragment (`#section`) is rejected. |
+| N1 | Strip surrounding whitespace, matching quotes and `<>`. Strip trailing `.,;:!` and an unbalanced trailing `)`. Keep a trailing `/`. A `ctx='link'` target is percent-decoded (`My%20Notes.md` is `My Notes.md`); a link target is therefore the one context in which a path may contain a space (A11). |
+| N2 | Cut a suffix: `#fragment`, `?query`, `:LINE`, `:LINE:COL`, `:LINE-LINE`, and, after a filename that has an extension, `::anything` or `:identifier` (a pytest node id `tests/test_x.py::test_y`, or `file.py:func`) (A12). A candidate that is only a fragment (`#section`) is rejected. |
 | N3 | Reject if empty, longer than 300 characters, or containing whitespace, a backslash, `$`, `<`, `>`, `\|`, `"`, `'`, `…` or `...`. |
 | N4 | Reject URLs and non-paths: a scheme (`^[A-Za-z][A-Za-z0-9+.-]*:`), a leading `//`, `www.`, `~`, `-` or `@`, or an e-mail shape. |
 | N5 | Leading `/`: in `ctx='link'` it means the repo root (the hosting convention) and is stripped; in every other context it is an absolute filesystem path and is rejected. |
 | N6 | Braces: expand one level of `{a,b,c}` into separate candidates (at most 16); any other `{` or `}` rejects (template placeholder). |
 | N7 | If it now contains `*`, `?` or `[`, it is a **glob**: see below. |
-| N8 | Resolve to a repo-relative path with `posixpath.normpath`. `ctx='link'`: relative to the doc's directory first, then from the repo root. Other contexts: from the repo root first; a candidate starting `./` or `../` resolves from the doc's directory only. A result that begins with `..` is outside the repo and is rejected. |
+| N8 | Resolve to a repo-relative path with `posixpath.normpath`. `ctx='link'`: relative to the doc's directory first, then from the repo root. Other contexts: from the repo root first, then the doc's directory, then each ancestor of the doc's directory, nearest first (`meta.via='relative'` when a non-root base resolved it), so a README inside a subproject can name `src/main.c` relative to itself (A11b); a candidate starting `./` or `../` resolves from the doc's directory only. N9 and N10 are tried at each base in turn before the next base. A result that begins with `..` is outside the repo and is rejected. |
 | N9 | Exact file in the index: an edge with `dst_type='doc'` if the target is itself a doc (matches `doc_globs`), otherwise `'file'`. |
 | N10 | Directory: the candidate ends with `/`, or has two or more segments, and names a directory in the index (any directory that contains at least one path). Edge with `dst` in canonical form (trailing `/`), `dst_type='dir'`. A single bare word without a trailing slash is never a directory mention (`tests`, `docs` and `build` are words). |
 | N11 | Suffix match, for a candidate with two or more segments that did not resolve: if exactly one indexed file (or directory) ends with `/` + candidate on a segment boundary, resolve to it, with `meta.via='suffix'`. Two or more matches: no edge. |
 | N12 | Bare filename (no `/`), only for `ctx` `code` (single-token), `link` or `frontmatter`, and only when it has an extension matching `\.[A-Za-z0-9]{1,8}$` with a non-numeric extension: resolve to the repo-root file, else the sibling in the doc's directory, else the one file in the repo with that basename (`meta.via='basename'`). Two or more matches: no edge. |
-| N13 | **Missing**: nothing resolved, and all of these hold: the candidate has a `/`; its last segment has an extension, or it ends with `/`; its first segment is a top-level directory in the index (or, for `ctx='link'`, N8 resolved it inside the repo); it contains none of the placeholder markers `path/to`, `foo`, `bar`, `baz`, `example`, `your`, `my-`, `xxx` (case-insensitive, as whole segments or segment prefixes); `ctx` is not `fence`. Edge with `dst` = the normalised path, `dst_type='missing'`. |
+| N13 | **Missing**: nothing resolved, `ctx` is not `fence`, the candidate has a `/`, and it has one of two shapes: (a) two or more segments and a last segment with a non-numeric extension, whatever its first segment is (so a mention of anything under a top-level directory that was since removed is still recorded); or (b) it ends with `/` and its first segment is a top-level directory in the index. For `ctx='link'` a bare filename with an extension also qualifies (a broken sibling link). It is **not** a placeholder: no adjacent segment pair `path/to`, and no segment that, compared whole and case-insensitively (the last segment by its stem), is one of `foo`, `bar`, `baz`, `qux`, `example`, `placeholder`, `xxx`, `your`, or begins `your-`, `your_`, `my-`, `my_`; a segment that names an existing directory at that position is never a placeholder (so `examples/`, `bazel/`, and a real `foo/` are ordinary directories). Its first segment is not `.git` or `.carta`, which are outside the path set by design. Edge with `dst` = the normalised path, `dst_type='missing'`. Precision for the *scan finding* comes from the history gate, not from this rule (A10). |
 | N14 | Drop a self-mention (`dst == doc_path`). |
 
 Matching is case-sensitive throughout. A target is never dropped for being under
@@ -300,6 +317,9 @@ Accept only if **all** hold:
    - every part is in the lowercase prose/keyword stoplist built into the module (language
      keywords and literals such as `true`, `false`, `null`, `none`, `self`, `this`, and so on)
      or in the configured `stoplist`;
+   - it is the name of a Python builtin exception or warning (`RuntimeError`, `KeyError`,
+     `FileNotFoundError`, …), which passes the case-hump rule but is never defined in a
+     repository (A18);
    - a qualified token whose last part is a known file extension (`config.yaml`: that is a
      filename, handled by N12, and an unresolved one is not an identifier) or a top-level domain
      (`com`, `org`, `net`, `io`, `dev`, `ai`, `sh`);
@@ -308,6 +328,12 @@ Accept only if **all** hold:
 So a plain lowercase word in backticks (`` `git` ``, `` `pip` ``, `` `main` ``, `` `string` ``)
 is never an identifier, an all-caps acronym without an underscore (`` `HTTP` ``, `` `TODO` ``) is
 never an identifier, and a multi-word command never reaches the filter.
+
+**Identifier precision is unmeasured** (A18). The case-hump rule also accepts backticked product
+and third-party names (`GitHub`, `PyTorch`, `QdrantClient`). They are not ranked by `carta impact`
+and so cost nothing today, but #131 must not inherit this filter as settled: `carta graph status`
+reports the `ident` count so the size of that input is visible, and its precision is to be
+measured when #131 resolves it.
 
 ### Project patterns
 
@@ -336,15 +362,19 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict
 `list_repo_paths`: `git ls-files -z --cached --others --exclude-standard` run with
 `cwd=repo_root`, so the list is relative to the Carta root and limited to it even when that root
 is a subdirectory of a larger checkout. Entries that are deleted in the working tree but still in
-the index are dropped by an existence check. When the directory is not a git work tree, or git is
-absent, it falls back to `os.walk` skipping `.git` and the scanner's always-excluded directories.
-The result is sorted.
+the index are dropped by an existence check. An entry ending in `/` is a nested repository or
+worktree, which git reports as one opaque entry, and is dropped. When the directory is not a git
+work tree, or git is absent, it falls back to `os.walk` skipping `.git` and the always-excluded
+directories. In **both** modes everything under `.carta/` is left out of the path set: it holds
+the store itself and Carta's runtime files, and letting them in would make every build change the
+path set and so force the next one to be a full pass (A15). The result is sorted.
 
 `build_graph`:
 
 1. Load settings; compute `settings_sha`. List paths; compute `paths_sha`.
 2. Docs are the paths that match `graph.doc_globs` and are not excluded (`excluded_paths` plus the
-   scanner's always-excluded directories, through `carta.scanner.scanner.is_excluded`).
+   always-excluded directories, through `carta.graph.paths.is_excluded_rel`, which has the same
+   semantics as `carta.scanner.scanner.is_excluded` and a parity test to keep it so).
 3. A **full pass** is required when `force` is set, or the stored `mention.settings_sha`,
    `mention.paths_sha` or `mention.extractor_version` differs. Otherwise the pass is
    **incremental**: only docs whose content hash differs from `sources.sha256`.
@@ -361,7 +391,8 @@ Returns `{"docs": n, "extracted": n, "unchanged": n, "removed": n, "edges": n, "
 The honest cost statement: an incremental build still reads every doc, and adding or deleting any
 file triggers re-extraction of all docs, because whether a candidate resolves depends on the path
 set. For a corpus of hundreds of markdown files that is well under a second of regex work. The
-plan carries a budget test (500 synthetic docs, full build under 5 s on CI). If a corpus ever
+plan carries a budget test (500 synthetic docs of about 16 kB with about 110 code spans each,
+the measured shape of a real doc, full build under 10 s on CI). If a corpus ever
 outgrows that, the two-stage split means a stage-1 cache keyed by content hash drops in without
 touching the extractor; it is not built now.
 
@@ -416,6 +447,34 @@ Taking the maximum per queried path means a doc is not paid twice for naming bot
 directory; summing across queried paths means a doc that covers more of a change ranks higher.
 Repeating a mention helps only logarithmically.
 
+**Amended aggregation (A7).** Summing a directory match once per queried path let a doc that
+names a common directory outrank a doc that names one changed file exactly on any multi-file
+diff. So `dir` and `glob` matches are aggregated **per target, not per queried path**:
+
+```
+value(d, t, q) = w_kind * spec(t, q) * idf(t) * tf(d, t) * w_edge(d, t)
+
+exact/under:  each queried path q that d matches exactly contributes
+              max over its exact targets of value(d, t, q), as above.
+dir/glob:     each queried path q that d does NOT match exactly is assigned to the one
+              dir/glob target of d with the largest value(d, t, q) (ties: smaller target string).
+              A target t with assigned set A_t then contributes ONCE:
+                  max over q in A_t of value(d, t, q)  *  (1 + ln |A_t|)
+score(d)    = sum of exact contributions + sum of per-target contributions
+```
+
+A path is reported in `unmatched_paths` when no doc has an exact, glob, or **depth-1** directory
+match for it; a doc naming a top-level package directory does not make every file beneath it
+"matched". The ranking tests include "an exact mention of one file beats a directory mention
+that covers ten".
+
+**Direction of file-sourced edges (A9).** `rank_impact` returns docs. For a row with
+`src_type='doc'` the returned doc is `src` and the queried path is matched against `dst`. For a
+row with `src_type='file'` (co-change) the returned doc is `dst`, read only when
+`dst_type='doc'` and `src` is a queried path; a co-change writer stores both ordered directions,
+so no reverse lookup is needed. The ranking tests carry `src_type='file'` rows in both
+directions.
+
 Results are sorted by `score` descending, then doc path ascending. Scores are rounded to 6 places
 at output, never before sorting.
 
@@ -430,6 +489,11 @@ carta impact [PATH ...] [--diff [RANGE]] [--top N] [--kinds K[,K...]] [--include
              [--min-score X] [--no-build] [--json]
 ```
 
+`PATH` and `--diff` are **mutually exclusive** (A16): argparse would otherwise read
+`carta impact --diff src/a.py` as a range named `src/a.py`. Giving both exits 1; and when the
+`--diff` value is not a revision range but does name an existing path, the error says so
+("`src/a.py` is a path, not a range; pass it without --diff").
+
 - `PATH ...`: repo-relative paths (or paths relative to the current directory; both are
   normalised to repo-relative). A trailing `/` asks about everything under a directory.
 - `--diff [RANGE]`: take the paths from `git diff --name-only --no-renames --relative RANGE`.
@@ -439,7 +503,7 @@ carta impact [PATH ...] [--diff [RANGE]] [--top N] [--kinds K[,K...]] [--include
 - `--top N`: default `graph.impact.top` (10). `--kinds`: default `graph.impact.kinds`
   (`mention`). `--min-score`: default `graph.impact.min_score` (0).
 - The store is brought up to date (incremental build) before the query unless `--no-build`.
-- At least one of `PATH` or `--diff` is required; otherwise exit 1 with usage. Exit 0 for any
+- Exactly one of `PATH ...` or `--diff` is required; otherwise exit 1 with usage. Exit 0 for any
   successful query, including one with no results.
 
 Human output:
@@ -524,17 +588,24 @@ unchanged, and the handler never prints.
 def missing_path_findings(repo_root: Path, cfg: dict) -> list[dict]
 ```
 
-A `missing` edge already passed N13 (looks like a repo path, first segment is a real top-level
-directory, not a URL, not a placeholder, not outside the repo, not in a fenced block). It becomes
+A `missing` edge already passed N13 (looks like a repo path, not a URL, not a placeholder, not
+outside the repo, not in a fenced block). It becomes
 a finding only if it also passes all of:
 
 1. The path does not exist on disk either (covers ignored build outputs that are present).
 2. The doc is not matched by `graph.scan.ignore_docs` (default: changelogs).
 3. **There is positive evidence the path used to be real or is a broken link.** One of:
    - git history deleted or renamed that exact path, found with a single
-     `git log --no-merges -M --diff-filter=DR --name-status --format= -z -n <history_limit>`;
-   - the mention is a markdown link target (`meta.ctx == 'link'`), where a dead target is a
-     broken link whatever the history says.
+     `git log --no-merges -M --diff-filter=DR --name-status --format= -z --relative -n <history_limit>`
+     run with `cwd` at the Carta root, so the paths are root-relative like the edges even when
+     the root is a subdirectory of the checkout (A15). A `missing` **directory** counts as
+     evidenced when any deleted path lies under it (git lists files only) (A10);
+   - the mention is a markdown link target (`meta.ctx == 'link'`) **and** the target's extension
+     matches a doc glob or its parent directory exists in the index, **and**
+     `git check-ignore` does not match it. This is the only history-free reason, and the two
+     conditions keep it off site-root links (`/guide/setup/`), rendered names (`setup.html` for
+     `setup.md`) and links into generated output (`htmlcov/index.html`) (A11). Those cases, and a
+     percent-encoded link to a file with a space in its name, are rows in the precision table.
 
 A path that never existed and was written in backticks (a planned file, an output name, an
 illustrative path) produces no finding. That is the precision choice: the finding fires when Carta
@@ -583,12 +654,13 @@ graph:
     hub_share: 0.2
     max_files: 100
     popularity_window: 200
+    min_population: 30            # below this the report says "inconclusive"
 ```
 
 `excluded_paths` (top level, existing) is honoured for doc discovery. `load_config` adds `graph`
 to the keys that must be mappings. `graph_settings(cfg)` deep-merges `cfg.get("graph")` over the
 defaults itself, so a minimal test config with no `graph` key works. The settings fingerprint
-covers `doc_globs`, `identifiers`, `patterns`, `excluded_paths` and `EXTRACTOR_VERSION`: exactly
+covers `doc_globs`, `identifiers`, `patterns`, `excluded_paths` and `MENTION_EXTRACTOR_VERSION`: exactly
 the inputs that change what is extracted.
 
 ## The eval: PR replay
@@ -606,18 +678,24 @@ carta graph replay [--repo PATH] [--range A..B | --last N] [--arm NAME=KIND[+KIN
 ```
 
 `--repo` defaults to the current git work tree and needs **no** Carta config (defaults apply),
-so the eval can be pointed at any repository. `--last N` (default 300) takes the most recent N
-mainline commits; `--range` takes an explicit range. Default arm: `mention=mention`.
+so the eval can be pointed at any repository. `--last N` takes the most recent N mainline
+commits; the default is `--last 0`, the **whole** first-parent history, because eligible commits
+are a small share of scanned ones (A5); `--range` takes an explicit range. Default arm: `mention=mention`.
 
 ### Algorithm
 
-1. **Commits.** `git rev-list --first-parent --reverse <range>`. Each commit is compared with its
-   **first parent**, which is one PR's whole change in a squash-merge repository and also in a
-   merge-commit repository. Changed paths come from
-   `git diff-tree -r --no-renames --name-status -z <parent> <commit>` (a rename is a delete plus
-   an add, so nothing depends on similarity heuristics).
-2. **Split.** Excluded paths are dropped. Doc paths (per `doc_globs`) go to one side, everything
-   else to the query.
+1. **Commits.** One process for the whole range (A8):
+   `git log --first-parent --diff-merges=first-parent --no-renames --name-status -z --reverse
+   --format=<sha and parents> <range>`. Each commit is compared with its **first parent**, which
+   is one PR's whole change in a squash-merge repository and also in a merge-commit repository.
+   A rename is a delete plus an add, so nothing depends on similarity heuristics.
+2. **Split.** Exclusion applies to the **doc side only** (A14): a path that matches `doc_globs`
+   but is excluded is neither a source nor gold, and is counted (`excluded_doc_paths`). Every
+   other changed path stays in the query, whatever directory it is in: the default exclusions
+   match `build/`, `dist/`, `temp/` and `tmp/` anywhere in a path, and dropping
+   `tools/build/gen.py` from the query would contradict the rule that exclusion decides which
+   docs are sources, not which paths may be named. Doc paths go to one side, everything else to
+   the query.
    - **gold** = docs the commit modified or deleted. A doc the commit *creates* is not gold: it
      did not exist at the parent, so no method could have ranked it. Such docs are counted.
    - **query** = every non-doc path the commit added, modified or deleted.
@@ -632,21 +710,29 @@ mainline commits; `--range` takes an explicit range. Default arm: `mention=menti
    and the store at `.carta/graph/edges.db` is never opened. Counts used by the popularity
    baseline cover only commits strictly before `c`.
 5. **Edges at the parent.** For each doc in the parent tree, stage 1 (`scan_text`) is cached by
-   `(blob id, EXTRACTOR_VERSION, settings fingerprint)`; stage 2 (`resolve_candidates`) is run
-   against the parent's `PathIndex`. Walking commits in order, resolved edges are reused from the
-   previous step for every doc whose blob is unchanged **when the path set is unchanged** (the
-   commit before only modified files); when files were added or removed, every doc is
-   re-resolved from its cached candidates. A test asserts this reuse gives the same edges as
-   extracting from scratch at every step.
+   `(blob id, MENTION_EXTRACTOR_VERSION, settings fingerprint)`; stage 2 (`resolve_candidates`)
+   is run against the parent's `PathIndex`. **Cost is bounded as follows (A8).** One mutable
+   `PathIndex` is kept across the walk and each commit's adds and deletes are applied to it
+   (`PathIndex.add` / `PathIndex.remove`; suffixes, basenames and directories are dict-indexed,
+   never scanned). When a commit changes the path set, only these docs are re-resolved: a doc
+   whose blob changed; a doc holding a glob candidate; and a doc that has a candidate whose last
+   segment, or any directory segment, appears among the segments of the added or deleted paths.
+   Every other doc keeps its edges. A test asserts this gives the same edges as extracting from
+   scratch at every step, and a budget test (200 synthetic commits over 100 docs) bounds the
+   run time.
 6. **Rank.** Each arm builds an `ImpactIndex` from the edges of its kinds and calls `rank_impact`
    with the query paths and `top = max(k)`. Baselines produce a ranked list from the same inputs.
 7. **Score** against gold, aggregate, bootstrap, report.
 
 **Caching.** Memory always; on disk too unless `--no-cache`, in one SQLite file at
-`~/.carta/cache/graph-replay/<sha256 of the repository's absolute path, first 16 hex>.db` (or
-under `--cache-dir`), with tables `scan(blob, fingerprint, payload)` and `tokens(blob, payload)`.
-A blob id is a content address, so entries never go stale; the fingerprint column handles a
-changed extractor or settings. Replaying 300 commits reads each distinct doc blob once, and a
+`<carta home>/cache/graph-replay/<sha256 of the repository's absolute path, first 16 hex>.db` (or
+under `--cache-dir`), with tables `scan(blob, fingerprint, payload)` and
+`tokens(blob, version, payload)`. The carta home comes from `carta.registry.carta_home()`, the
+project's single definition of machine-level state, which honours `CARTA_HOME`; the test suite
+points that at a temp directory, and a test asserts a replay creates nothing under
+`Path.home()` (A13). A blob id is a content address, so an entry is stale only when the code
+that read it changes: the fingerprint column covers the extractor and settings, and the
+`version` column (`TOKENIZER_VERSION`) covers `basename_tokens`. Replaying 300 commits reads each distinct doc blob once, and a
 second run reads none.
 
 **Arms and later edge kinds.** An arm is a named set of edge kinds. Each kind has a provider:
@@ -655,13 +741,18 @@ second run reads none.
 class EdgeProvider(Protocol):
     kind: str
     def edges_at(self, snapshot: "Snapshot") -> list[Edge]: ...
+    def observe(self, commit: str, changes: Sequence[tuple[str, str]]) -> None: ...
 
 PROVIDERS: dict[str, EdgeProvider]      # 'mention' registered here; #130 and #131 register theirs
 ```
 
-`Snapshot` exposes the parent commit id, the path set, the doc list, a blob reader and the list
-of mainline commits strictly before it, which is what a history-mined provider needs to stay
-leak-free. Asking for a kind with no provider is an error that names the kind. So
+Providers are **stateful and driven in commit order** (A9). The loop calls `edges_at(snapshot)`
+to score a commit and only afterwards `observe(commit, changes)` with that commit's name-status
+list, so a history-mined provider (co-change) updates its counts once per commit instead of
+re-walking history at every step, and can never see the commit it is being scored on. A provider
+instance belongs to one run. `Snapshot` exposes the parent commit id, the path index, the doc
+list, a blob reader, and `prior_changes` (the `(sha, name-status list)` of every mainline commit
+strictly before it, warm-up included) for a provider that prefers to be stateless. Asking for a kind with no provider is an error that names the kind. So
 `--arm mention=mention --arm both=mention+cochange --arm cochange=cochange` will give #130 its
 three numbers (each alone, and the union) on one population in one run.
 
@@ -676,6 +767,11 @@ three numbers (each alone, and the union) on one population in one run.
   then path. It is what `grep -wF "$(basename f)"` over the docs gives, with no path
   understanding. Doc text is tokenised once per blob (split on anything outside
   `[A-Za-z0-9_.+-]`, trailing dots stripped) and cached.
+- **`basename_idf`** (A6): the same basename matches, scored with the **same** `idf` and `tf` as
+  `rank_impact` (`idf` over docs containing the basename, `tf = 1 + ln(occurrences)`, summed
+  over changed basenames). Plain `basename` has no rarity weighting and so favours the longest
+  docs; a win over it could be credited to `idf` rather than to edges. `graph[mention]` against
+  `basename_idf` is the honest ablation: same weighting, token match against path understanding.
 
 ### Metrics
 
@@ -692,10 +788,16 @@ arm gets a **paired** bootstrap against each baseline (delta, interval, and the 
 commits better / worse / tied), 2,000 resamples from `random.Random(0)`, so the numbers are
 reproducible.
 
-**Hub variant.** A hub is a doc edited in more than `hub_share` of the scanned commits (a
-changelog, a status page). Hubs inflate every method: predicting the changelog is always right.
-The report repeats every table with hubs removed from gold and from every ranking; commits whose
-gold becomes empty leave that variant's population, and its size is stated. Hubs are found over
+**Hub variant.** A hub is a doc that is **in gold for more than `hub_share` of the eligible
+commits** (a changelog, a status page). The denominator is the eligible population, not the
+scanned one (A4): most scanned commits are ineligible, so a changelog that is gold in more than
+half of the scored commits can still be under 20% of the scanned ones, and the variant would be
+the same table. Hubs inflate every method: predicting the changelog is always right. The report
+lists each hub with its share and repeats every table with hubs removed from gold and from every
+ranking. They are removed **before** truncation to top-k, by passing them as `exclude_docs` to
+`rank_impact` and to every baseline; removing them afterwards would shorten the popularity list,
+which ranks hubs first by construction, and bias the comparison. Commits whose gold becomes
+empty leave that variant's population, and its size is stated. Hubs are found over
 the whole window, which uses later commits, but it is a filter on the population applied
 identically to every method, not an input to any of them.
 
@@ -744,9 +846,16 @@ Source-only commits (141, unlabelled): share with any prediction / mean returned
 ### How results will be judged
 
 The feature is judged on impact queries, not on retrieval metrics. It is worth shipping if, on a
-real repository's history, `graph[mention]` beats both baselines on MRR with a paired interval
-that excludes zero **in the no-hub variant**. Beating popularity only with hubs included proves
-nothing. The numbers, with their populations, go into a *Results* section appended to this spec
+real repository's history, `graph[mention]` beats all three baselines on MRR with a paired
+interval that excludes zero **in the no-hub variant**. Beating popularity only with hubs included
+proves nothing.
+
+**Power (A5).** This repository alone cannot decide that: about 59 of its 405 first-parent
+commits are eligible, and far fewer once the real hubs are removed. So a variant whose population
+is below `graph.replay.min_population` (30) prints a warning and is labelled **inconclusive**
+rather than pass or fail; the self-evaluation runs over the full history, not the last 300
+commits; and the headline numbers are to come from a second, larger public repository with a
+long squash-merge history, run with the same command (`--repo`). The numbers, with their populations, go into a *Results* section appended to this spec
 once the implementation runs.
 
 ## Decisions on the issue's "To explore" list
@@ -770,6 +879,34 @@ Further decisions made while refining:
 | Wikilinks | Not read. | They resolve by title, not path, which is the `related:` resolver's job; out of scope here. |
 | Never-existed paths | Stored as `missing` edges (they match an exact query, so a doc written before the code is found once the file lands) but never reported by `carta scan`. | Planned files and output names are not errors. |
 
+## Review amendments
+
+An adversarial review of this spec raised 18 points before any code was written. All were
+accepted; each is folded into the text above and tagged where it lands. None was rejected. Two
+were accepted with a narrower change than suggested, noted in the table.
+
+| # | Sev. | Point | Disposition |
+|---|---|---|---|
+| A1 | blocker | `carta.scanner.scanner` loads the whole embed package, so the import-hygiene test could never pass. | Accepted. Removed from the allowed imports; exclusion reimplemented in `paths.py` with a parity test. |
+| A2 | major | `UNIQUE (kind, src, dst, line)` drops the second of two identifiers on one doc line defined in one file. | Accepted. New `key` column in the unique constraint; the contract test inserts two such rows. |
+| A3 | major | No per-node state for an incremental co-change miner; one global extractor version; one digest over all kinds. | Accepted. `sources.meta`; per-extractor versions; `edges_digest(extractors)`. |
+| A4 | major | Hub share measured against scanned commits makes the no-hub variant a copy. | Accepted. Hubs defined over the eligible population, listed with shares, removed before truncation. |
+| A5 | major | The acceptance test is underpowered on this repository. | Accepted. Minimum population and an "inconclusive" label; full-history default; a second repository for the headline. |
+| A6 | major | The basename baseline lacks rarity weighting, so a win cannot be credited to edges. | Accepted. Third baseline `basename_idf`. |
+| A7 | major | Per-path summing lets a directory mention outrank an exact one on multi-file diffs. | Accepted. Per-target aggregation with `1 + ln(covered)`; stricter `unmatched_paths`. |
+| A8 | major | Replay re-resolves every doc on every path-set change, with no bound. | Accepted. Mutable dict-indexed `PathIndex`, selective re-resolution, one `git log` process, a replay budget test. |
+| A9 | major | Stateless providers cannot serve co-change; ranking direction for file-sourced rows unstated. | Accepted. `observe()` after scoring, `prior_changes` on `Snapshot`, direction stated. |
+| A10 | major | N13 misses removed top-level directories, treats `examples/` and `bazel/` as placeholders, and never evidences a removed directory. | Accepted. Top-level requirement dropped for extension-bearing paths; whole-segment placeholders that never shadow a real directory; directory evidence from deleted paths beneath it. Narrowed: hyphen- or underscore-delimited `your-` / `my-` prefixes are kept, since the delimiter removes the real-word collision. |
+| A11 | major | `broken_link` fires with no history on site links, rendered names and generated output; links are not percent-decoded. | Accepted, as written. |
+| A11b | minor | A nested README naming a path relative to itself gets no edge. | Accepted. Extra resolution bases after the repo root. Root stays first: it is the dominant convention, and nearest-first would re-point existing unambiguous mentions. |
+| A12 | minor | Pytest node ids and calls written with arguments are dropped. | Accepted, both. |
+| A13 | minor | Replay cache bypasses `CARTA_HOME`; token cache has no version. | Accepted. |
+| A14 | minor | Replay drops excluded non-doc paths from the query. | Accepted. Exclusion is doc-side only. |
+| A15 | minor | Nested repos enter the path set as files; `.carta/` enters it in the fallback; history query not `--relative`. | Accepted, all three. |
+| A16 | minor | `--diff [RANGE]` beside positional paths is ambiguous. | Accepted. Mutually exclusive, with a message that names the ambiguity. |
+| A17 | minor | `BEGIN IMMEDIATE` needs explicit transaction control on 3.10; version mismatch deletes in both directions. | Accepted, both. |
+| A18 | minor | The case-hump rule admits product and exception names as identifiers. | Accepted. Builtin exception names stoplisted; `graph status` reports the count; precision recorded as unmeasured. |
+
 ## Deferred
 
 - Comparing derived edges with hand-declared source-glob lists in frontmatter (the issue's third
@@ -783,4 +920,4 @@ Further decisions made while refining:
 ## Results
 
 To be appended after implementation: the replay report on real history (population first), and
-the comparison with the two baselines, with and without hub docs.
+the comparison with the three baselines, with and without hub docs.
