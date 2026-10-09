@@ -45,11 +45,13 @@ def test_empty_ranking():
     assert row["rr"] == 0.0 and row["first_rank"] is None and row["returned"] == 0
 
 
-def test_rr_zero_beyond_max_k_and_returned_is_capped():
+def test_rr_reads_the_whole_ranking_and_returned_is_capped():
+    """MRR must not move with the cutoffs asked for, so it is not truncated at max(k)."""
     ranked = [f"x{i}.md" for i in range(10)] + ["a.md"]
     row = score_ranking(ranked, {"a.md"}, KS)
-    assert row["rr"] == 0.0 and row["first_rank"] is None
-    assert row["returned"] == 10
+    assert row["rr"] == pytest.approx(1 / 11) and row["first_rank"] == 11
+    assert row["returned"] == 10 and row["any_hit_at"][10] == 0
+    assert score_ranking(ranked, {"a.md"}, (1,))["rr"] == row["rr"]
 
 
 def test_duplicate_docs_in_ranking_are_an_error():

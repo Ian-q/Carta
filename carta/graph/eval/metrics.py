@@ -16,8 +16,11 @@ def score_ranking(ranked: Sequence[str], gold: Collection[str], ks: Sequence[int
     """Score one ranked list against one non-empty gold set.
 
     ``recall@k = |R[:k] & G| / |G|``; ``precision@k`` divides by ``k``, not by
-    how many were returned; ``rr`` is ``1 / rank`` of the first gold doc
-    within the top ``max(ks)``, else 0. ``returned`` is capped at ``max(ks)``.
+    how many were returned, so a method that returns one right doc scores at
+    most ``1 / k``. ``rr`` is ``1 / rank`` of the first gold doc anywhere in
+    ``ranked`` (0 when there is none): it reads the whole ranking, so the mean
+    reciprocal rank does not move with the cutoffs asked for. ``returned`` is
+    capped at ``max(ks)``.
     A ranking that repeats a doc is a bug in the method and raises.
     """
     gold_set = set(gold)
@@ -28,7 +31,7 @@ def score_ranking(ranked: Sequence[str], gold: Collection[str], ks: Sequence[int
     top = max(ks)
     head = list(ranked[:top])
     hits = [doc in gold_set for doc in head]
-    first = next((i + 1 for i, hit in enumerate(hits) if hit), None)
+    first = next((i + 1 for i, doc in enumerate(ranked) if doc in gold_set), None)
     recall, precision, any_hit = {}, {}, {}
     for k in ks:
         found = sum(hits[:k])

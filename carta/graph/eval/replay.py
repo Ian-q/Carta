@@ -6,11 +6,18 @@ For each such commit the replay asks every method "which docs describe these
 files?" using only what existed at the commit's **parent**, and scores the
 answer against the docs the commit really edited.
 
-Nothing here reads the working tree, the index or the edge store. Trees and
-file contents come from git objects (``git log --raw``, ``git ls-tree``,
-``git cat-file --batch``), so the result depends on the history alone.
+``run_replay`` reads nothing from the working tree, the index or the edge
+store. Trees and file contents come from git objects (``git log --raw``,
+``git ls-tree``, ``git cat-file --batch``), so for given settings the result
+depends on the history alone.
 
-Run it as ``carta graph replay`` or ``python -m carta.graph.eval.replay``.
+The settings are the one input that is not history. The command line
+(``carta graph replay`` or ``python -m carta.graph.eval.replay``) takes them
+from ``<repo>/.carta/config.yaml`` in the working tree when that file exists,
+tracked or not, unless ``--no-config`` is given. ``excluded_paths`` and
+``graph.doc_globs`` decide which paths are docs and so which commits are
+eligible, which is why every report records where its settings came from and
+lists the exclusions it used.
 """
 from __future__ import annotations
 
@@ -288,6 +295,13 @@ def _window(repo: Path, range_spec: Optional[str], last: int
             if not wanted:
                 return [], set(), "", range_spec
             log = first_parent_log(repo, wanted[-1])
+            on_line = {entry.sha for entry in log}
+            off = [sha for sha in wanted if sha not in on_line]
+            if off:
+                raise ReplayError(
+                    f"range {range_spec!r} names {len(wanted)} commits but {len(off)} of them "
+                    f"are not on the first-parent line of {wanted[-1][:12]}; the replay walks "
+                    f"one line of history, so give a range along it (A..B)")
             return log, set(wanted), wanted[-1], range_spec
         log = first_parent_log(repo, "HEAD")
     except GitError as exc:
@@ -306,7 +320,8 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
                popularity_window: Optional[int] = None, min_population: Optional[int] = None,
                cache_path: Optional[Path] = None, use_disk_cache: bool = True,
                per_commit: bool = False, incremental: bool = True,
-               resamples: int = RESAMPLES, stats: Optional[dict] = None) -> dict:
+               resamples: int = RESAMPLES, stats: Optional[dict] = None,
+               config: Optional[str] = None) -> dict:
     """Replay a repository's mainline history and return the report as a dict.
 
     ``last=0`` scans the whole first-parent history. ``arms`` maps an arm name
@@ -315,9 +330,17 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
     turns off selective re-resolution and the reduced edge sets (the report
     must not change; a test relies on that). ``stats``, when given, is filled
     with run counters and timings that are deliberately not part of the report.
+    ``config`` says where ``settings`` came from; it is recorded in the report
+    (``defaults`` when no settings are given, else ``caller`` unless named).
     """
     started = time.perf_counter()
+    config = "defaults" if settings is None else (config or "caller")
     settings = settings or DEFAULT_SETTINGS
+    resamples = int(resamples)
+    if resamples < 1:
+        raise ReplayError(f"resamples must be at least 1, got {resamples}")
+    if int(last or 0) < 0:
+        raise ReplayError(f"last must be 0 (all commits) or a positive count, got {last}")
     ks = tuple(sorted(set(int(k) for k in ks)))
     if not ks or ks[0] < 1:
         raise ReplayError("k values must be positive integers")
@@ -575,6 +598,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
             "ks": list(ks), "hub_share": hub_share, "max_files": max_files,
             "popularity_window": window, "min_population": min_population,
             "resamples": int(resamples), "doc_globs": list(settings.doc_globs),
+            "excluded_paths": list(settings.excluded_paths), "config": config,
             "fingerprint": settings.fingerprint(), "weights": dict(sorted(weights.items())),
         },
         "population": {
@@ -588,6 +612,9 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
         "methods": table,
         "paired": paired,
         "judgement": judgement,
+        # Predicting the hub docs is enough to score well on the main table, so
+        # when there are hubs the table without them is the one to judge by.
+        "verdict_table": "no_hub" if hubs else "all",
         "no_hub": {
             "hub_docs": [{"doc": doc, "commits": gold_counts[doc],
                           "share": gold_counts[doc] / n_eligible} for doc in hubs],
@@ -647,7 +674,7 @@ def _signed(value: float) -> str:
 
 
 def _tables(lines: List[str], methods: dict, paired: dict, judgement: dict, ks: Sequence[int],
-            conclusive: bool, min_population: int, n: int) -> None:
+            conclusive: bool, min_population: int, n: int, verdict: bool = True) -> None:
     if not n:
         lines.append("  (no eligible commits: nothing to score)")
         return
@@ -656,12 +683,15 @@ def _tables(lines: List[str], methods: dict, paired: dict, judgement: dict, ks: 
     p_k = "5" if "5" in methods[names[0]]["precision_at"] else str(ks[-1])
     head = "".join(f"{'R@' + str(k):<7}" for k in ks)
     lines.append(f"{'':<{width}}{head}{'P@' + p_k:<7}{'any@' + p_k:<7}{'MRR':<7}returned")
+    footnote = (f"(P@{p_k} divides by {p_k}, so a method that returns one right doc scores at "
+                f"most {1 / int(p_k):.3g}; MRR reads the whole ranking)")
     for name in names:
         m = methods[name]
         cells = "".join(f"{_fmt(m['recall_at'][str(k)]):<7}" for k in ks)
         lines.append(f"{name:<{width}}{cells}{_fmt(m['precision_at'][p_k]):<7}"
                      f"{_fmt(m['any_hit_at'][p_k]):<7}{_fmt(m['mrr']):<7}"
                      f"{m['mean_returned']:.1f}")
+    lines.append(footnote)
     lines.append("")
     lines.append("95% intervals (bootstrap over commits):")
     for name in names:
@@ -678,6 +708,8 @@ def _tables(lines: List[str], methods: dict, paired: dict, judgement: dict, ks: 
                 f"{name + ' vs ' + other:<{pair_width}}dMRR {_signed(mrr['delta'])} "
                 f"[{_signed(mrr['ci95'][0])}, {_signed(mrr['ci95'][1])}]   "
                 f"better {mrr['better']} / worse {mrr['worse']} / tied {mrr['tied']}")
+    if not verdict:
+        return
     for name, verdict in judgement.items():
         if verdict == "inconclusive":
             lines.append(f"{name}: INCONCLUSIVE ({n} eligible commits, fewer than the "
@@ -711,13 +743,22 @@ def format_replay(report: dict) -> str:
     if pop["excluded_doc_paths"]:
         lines.append(f"  doc-named paths under excluded directories, ignored: "
                      f"{pop['excluded_doc_paths']:,}")
-    lines.append("")
-    _tables(lines, report["methods"], report["paired"], report["judgement"], ks,
-            pop["conclusive"], cfg["min_population"], n)
+    lines.append(f"Settings: config={cfg.get('config', 'defaults')}; "
+                 f"docs: {', '.join(cfg['doc_globs'])}")
+    lines.append(f"  excluded_paths: {', '.join(cfg.get('excluded_paths', [])) or '(none)'}")
     lines.append("")
     no_hub = report["no_hub"]
+    hubs = bool(no_hub["hub_docs"])
     pct = f"{100 * cfg['hub_share']:g}%"
-    if no_hub["hub_docs"]:
+    _tables(lines, report["methods"], report["paired"], report["judgement"], ks,
+            pop["conclusive"], cfg["min_population"], n, verdict=not hubs)
+    if hubs and n:
+        lines.append(f"Note: {_plural(len(no_hub['hub_docs']), 'hub doc')} "
+                     f"({'is' if len(no_hub['hub_docs']) == 1 else 'are'} gold in more than "
+                     f"{pct} of eligible commits), so the table above mostly measures who "
+                     f"predicts the hubs. The verdict is given on the table without them.")
+    lines.append("")
+    if hubs:
         named = ", ".join(f"{h['doc']} {100 * h['share']:.0f}%" for h in no_hub["hub_docs"])
         lines.append(f"Without hub docs (>{pct} of eligible commits: {named}): "
                      f"{no_hub['population']['eligible']:,} eligible")
@@ -727,11 +768,11 @@ def format_replay(report: dict) -> str:
     else:
         lines.append(f"Without hub docs: no doc is gold in more than {pct} of eligible "
                      f"commits, so this variant equals the tables above")
-    lines.append("")
     alarm = report["alarm"]
-    lines.append(f"Source-only commits ({alarm['commits']:,}, unlabelled): "
-                 f"share with any prediction / mean returned at 5")
     if alarm["commits"]:
+        lines.append("")
+        lines.append(f"Source-only commits ({alarm['commits']:,}, unlabelled): "
+                     f"share with any prediction / mean returned at 5")
         width = max(len(name) for name in alarm["methods"]) + 2
         for name, cell in alarm["methods"].items():
             lines.append(f"  {name:<{width}}{cell['share_any']:.3f} / "
@@ -773,6 +814,9 @@ def build_parser(prog: str = "carta graph replay") -> argparse.ArgumentParser:
                         help="Which paths are docs (repeatable; default: graph.doc_globs)")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="An extra excluded_paths entry for the doc side (repeatable)")
+    parser.add_argument("--no-config", action="store_true",
+                        help="Ignore <repo>/.carta/config.yaml and use the built-in defaults "
+                             "(the report records which was used)")
     parser.add_argument("--resamples", type=int, default=RESAMPLES, metavar="N",
                         help=f"Bootstrap resamples (default {RESAMPLES})")
     parser.add_argument("--per-commit", action="store_true",
@@ -786,12 +830,18 @@ def build_parser(prog: str = "carta graph replay") -> argparse.ArgumentParser:
     return parser
 
 
-def _repo_settings(root: Path, doc_globs: Sequence[str], excludes: Sequence[str]
-                   ) -> GraphSettings:
-    """Graph settings for a repository: its Carta config when it has one, else the defaults."""
+def _repo_settings(root: Path, doc_globs: Sequence[str], excludes: Sequence[str],
+                   use_config: bool = True) -> Tuple[GraphSettings, str]:
+    """Graph settings for a repository, and a label saying where they came from.
+
+    The repository's Carta config when it has one (read from the work tree),
+    else the defaults; command-line options on top of either.
+    """
     cfg: Dict[str, Any] = {}
+    source = "defaults"
     config = root / ".carta" / "config.yaml"
-    if config.is_file():
+    if use_config and config.is_file():
+        source = ".carta/config.yaml"
         import yaml
         try:
             raw = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
@@ -812,7 +862,9 @@ def _repo_settings(root: Path, doc_globs: Sequence[str], excludes: Sequence[str]
         from carta.config import DEFAULTS
         base = cfg.get("excluded_paths", DEFAULTS["excluded_paths"]) or []
         cfg["excluded_paths"] = [*base, *excludes]
-    return graph_settings(cfg)
+    if doc_globs or excludes:
+        source += " + command line"
+    return graph_settings(cfg), source
 
 
 def _parse_arms(specs: Sequence[str]) -> Optional[Dict[str, List[str]]]:
@@ -839,7 +891,8 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "carta graph replay")
                 ks = tuple(int(part) for part in args.k.split(",") if part.strip())
             except ValueError:
                 raise ReplayError(f"--k {args.k!r}: expected positive integers") from None
-        settings = _repo_settings(root, args.doc_glob, args.exclude)
+        settings, source = _repo_settings(root, args.doc_glob, args.exclude,
+                                          use_config=not args.no_config)
         cache_path = None
         if args.cache_dir:
             cache_path = Path(args.cache_dir) / default_cache_path(root).name
@@ -849,17 +902,21 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "carta graph replay")
             settings=settings, hub_share=args.hub_share, max_files=args.max_files,
             popularity_window=args.popularity_window, min_population=args.min_population,
             cache_path=cache_path, use_disk_cache=not args.no_cache,
-            per_commit=args.per_commit, resamples=args.resamples, stats=stats)
+            per_commit=args.per_commit, resamples=args.resamples, stats=stats, config=source)
+        if args.json and args.json != "-":
+            out = Path(args.json)
+            try:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                               encoding="utf-8")
+            except OSError as exc:
+                raise ReplayError(f"could not write the report to {out}: {exc}") from exc
     except (ReplayError, ConfigError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     if args.json == "-":
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        if args.json:
-            out = Path(args.json)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         sys.stdout.write(format_replay(report))
     seconds = stats.get("seconds", 0.0)
     rate = stats.get("commits_scanned", 0) / seconds if seconds > 0 else 0.0

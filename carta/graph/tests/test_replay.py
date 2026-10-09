@@ -574,7 +574,7 @@ def test_json_shape_is_the_spec(history):
     repo, _c = history
     report = run_replay(repo.root, **OPTS)
     assert set(report) == {"schema", "repo", "settings", "population", "methods", "paired",
-                           "judgement", "no_hub", "alarm"}
+                           "judgement", "verdict_table", "no_hub", "alarm"}
     assert report["schema"] == 1
     assert set(report["population"]) == {
         "commits_scanned", "eligible", "skipped", "gold_docs_mean", "gold_docs_median",
@@ -587,7 +587,7 @@ def test_json_shape_is_the_spec(history):
     assert set(report["no_hub"]) == {"hub_docs", "population", "methods", "paired", "judgement"}
     assert set(report["settings"]) == {
         "arms", "ks", "hub_share", "max_files", "popularity_window", "min_population",
-        "resamples", "doc_globs", "fingerprint", "weights"}
+        "resamples", "doc_globs", "excluded_paths", "config", "fingerprint", "weights"}
     assert "per_commit" not in report
     with_rows = run_replay(repo.root, per_commit=True, **OPTS)
     assert set(with_rows["per_commit"][0]) == {
@@ -756,3 +756,111 @@ def test_replay_budget_and_incremental_equivalence_on_a_long_history(git_repo):
     lean = run_replay(git_repo.root, **opts)
     slow = run_replay(git_repo.root, incremental=False, **opts)
     assert json.dumps(slow, sort_keys=True) == json.dumps(lean, sort_keys=True)
+
+
+# -- review round 2 ----------------------------------------------------------------
+
+def test_mrr_does_not_depend_on_the_cutoffs_asked_for(history):
+    repo, _c = history
+    base = run_replay(repo.root, **OPTS)
+    for ks in ((1,), (1, 3), (1, 50)):
+        other = run_replay(repo.root, ks=ks, **OPTS)
+        for name in (GRAPH, *BASELINES):
+            assert other["methods"][name]["mrr"] == base["methods"][name]["mrr"], (ks, name)
+        for b in BASELINES:
+            assert other["paired"][GRAPH][b]["mrr"] == base["paired"][GRAPH][b]["mrr"]
+        assert other["judgement"] == base["judgement"]
+
+
+def test_bad_resamples_last_and_unwritable_json_are_usage_errors(history, tmp_path, capsys):
+    repo, _c = history
+    with pytest.raises(ReplayError, match="resamples"):
+        run_replay(repo.root, **dict(OPTS, resamples=0))
+    with pytest.raises(ReplayError, match="last"):
+        run_replay(repo.root, last=-5, **OPTS)
+    assert main(["--repo", str(repo.root), "--no-cache", "--resamples", "0"]) == 1
+    assert "resamples" in capsys.readouterr().err
+    assert main(["--repo", str(repo.root), "--no-cache", "--last", "-5"]) == 1
+    assert "last" in capsys.readouterr().err
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
+    assert main(["--repo", str(repo.root), "--no-cache", "--resamples", "50",
+                 "--json", str(blocker / "out.json")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and "Traceback" not in err
+
+
+def test_a_range_off_the_first_parent_line_is_refused_not_truncated(history):
+    repo, c = history
+    repo.git("checkout", "-q", "-b", "feat", c["rename"])
+    repo.write("src/store/db.py", "DB = 9\n")
+    repo.commit("feat: one", 20)
+    repo.write("src/store/db.py", "DB = 10\n")
+    repo.commit("feat: two", 21)
+    repo.git("checkout", "-q", "main")
+    with pytest.raises(ReplayError, match="first-parent"):
+        run_replay(repo.root, range_spec="main...feat", **OPTS)
+    with pytest.raises(ReplayError, match="first-parent"):
+        run_replay(repo.root, range_spec="feat...main", **OPTS)
+    ok = run_replay(repo.root, range_spec="main..feat", **OPTS)
+    assert ok["population"]["commits_scanned"] == 2
+
+
+def test_report_names_the_config_and_the_exclusions_that_set_the_population(history, capsys):
+    repo, _c = history
+    direct = run_replay(repo.root, **OPTS)
+    assert direct["settings"]["config"] == "defaults"
+    assert direct["settings"]["excluded_paths"] == list(DEFAULT_SETTINGS.excluded_paths)
+    custom = run_replay(repo.root, settings=graph_settings({"excluded_paths": ["docs/"]}), **OPTS)
+    assert custom["settings"]["config"] == "caller"
+    assert custom["settings"]["excluded_paths"] == ["docs/"]
+
+    args = ["--repo", str(repo.root), "--no-cache", "--max-files", "5", "--resamples", "50"]
+    assert main([*args, "--json"]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    assert plain["settings"]["config"] == "defaults" and plain["population"]["eligible"] == 9
+
+    # An untracked config in the work tree changes which docs can be gold. The
+    # report has to say so, or two runs cannot be told apart.
+    repo.write(".carta/config.yaml", "excluded_paths: ['docs/']\n")
+    assert main([*args, "--json"]) == 0
+    with_config = json.loads(capsys.readouterr().out)
+    assert with_config["settings"]["config"] == ".carta/config.yaml"
+    assert with_config["settings"]["excluded_paths"] == ["docs/"]
+    assert with_config["population"]["eligible"] < 9
+    assert main(args) == 0
+    text = capsys.readouterr().out
+    assert "Settings: config=.carta/config.yaml" in text and "excluded_paths: docs/" in text
+
+    assert main([*args, "--no-config", "--json"]) == 0
+    ignored = json.loads(capsys.readouterr().out)
+    assert ignored["settings"]["config"] == "defaults"
+    assert ignored["methods"] == plain["methods"] and ignored["population"] == plain["population"]
+
+    assert main([*args, "--no-config", "--exclude", "docs/", "--json"]) == 0
+    flagged = json.loads(capsys.readouterr().out)
+    assert flagged["settings"]["config"] == "defaults + command line"
+    assert flagged["settings"]["excluded_paths"][-1] == "docs/"
+
+
+def test_verdict_is_given_on_the_no_hub_table_when_there_are_hubs(history):
+    repo, _c = history
+    report = run_replay(repo.root, min_population=5, **OPTS)
+    assert report["verdict_table"] == "no_hub"
+    text = format_replay(report)
+    head, _, tail = text.partition("Without hub docs")
+    verdict = "every baseline on MRR"
+    assert verdict not in head and verdict in tail
+    assert "mostly measures" in head and "P@5 divides by 5" in head
+    none = run_replay(repo.root, min_population=5, **dict(OPTS, hub_share=1.0))
+    assert none["verdict_table"] == "all"
+    assert verdict in format_replay(none)
+
+
+def test_no_source_only_commits_prints_no_empty_alarm_block(git_repo):
+    git_repo.write("README.md", "# x\n")
+    git_repo.write("src/a.py", "x\n")
+    git_repo.commit("only", 0)
+    report = run_replay(git_repo.root, **OPTS)
+    assert report["alarm"]["commits"] == 0
+    assert "Source-only" not in format_replay(report)
