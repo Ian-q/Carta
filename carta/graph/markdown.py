@@ -54,6 +54,17 @@ def is_call_span(span: str) -> bool:
     return False
 
 
+def _assigned_parts(token: str) -> List[str]:
+    """The pieces of ``--flag=path`` or ``NAME=path``; empty when it is not one.
+
+    Only a token that holds a ``/`` is split, and never a URL (its query
+    string is not a list of paths).
+    """
+    if "=" not in token or "/" not in token or "://" in token:
+        return []
+    return [part for part in token.split("=") if part]
+
+
 def _code_spans(line: str) -> List[Tuple[int, int, int, int]]:
     """Inline code spans on one line as (outer start, outer end, inner start, inner end)."""
     runs = [(m.start(), m.end()) for m in _BACKTICKS.finditer(line)]
@@ -162,14 +173,19 @@ def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
             content = line[inner_start:inner_end].strip()
             if not content:
                 continue
-            if not _SPACE.search(content) or is_call_span(content):
+            if is_call_span(content) or (
+                    not _SPACE.search(content) and not _assigned_parts(content)):
                 emit(line_no, outer_start, content, "code", evidence, True)
                 continue
             col = inner_start
             for token in content.split():
                 col = line.index(token, col)
-                if "/" in token:
-                    emit(line_no, col, token, "code", evidence, False)
+                sub = col
+                for part in _assigned_parts(token) or [token]:
+                    sub = line.index(part, sub)
+                    if "/" in part:
+                        emit(line_no, sub, part, "code", evidence, False)
+                    sub += len(part)
                 col += len(token)
         for m in _INLINE_LINK.finditer(line):
             if not _inside(m.start(), spans):

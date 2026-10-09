@@ -27,7 +27,7 @@ MAX_CANDIDATE_LENGTH = 300
 FENCE_WEIGHT = 0.5
 
 _PATH_CONTEXTS = ("link", "code", "fence", "frontmatter")
-_LINE_SUFFIX = re.compile(r":\d+(?:[:-]\d+)?$")
+_LINE_SUFFIX = re.compile(r":L?\d+(?:[:-]L?\d+)?$")
 _NODE_SUFFIX = re.compile(r"^(.*?\.[A-Za-z0-9]{1,8})(?:::.*|:[A-Za-z_][A-Za-z0-9_.]*)$")
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _EMAIL = re.compile(r"^[^/@\s]+@[^/@\s]+\.[A-Za-z]{2,}$")
@@ -48,8 +48,13 @@ def _has_extension(segment: str) -> bool:
     return bool(m) and m.start() > 0 and not m.group(1).isdigit()
 
 
-def _normalise(raw: str, ctx: str) -> Optional[List[Tuple[str, bool]]]:
-    """Rules N1 to N6. Returns ``(candidate, rooted)`` pairs, or ``None`` to reject."""
+def _normalise(raw: str, ctx: str, keep_hash: bool = False
+               ) -> Optional[List[Tuple[str, bool]]]:
+    """Rules N1 to N6. Returns ``(candidate, rooted)`` pairs, or ``None`` to reject.
+
+    ``keep_hash`` leaves a ``#`` in place: the reading in which it is part of
+    a file or directory name rather than the start of a fragment.
+    """
     is_link = ctx == "link"
     text = raw.strip()
     # N1: wrappers and trailing punctuation
@@ -71,7 +76,7 @@ def _normalise(raw: str, ctx: str) -> Optional[List[Tuple[str, bool]]]:
     if text.endswith(")") and text.count(")") > text.count("("):
         text = text[:-1]
     # N2: fragments, queries, line numbers, node ids
-    if "#" in text:
+    if "#" in text and not keep_hash:
         text = text.split("#", 1)[0]
     if is_link and "?" in text:
         text = text.split("?", 1)[0]
@@ -148,6 +153,9 @@ def _is_placeholder(path: str, index: PathIndex) -> bool:
     return False
 
 
+Hit = Tuple[str, str, dict]
+
+
 class _Resolver:
     """Resolves the candidates of one doc against one path index."""
 
@@ -165,60 +173,91 @@ class _Resolver:
             self._type_cache[path] = hit
         return hit
 
-    def resolve(self, cand: str, ctx: str, rooted: bool) -> Optional[Tuple[str, str, dict]]:
-        """Return ``(dst, dst_type, extra meta)`` for one normalised candidate, or ``None``."""
-        index = self.index
-        is_link = ctx == "link"
-        explicit = cand.startswith(("./", "../")) or cand in (".", "..")
-
-        # N7: globs
-        if _GLOB.search(cand):
-            if "/" not in cand and not cand.startswith("*."):
-                return None
-            pattern = _join(self.doc_dir, cand) if explicit else _join("", cand)
-            if pattern is None:
-                return None
-            # After normalising it must still be anchored somewhere and name
-            # something literal: "*/", "**/" and a pasted regex are not globs.
-            if "/" not in pattern and not pattern.startswith("*."):
-                return None
-            if not _LITERAL.search(_GLOB_CLASS.sub("", pattern)):
-                return None
-            matches = index.glob_matches(pattern)
-            if not matches:
-                return None
-            return pattern, "glob", {"matches": matches}
-
-        dir_form = cand.endswith("/")
-        bare = "/" not in cand.rstrip("/") and not dir_form
-
-        if bare:
-            return self._resolve_bare(cand, ctx)
-
-        # N8: where to look, in order
+    def _bases(self, cand: str, is_link: bool, rooted: bool, explicit: bool) -> List[str]:
+        """N8: the directories a candidate is read against, in order."""
         if rooted:
-            bases = [""]
-        elif is_link:
-            bases = [self.doc_dir, ""] if self.doc_dir else [""]
-        elif explicit:
-            bases = [self.doc_dir]
-        else:
-            bases = [""] + _ancestors(self.doc_dir)
+            return [""]
+        if is_link:
+            return [self.doc_dir, ""] if self.doc_dir else [""]
+        if explicit:
+            # "./x" in code is as often written from the repo root as from the
+            # doc's directory; "../x" only makes sense from the doc.
+            if cand.startswith("./") and self.doc_dir:
+                return [self.doc_dir, ""]
+            return [self.doc_dir]
+        return [""] + _ancestors(self.doc_dir)
+
+    def _lookup(self, cand: str, bases: Sequence[str], dir_form: bool, plain: bool
+                ) -> Tuple[List[str], Optional[Hit], bool]:
+        """Read ``cand`` against each base: ``(in-repo readings, hit, rejected)``."""
+        index = self.index
         inside: List[str] = []
         for base in bases:
             path = _join(base, cand)
             if path is None:
                 continue
             inside.append(path)
-            via = {} if (not base or is_link or explicit) else {"via": "relative"}
+            via = {} if (not base or plain) else {"via": "relative"}
             if index.has_file(path):
                 if dir_form:
-                    return None                     # "file.py/" names nothing
-                return path, self._file_type(path), via                    # N9
+                    return inside, None, True       # "file.py/" names nothing
+                return inside, (path, self._file_type(path), via), False        # N9
             if index.has_dir(path):
-                return path + "/", "dir", via                               # N10
-        if not inside:
-            return None                             # every reading leaves the repo
+                return inside, (path + "/", "dir", via), False                  # N10
+        return inside, None, False
+
+    def resolve(self, cand: str, ctx: str, rooted: bool,
+                literal_only: bool = False) -> List[Hit]:
+        """Every ``(dst, dst_type, extra meta)`` one normalised candidate names.
+
+        Usually one. A link that is not found has two readings (beside the doc
+        and from the repo root) and is recorded as missing under both, the
+        second marked ``alt``. With ``literal_only`` only a file or directory
+        that exists under exactly this spelling is accepted.
+        """
+        index = self.index
+        is_link = ctx == "link"
+        explicit = cand.startswith(("./", "../")) or cand in (".", "..")
+        dir_form = cand.endswith("/")
+        bare = "/" not in cand.rstrip("/") and not dir_form
+        has_glob = bool(_GLOB.search(cand))
+        bases = self._bases(cand, is_link, rooted, explicit)
+        plain = is_link or explicit
+
+        if (has_glob or literal_only) and not bare:
+            # A real name wins over a pattern: "src/app/[id]/page.tsx".
+            _inside, hit, _rejected = self._lookup(cand, bases, dir_form, plain)
+            if hit is not None:
+                return [hit]
+        if literal_only:
+            return []
+
+        # N7: globs
+        if has_glob:
+            if "/" not in cand and not cand.startswith("*."):
+                return []
+            pattern = _join(self.doc_dir, cand) if explicit else _join("", cand)
+            if pattern is None:
+                return []
+            # After normalising it must still be anchored somewhere and name
+            # something literal: "*/", "**/" and a pasted regex are not globs.
+            if "/" not in pattern and not pattern.startswith("*."):
+                return []
+            if not _LITERAL.search(_GLOB_CLASS.sub("", pattern)):
+                return []
+            matches = index.glob_matches(pattern)
+            if not matches:
+                return []
+            return [(pattern, "glob", {"matches": matches})]
+
+        if bare:
+            return self._resolve_bare(cand, ctx)
+
+        inside, hit, rejected = self._lookup(cand, bases, dir_form, plain)
+        if hit is not None:
+            return [hit]
+        if rejected or not inside:
+            return []                               # or every reading leaves the repo
 
         # N11: a unique suffix
         if not explicit and not rooted:
@@ -228,40 +267,62 @@ class _Resolver:
                 if len(matches) == 1:
                     dst = matches[0]
                     dst_type = "dir" if dst.endswith("/") else self._file_type(dst)
-                    return dst, dst_type, {"via": "suffix"}
+                    return [(dst, dst_type, {"via": "suffix"})]
                 if len(matches) > 1:
-                    return None                     # ambiguous: no edge, and not "missing"
+                    return []                       # ambiguous: no edge, and not "missing"
 
         # N13: missing
         if ctx == "fence":
-            return None
-        return self._missing(inside[0], dir_form)
+            return []
+        if explicit and not is_link and len(set(inside)) > 1:
+            return []                               # "./x" in code: which reading is unknown
+        if is_link and not explicit:
+            return self._missing_readings(inside, dir_form)
+        return self._missing_readings(inside[:1], dir_form)
 
-    def _resolve_bare(self, cand: str, ctx: str) -> Optional[Tuple[str, str, dict]]:
+    def _resolve_bare(self, cand: str, ctx: str) -> List[Hit]:
         """N12: a bare filename. Links look beside the doc and at the root, nothing else."""
         index = self.index
         sibling = posixpath.join(self.doc_dir, cand) if self.doc_dir else cand
         if ctx == "link":
             for path in (sibling, cand):
                 if index.has_file(path):
-                    return path, self._file_type(path), {}
+                    return [(path, self._file_type(path), {})]
                 if index.has_dir(path):
-                    return path + "/", "dir", {}
+                    return [(path + "/", "dir", {})]
             if _has_extension(cand):
-                return self._missing(sibling, False)
-            return None
+                return self._missing_readings([sibling, cand], False)
+            return []
         if ctx == "fence" or not _has_extension(cand):
-            return None
+            return []
         if index.has_file(cand):
-            return cand, self._file_type(cand), {}
+            return [(cand, self._file_type(cand), {})]
         if sibling != cand and index.has_file(sibling):
-            return sibling, self._file_type(sibling), {"via": "relative"}
+            return [(sibling, self._file_type(sibling), {"via": "relative"})]
         matches = index.by_basename(cand)
         if len(matches) == 1:
-            return matches[0], self._file_type(matches[0]), {"via": "basename"}
-        return None
+            return [(matches[0], self._file_type(matches[0]), {"via": "basename"})]
+        return []
 
-    def _missing(self, path: str, dir_form: bool) -> Optional[Tuple[str, str, dict]]:
+    def _missing_readings(self, readings: Sequence[str], dir_form: bool) -> List[Hit]:
+        """The first reading as ``missing``, and any other as an ``alt`` of it.
+
+        Which reading the author meant cannot be known once the file is gone,
+        so an impact query or a history lookup can find the doc under either.
+        """
+        out: List[Hit] = []
+        seen = set()
+        for path in readings:
+            if path in seen:
+                continue
+            seen.add(path)
+            hit = self._missing(path, dir_form)
+            if hit is not None:
+                out.append((hit[0], hit[1], {"alt": True}) if out or path != readings[0]
+                           else hit)
+        return out
+
+    def _missing(self, path: str, dir_form: bool) -> Optional[Hit]:
         segments = path.split("/")
         if segments[0] in PATHSET_EXCLUDED_ROOTS:
             return None
@@ -305,12 +366,16 @@ def resolve_candidates(doc_path: str, candidates: Sequence[Candidate], index: Pa
         if cand.ctx not in _PATH_CONTEXTS:
             continue
         became_path = False
-        normalised = _normalise(cand.raw, cand.ctx)
-        for item, rooted in normalised or ():
-            hit = resolver.resolve(item, cand.ctx, rooted)
-            if hit is None:
-                continue
-            dst, dst_type, extra = hit
+        hits: List[Hit] = []
+        if "#" in cand.raw:
+            # N2: "#" starts a fragment, unless the text with it names a real path.
+            for item, rooted in _normalise(cand.raw, cand.ctx, keep_hash=True) or ():
+                if "#" in item:
+                    hits.extend(resolver.resolve(item, cand.ctx, rooted, literal_only=True))
+        if not hits:
+            for item, rooted in _normalise(cand.raw, cand.ctx) or ():
+                hits.extend(resolver.resolve(item, cand.ctx, rooted))
+        for dst, dst_type, extra in hits:
             became_path = True
             if dst == doc_path:
                 continue                                                    # N14

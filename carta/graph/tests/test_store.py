@@ -189,7 +189,7 @@ def test_digest_changes_with_any_field(db):
         E("src/a.py", evidence="other"), E("src/a.py", 2, evidence="e"),
         E("src/a.py", evidence="e", weight=0.5), E("src/a.py", evidence="e", key="k"),
         E("src/a.py", evidence="e", meta='{"a":1}'), E("src/a.py", evidence="e", dst_type="doc"),
-        E("src/b.py", evidence="e"), E("src/a.py", evidence="e", extractor_version=2),
+        E("src/b.py", evidence="e"), E("src/a.py", evidence="e", extractor_version=99),
         E("src/a.py", evidence="e", kind="ident"),
     ]
     with EdgeStore(db) as s:

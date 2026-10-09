@@ -125,11 +125,11 @@ def test_n8_links_resolve_from_doc_directory_then_root():
     assert paths_of("[c](src/store/db.py)") == [("src/store/db.py", "file")]
 
 
-def test_n8_dot_relative_code_resolves_from_doc_directory_only():
+def test_n8_dot_relative_code_resolves_from_doc_directory_first():
     assert paths_of("`./store.md`") == [("docs/design/store.md", "doc")]
     assert paths_of("`../guide/setup.md`") == [("docs/guide/setup.md", "doc")]
-    # explicit ./ never falls back to the repo root, so this one does not exist
-    assert paths_of("`./src/store/db.py`") == [("docs/design/src/store/db.py", "missing")]
+    # "./" is tried beside the doc first, then from the repo root
+    assert paths_of("`./src/store/db.py`") == [("src/store/db.py", "file")]
 
 
 def test_n8_outside_the_repo_gives_nothing():
@@ -204,7 +204,8 @@ def test_n12_sibling_is_marked_relative():
 
 
 def test_n12_links_do_not_search_by_basename():
-    assert paths_of("[x](checksum.py)") == [("docs/design/checksum.py", "missing")]
+    assert paths_of("[x](checksum.py)") == [
+        ("checksum.py", "missing"), ("docs/design/checksum.py", "missing")]
     assert paths_of("[x](../../Makefile)") == [("Makefile", "file")]
 
 
@@ -214,7 +215,7 @@ def test_n13_missing_paths():
     assert paths_of("`src/parser/old_frame.py`") == [("src/parser/old_frame.py", "missing")]
     assert paths_of("`removed_pkg/core/x.py`") == [("removed_pkg/core/x.py", "missing")]
     assert paths_of("`src/gone/`") == [("src/gone/", "missing")]
-    assert paths_of("[x](gone.md)") == [("docs/design/gone.md", "missing")]
+    assert paths_of("[x](gone.md)") == [("docs/design/gone.md", "missing"), ("gone.md", "missing")]
     assert paths_of("[x](../guide/gone/)") == [("docs/guide/gone/", "missing")]
 
 
@@ -353,3 +354,84 @@ def test_normalise_candidate_is_pure_string_work():
     assert normalise_candidate("/abs/x.py", "link") == ["abs/x.py"]
     assert normalise_candidate("https://example.org/x", "link") is None
     assert normalise_candidate("", "code") is None
+
+
+# -- review round 2: literal names, explicit code paths, alternates ---------------
+
+WEB = PATHS + ["src/app/[id]/page.tsx", "src/C#/x.cs", "src/app/main.py", "src/app/data.json",
+               "scripts/run.sh"]
+
+
+@pytest.mark.parametrize("text", [
+    "`src/app/[id]/page.tsx`", "[n](../../src/app/[id]/page.tsx)", "[n](/src/app/[id]/page.tsx)",
+])
+def test_a_real_file_with_glob_characters_in_its_name_is_a_literal(text):
+    assert paths_of(text, paths=WEB) == [("src/app/[id]/page.tsx", "file")]
+
+
+def test_a_bracket_pattern_that_names_no_file_is_still_a_glob():
+    assert paths_of("`src/parser/[cf]*.py`", paths=WEB) == [("src/parser/[cf]*.py", "glob")]
+
+
+def test_hash_inside_a_real_path_is_not_a_fragment():
+    assert paths_of("`src/C#/x.cs`", paths=WEB) == [("src/C#/x.cs", "file")]
+    # and a fragment is still cut when the full text names nothing
+    assert paths_of("`src/app/main.py#L3/L4`", paths=WEB) == [("src/app/main.py", "file")]
+    assert paths_of("`src/C#/gone.cs`", paths=WEB) == []
+
+
+@pytest.mark.parametrize("text", [
+    "`src/app/main.py:L10-L20`", "`src/app/main.py:L10`", "`src/app/main.py:L10-20`",
+])
+def test_l_prefixed_line_suffix_is_cut(text):
+    assert paths_of(text, paths=WEB) == [("src/app/main.py", "file")]
+
+
+@pytest.mark.parametrize("text", [
+    "`--config=src/app/data.json`", "`run --config=src/app/data.json --fast`",
+    "`CONFIG=src/app/data.json`",
+])
+def test_code_tokens_are_split_on_equals(text):
+    assert paths_of(text, paths=WEB) == [("src/app/data.json", "file")]
+
+
+def test_a_url_with_a_query_is_not_split_on_equals():
+    assert paths_of("`https://example.invalid/x?next=src/app/main.py`", paths=WEB) == []
+
+
+def test_dot_slash_in_code_falls_back_to_the_repo_root():
+    assert paths_of("`./src/app/main.py`", doc="docs/guide/setup.md", paths=WEB) == [
+        ("src/app/main.py", "file")]
+    assert paths_of("Run `./scripts/run.sh --fast`.", doc="docs/guide/setup.md", paths=WEB) == [
+        ("scripts/run.sh", "file")]
+    # the doc's own directory still wins
+    assert paths_of("`./setup.md`", doc="docs/guide/other.md", paths=WEB) == [
+        ("docs/guide/setup.md", "doc")]
+
+
+def test_dot_slash_in_code_that_resolves_nowhere_is_not_missing():
+    assert paths_of("`./src/app/gone.py`", doc="docs/guide/setup.md", paths=WEB) == []
+    # at the repo root there is one reading, so it is recorded
+    assert paths_of("`./src/app/gone.py`", doc="README.md", paths=WEB) == [
+        ("src/app/gone.py", "missing")]
+    # "../" has one reading wherever the doc is
+    assert paths_of("`../../src/app/gone.py`", doc="docs/guide/setup.md", paths=WEB) == [
+        ("src/app/gone.py", "missing")]
+
+
+def test_missing_link_records_the_root_reading_as_an_alternate():
+    got = edges("[gen](tools/gone.py)", doc="docs/guide/setup.md", paths=WEB)
+    assert [(e.dst, e.dst_type) for e in got] == [
+        ("docs/guide/tools/gone.py", "missing"), ("tools/gone.py", "missing")]
+    assert "alt" not in meta(got[0]) and meta(got[1])["alt"] is True
+    # explicit, rooted and root-level links have one reading only
+    assert paths_of("[gen](./tools/gone.py)", doc="docs/guide/setup.md", paths=WEB) == [
+        ("docs/guide/tools/gone.py", "missing")]
+    assert paths_of("[gen](/tools/gone.py)", doc="docs/guide/setup.md", paths=WEB) == [
+        ("tools/gone.py", "missing")]
+    assert paths_of("[gen](tools/gone.py)", doc="README.md", paths=WEB) == [
+        ("tools/gone.py", "missing")]
+    # a bare filename too
+    got = edges("![alt](gone.png)", doc="docs/guide/setup.md", paths=WEB)
+    assert [(e.dst, meta(e).get("alt", False)) for e in got] == [
+        ("docs/guide/gone.png", False), ("gone.png", True)]

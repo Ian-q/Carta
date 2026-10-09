@@ -11,7 +11,7 @@ SCHEMA_VERSION = 1
 # Versions are per extractor: bumping one arm never invalidates another.
 # Bump this whenever the mention extractor would emit different edges for an
 # unchanged input.
-MENTION_EXTRACTOR_VERSION = 1
+MENTION_EXTRACTOR_VERSION = 2
 MENTION_EXTRACTOR = "mention"
 
 KINDS = ("mention", "ident", "pattern", "cochange", "symbol", "related")

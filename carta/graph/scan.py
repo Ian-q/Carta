@@ -145,21 +145,36 @@ def missing_path_findings(repo_root: Path, cfg: dict) -> List[dict]:
 
     first: Dict[Tuple[str, str], int] = {}
     linked: Set[Tuple[str, str]] = set()
+    written: Dict[Tuple[str, str], Set[Tuple[int, str]]] = {}     # the spans behind each key
     for edge in edges:
         key = (edge.src, edge.dst)
         if key not in first or edge.line < first[key]:
             first[key] = edge.line
-        if json.loads(edge.meta).get("ctx") == "link":
+        meta = json.loads(edge.meta)
+        written.setdefault(key, set()).add((edge.line, meta.get("raw", edge.dst)))
+        # An "alt" edge is the second reading of a link that was not found. It
+        # is there for history to confirm, never a broken link in its own right.
+        if meta.get("ctx") == "link" and not meta.get("alt"):
             linked.add(key)
 
+    # A path git ignores is not "deleted from the repository" just because it
+    # was tracked once: a build output or a local config that was untracked and
+    # ignored is simply not generated on this checkout.
+    in_history = sorted({path for (_doc, path) in first if history.lookup(path) is not None})
+    not_tracked_by_design = ignored_paths(repo_root, in_history)
+
     findings = []
+    confirmed: Set[Tuple[str, int, str]] = set()       # (doc, line, text) history explains
     for (doc, path), line in first.items():
         renamed_to: Optional[str] = None
         hit = history.lookup(path)
         if hit is not None:
+            if path in not_tracked_by_design:
+                continue
             reason, final = hit
             if final and os.path.lexists(os.path.join(str(repo_root), final)):
                 renamed_to = final
+            confirmed.update((doc, at, raw) for at, raw in written[(doc, path)])
         elif (doc, path) in linked and path in link_ok:
             reason = "broken_link"
         else:
@@ -170,5 +185,9 @@ def missing_path_findings(repo_root: Path, cfg: dict) -> List[dict]:
         if renamed_to:
             finding["renamed_to"] = renamed_to
         findings.append(finding)
+    # One link, one finding: when history explains one reading of a link, the
+    # other reading is not also reported as broken.
+    findings = [f for f in findings if f["reason"] != "broken_link" or not any(
+        (f["doc"], at, raw) in confirmed for at, raw in written[(f["doc"], f["path"])])]
     findings.sort(key=lambda f: (f["doc"], f["line"], f["path"]))
     return findings

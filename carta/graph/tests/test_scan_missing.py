@@ -228,3 +228,44 @@ def test_run_scan_with_the_finding_disabled(repo):
                "---\nrelated: []\nlast_reviewed: 2026-01-01\n---\nSee `src/parser/legacy.py`.\n")
     result = _scan(repo.root, dict(SCAN_CFG, graph={"scan": {"missing_paths": False}}))
     assert result["stats"]["missing_path_mentions"] == 0
+
+
+# -- review round 2 ----------------------------------------------------------------
+
+@requires_git
+def test_once_tracked_path_that_is_now_gitignored_gives_no_finding(git_repo):
+    """A build output committed once, then untracked and ignored, is not a deleted file."""
+    git_repo.write("dist/bundle.js", "b\n")
+    git_repo.write("config/local.yaml", "k: v\n")
+    git_repo.write("site/index.html", "<p>a page long enough to be detected as renamed</p>\n")
+    git_repo.write("src/real.py", "r = 1\n")
+    git_repo.commit("first", 0)
+    git_repo.git("rm", "-q", "--cached", "dist/bundle.js", "config/local.yaml")
+    git_repo.git("mv", "site/index.html", "site/home.html")
+    git_repo.rm("dist/bundle.js")
+    git_repo.rm("config/local.yaml")
+    git_repo.rm("src/real.py")
+    git_repo.write(".gitignore", "dist/\nconfig/local.yaml\nsite/index.html\n")
+    git_repo.commit("stop tracking generated files", 1)
+    git_repo.write("README.md", "Edit `config/local.yaml`. The build writes `dist/bundle.js` and "
+                                "the site lands in `site/index.html`. Was: `src/real.py`.\n")
+    assert brief(missing_path_findings(git_repo.root, {})) == [
+        ("README.md", "src/real.py", "deleted")]
+
+
+@requires_git
+def test_root_relative_link_to_a_deleted_file_is_reported_once(repo):
+    """The link is read from the repo root too, so history can confirm the deletion."""
+    repo.write("docs/tools/gen/keep.py", "k = 1\n")       # the doc-relative parent exists
+    repo.write("docs/linkdoc.md", "Tables come from [gen](tools/gen/tables.py).\n")
+    assert brief(missing_path_findings(repo.root, {})) == [
+        ("docs/linkdoc.md", "tools/gen/tables.py", "deleted")]
+
+
+@requires_git
+def test_alternate_reading_of_a_broken_link_is_not_a_second_finding(repo):
+    repo.write("docs/img/a.png", "a\n")
+    repo.write("img/b.png", "b\n")
+    repo.write("docs/guide.md", "![shot](img/gone.png)\n")
+    assert brief(missing_path_findings(repo.root, {})) == [
+        ("docs/guide.md", "docs/img/gone.png", "broken_link")]
