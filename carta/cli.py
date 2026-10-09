@@ -1077,6 +1077,100 @@ def cmd_claude_md(args):
     sys.exit(0)
 
 
+def _graph_context():
+    """Config and repo root for the graph commands. They never contact Qdrant or Ollama."""
+    from carta.config import load_config
+    cfg_path = find_config()
+    return load_config(cfg_path), cfg_path.parent.parent
+
+
+def _fmt_counts(counts: dict) -> str:
+    return ", ".join(f"{name} {counts[name]:,}" for name in sorted(counts)) or "none"
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n:,} {noun}" + ("" if n == 1 else "s")
+
+
+def cmd_graph(args):
+    import json
+    from carta.config import ConfigError
+
+    action = getattr(args, "graph_action", None)
+    if action not in ("build", "status"):
+        print(args.graph_usage, file=sys.stderr, end="")
+        sys.exit(1)
+    cfg, repo_root = _graph_context()
+    from carta.graph.build import build_graph, graph_status
+    from carta.graph.store import StoreVersionError
+    try:
+        if action == "build":
+            report = build_graph(repo_root, cfg, force=args.force)
+        else:
+            report = graph_status(repo_root, cfg)
+    except (ConfigError, StoreVersionError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+    if not report["enabled"]:
+        print("Graph arm is disabled (graph.enabled is false in .carta/config.yaml).")
+        return
+    size = f"{_plural(report['docs'], 'doc')}, {_plural(report['edges'], 'edge')}"
+    if action == "build":
+        print(f"Graph: {size} ({report['extracted']:,} re-extracted, "
+              f"{report['unchanged']:,} unchanged)")
+        if report["removed"]:
+            print(f"  {_plural(report['removed'], 'doc')} no longer present, removed")
+        if report["skipped"]:
+            print(f"  {_plural(report['skipped'], 'doc')} could not be read, skipped")
+        return
+    if not report["exists"]:
+        print("No edge store yet. Run `carta graph build`.")
+        return
+    if report["stale_reasons"] == ["newer_schema"]:
+        print("The edge store was written by a newer Carta. Upgrade Carta, or delete "
+              ".carta/graph/edges.db to rebuild it.")
+        return
+    if report["stale"]:
+        state = f"stale ({', '.join(report['stale_reasons'])}); run `carta graph build`"
+    else:
+        state = "up to date"
+    print(f"Graph: {size}, {state}")
+    print(f"  by kind: {_fmt_counts(report['by_kind'])}")
+    print(f"  by target: {_fmt_counts(report['by_dst_type'])}")
+    print(f"  schema {report['schema_version']}, mention extractor "
+          f"{report['extractor_version']}")
+    print(f"  digest {report['digest']}")
+
+
+def cmd_impact(args):
+    import json
+    from carta.config import ConfigError
+
+    cfg, repo_root = _graph_context()
+    from carta.graph.query import ImpactError, format_impact, run_impact
+    kinds = None
+    if args.kinds:
+        kinds = [k.strip() for k in args.kinds.split(",") if k.strip()]
+    try:
+        result = run_impact(
+            repo_root, cfg, paths=args.paths, diff=args.diff, top=args.top, kinds=kinds,
+            include_docs=args.include_docs, min_score=args.min_score,
+            build=not args.no_build, cwd=Path.cwd(),
+        )
+    except (ImpactError, ConfigError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if not args.paths and args.diff is None:
+            print(args.impact_usage, file=sys.stderr, end="")
+        sys.exit(1)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(format_impact(result))
+
+
 def cmd_hook(args):
     import subprocess as _subprocess
 
@@ -1354,6 +1448,42 @@ def main():
         help="Exit 1 if any stale finding (default: warn-only, exit 0)",
     )
 
+    graph_p = sub.add_parser(
+        "graph", help="The deterministic graph arm: doc-to-source mention edges")
+    graph_sub = graph_p.add_subparsers(dest="graph_action")
+    graph_build = graph_sub.add_parser(
+        "build", help="Bring the edge store up to date (incremental by content hash)")
+    graph_build.add_argument(
+        "--force", action="store_true", help="Re-extract every doc, changed or not")
+    graph_build.add_argument("--json", action="store_true", help="Print the build report as JSON")
+    graph_status = graph_sub.add_parser(
+        "status", help="Describe the edge store and whether it is stale (never builds)")
+    graph_status.add_argument("--json", action="store_true", help="Print the status as JSON")
+    graph_p.set_defaults(graph_usage=graph_p.format_usage())
+
+    impact_p = sub.add_parser(
+        "impact", help="Which docs describe these files? (reverse lookup over mention edges)")
+    impact_p.add_argument(
+        "paths", nargs="*", metavar="PATH",
+        help="Repo paths that changed; a trailing / asks about everything under a directory")
+    impact_p.add_argument(
+        "--diff", nargs="?", const="", default=None, metavar="RANGE",
+        help="Take the paths from a git range instead "
+             "(bare --diff uses <default-branch>...HEAD)",
+    )
+    impact_p.add_argument("--top", type=int, default=None, metavar="N",
+                          help="How many docs to return (default: graph.impact.top)")
+    impact_p.add_argument("--kinds", default=None, metavar="K[,K...]",
+                          help="Edge kinds to read (default: graph.impact.kinds)")
+    impact_p.add_argument("--include-docs", action="store_true",
+                          help="With --diff: also query the docs the range changed")
+    impact_p.add_argument("--min-score", type=float, default=None, metavar="X",
+                          help="Drop docs scoring below X (default: graph.impact.min_score)")
+    impact_p.add_argument("--no-build", action="store_true",
+                          help="Query the edge store as it is, without updating it first")
+    impact_p.add_argument("--json", action="store_true", help="Print the result as JSON")
+    impact_p.set_defaults(impact_usage=impact_p.format_usage())
+
     args = parser.parse_args()
 
     dispatch = {
@@ -1374,6 +1504,8 @@ def main():
         "status": cmd_status,
         "hook": cmd_hook,
         "claude-md": cmd_claude_md,
+        "graph": cmd_graph,
+        "impact": cmd_impact,
     }
 
     if args.command not in dispatch:
