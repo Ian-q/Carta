@@ -147,3 +147,183 @@ def ignored_paths(repo: Path, paths: Sequence[str]) -> FrozenSet[str]:
     if proc.returncode != 0:          # 1: nothing ignored; 128: not a repository
         return frozenset()
     return frozenset(_names(proc.stdout))
+
+
+# -- history readers (the replay eval) --------------------------------------
+
+_GITLINK = "160000"
+_HEX = re.compile(r"^[0-9a-f]{40,64}$")
+
+
+class LogEntry:
+    """One mainline commit and what it changed against its first parent."""
+
+    __slots__ = ("sha", "parents", "changes", "blobs")
+
+    def __init__(self, sha: str, parents: Tuple[str, ...],
+                 changes: Tuple[Tuple[str, str], ...], blobs: Dict[str, str]) -> None:
+        self.sha = sha
+        self.parents = parents
+        self.changes = changes          # ((status, path), ...) sorted by path; status is A, M or D
+        self.blobs = blobs              # path -> blob id, for every added or modified path
+
+    def __repr__(self) -> str:
+        return f"LogEntry({self.sha[:12]}, {len(self.changes)} changes)"
+
+
+def toplevel(path: Path) -> Optional[Path]:
+    """The root of the work tree holding ``path``, or ``None`` outside a repository."""
+    try:
+        out = run_git(path, "rev-parse", "--show-toplevel")
+    except GitError:
+        return None
+    text = out.decode("utf-8", "surrogateescape").strip()
+    return Path(text) if text else None
+
+
+def rev_parse(repo: Path, rev: str) -> str:
+    """The full commit id ``rev`` names. Raises ``GitError`` when it names no commit."""
+    if not rev or rev.startswith("-"):
+        raise GitError(f"{rev!r} is not a revision")
+    out = run_git(repo, "rev-parse", "--verify", "--quiet", rev + "^{commit}")
+    return out.decode("ascii", "replace").strip()
+
+
+def rev_list_first_parent(repo: Path, range_spec: str) -> List[str]:
+    """Commit ids on the first-parent line of a revision or range, oldest first."""
+    if not range_spec or range_spec.startswith("-"):
+        raise GitError(f"{range_spec!r} is not a revision range")
+    out = run_git(repo, "rev-list", "--first-parent", "--reverse", range_spec, "--")
+    return out.decode("ascii", "replace").split()
+
+
+def _raw_change(meta: str, path: str) -> Optional[Tuple[str, str, str]]:
+    """One ``--raw`` record as ``(status, path, new blob)``; ``None`` for a gitlink."""
+    fields = meta.lstrip(":").split(" ")
+    if len(fields) < 5:
+        return None
+    old_mode, new_mode, _old, new, status = fields[:5]
+    status = status[:1]
+    old_link, new_link = old_mode == _GITLINK, new_mode == _GITLINK
+    if old_link and new_link:
+        return None
+    if new_link:                        # a file replaced by a submodule entry: the file is gone
+        return None if status == "A" else ("D", path, "")
+    if old_link:                        # the reverse: a file appears
+        return None if status == "D" else ("A", path, new)
+    if status == "D":
+        return ("D", path, "")
+    if status == "A":
+        return ("A", path, new)
+    return ("M", path, new)             # M and T (a mode or type change keeps the path)
+
+
+def first_parent_log(repo: Path, rev: str = "HEAD") -> List[LogEntry]:
+    """The first-parent history of ``rev``, oldest first, read in one git process.
+
+    Every commit is compared with its **first** parent, so a merge commit
+    carries the whole change it merged and a squash commit carries one pull
+    request. Renames are not detected: a move is a delete plus an add.
+    Submodule entries are left out; paths are relative to the repository root
+    whatever directory ``repo`` is.
+    """
+    if not rev or rev.startswith("-"):
+        raise GitError(f"{rev!r} is not a revision")
+    out = run_git(repo, "-c", "log.showRoot=true", "log", "--first-parent",
+                  "--diff-merges=first-parent", "--no-renames", "--raw", "--no-abbrev", "-z",
+                  "--reverse", "--format=%x01%H %P%x02", rev, "--")
+    entries: List[LogEntry] = []
+    for record in out.decode("utf-8", "surrogateescape").split("\x01")[1:]:
+        head, _, body = record.partition("\x02")
+        ids = head.split()
+        tokens = [t.lstrip("\n") for t in body.split("\0")]
+        found: Dict[str, Tuple[str, str]] = {}
+        i = 0
+        while i + 1 < len(tokens):
+            if not tokens[i].startswith(":"):
+                i += 1
+                continue
+            change = _raw_change(tokens[i], tokens[i + 1])
+            if change is not None:
+                found[change[1]] = (change[0], change[2])
+            i += 2
+        changes = tuple((found[p][0], p) for p in sorted(found))
+        blobs = {p: found[p][1] for p in found if found[p][0] != "D"}
+        entries.append(LogEntry(ids[0], tuple(ids[1:]), changes, blobs))
+    return entries
+
+
+def ls_tree(repo: Path, commit: str) -> Dict[str, str]:
+    """``path -> blob id`` for every file in a commit's tree (submodule entries skipped)."""
+    if not commit or commit.startswith("-"):
+        raise GitError(f"{commit!r} is not a revision")
+    out = run_git(repo, "ls-tree", "-r", "-z", "--full-tree", commit)
+    tree: Dict[str, str] = {}
+    for record in out.decode("utf-8", "surrogateescape").split("\0"):
+        meta, tab, path = record.partition("\t")
+        if not tab:
+            continue
+        fields = meta.split(" ")
+        if len(fields) >= 3 and fields[1] == "blob":
+            tree[path] = fields[2]
+    return tree
+
+
+class BlobReader:
+    """Reads blob contents through one long-lived ``git cat-file --batch``."""
+
+    def __init__(self, repo: Path) -> None:
+        self.reads = 0
+        try:
+            self._proc: Optional[subprocess.Popen] = subprocess.Popen(
+                ["git", "cat-file", "--batch"], cwd=str(repo), env=_env(),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except (OSError, ValueError) as exc:
+            raise GitError(f"could not run git: {exc}") from exc
+
+    def __enter__(self) -> "BlobReader":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        for stream in (proc.stdin, proc.stdout):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait()
+
+    def read(self, blob_id: str) -> bytes:
+        """The content of one object. Raises ``GitError`` for an unknown or malformed id."""
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.stdout is None:
+            raise GitError("the blob reader is closed")
+        if not _HEX.match(blob_id):
+            raise GitError(f"{blob_id!r} is not an object id")
+        try:
+            proc.stdin.write(blob_id.encode("ascii") + b"\n")
+            proc.stdin.flush()
+            header = proc.stdout.readline()
+        except OSError as exc:
+            raise GitError(f"git cat-file failed: {exc}") from exc
+        fields = header.split()
+        if len(fields) != 3:
+            if not header:
+                raise GitError("git cat-file exited (not a git repository?)")
+            raise GitError(f"object {blob_id} is not in the repository")
+        size = int(fields[2])
+        data = proc.stdout.read(size + 1)           # the content, then one newline
+        if len(data) != size + 1:
+            raise GitError(f"short read for object {blob_id}")
+        self.reads += 1
+        return data[:size]
