@@ -1,40 +1,82 @@
 """Mention edges kept up to date across a history walk.
 
 Resolving a doc's candidates depends on which paths exist, so a naive replay
-re-resolves every doc at every commit. ``MentionState`` re-resolves only the
-docs a change can affect: a doc whose text changed, a doc holding a glob, and
-a doc with a candidate that shares a path segment with an added or deleted
-path. Every lookup the resolver makes (file, directory, suffix, basename,
-top-level directory) is keyed by segments of the candidate, so a path sharing
-none of them cannot change the outcome. A test checks the result against
-extraction from scratch at every step.
+re-resolves every doc at every commit. ``MentionState`` records, for each
+doc, every question its resolution asked of the path index (does this file
+exist, does this directory, what ends with this suffix, which files have this
+basename) and re-resolves a doc only when a change to the path set could
+alter one of those answers, or when the doc's own text changed. A doc that
+holds a glob is re-resolved on any change. Nothing is inferred about the
+resolver: a lookup it makes is a dependency, and a lookup the recorder does
+not know raises. A test checks the result against extraction from scratch on
+random histories.
 """
 from __future__ import annotations
 
-import re
-from typing import Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Sequence, Set
 
-from carta.graph.mentions import normalise_candidate, resolve_candidates
+from carta.graph.mentions import resolve_candidates
 from carta.graph.model import Candidate, Edge
 from carta.graph.paths import PathIndex
 from carta.graph.settings import GraphSettings
 
-_PATH_CONTEXTS = ("link", "code", "fence", "frontmatter")
-_GLOB = re.compile(r"[*?\[]")
+
+class _TopDirs:
+    """``name in index.top_level_dirs``, recorded as a directory lookup."""
+
+    def __init__(self, recorder: "_Recorder") -> None:
+        self._recorder = recorder
+
+    def __contains__(self, name: object) -> bool:
+        return self._recorder.has_dir(str(name))
 
 
-def candidate_segments(candidates: Sequence[Candidate]) -> Tuple[frozenset, bool]:
-    """The path segments a doc's candidates depend on, and whether any is a glob."""
-    segments: Set[str] = set()
-    has_glob = False
-    for cand in candidates:
-        if cand.ctx not in _PATH_CONTEXTS:
-            continue
-        for item in normalise_candidate(cand.raw, cand.ctx) or ():
-            if _GLOB.search(item):
-                has_glob = True
-            segments.update(s for s in item.split("/") if s and s not in (".", ".."))
-    return frozenset(segments), has_glob
+class _Recorder:
+    """A ``PathIndex`` stand-in that notes every lookup made through it.
+
+    It offers exactly the lookups the resolver uses. If the resolver starts
+    using another one, that call fails loudly here rather than becoming a
+    dependency nobody tracks.
+    """
+
+    def __init__(self, index: PathIndex) -> None:
+        self._index = index
+        self.deps: Set[str] = set()
+        self.glob = False
+
+    def has_file(self, path: str) -> bool:
+        self.deps.add("f:" + path)
+        return self._index.has_file(path)
+
+    def has_dir(self, path: str) -> bool:
+        self.deps.add("d:" + path.rstrip("/"))
+        return self._index.has_dir(path)
+
+    def by_basename(self, name: str):
+        self.deps.add("b:" + name)
+        return self._index.by_basename(name)
+
+    def suffix_matches(self, candidate: str):
+        self.deps.add("s:" + candidate.rstrip("/"))
+        return self._index.suffix_matches(candidate)
+
+    def glob_matches(self, pattern: str) -> int:
+        self.glob = True
+        return self._index.glob_matches(pattern)
+
+    @property
+    def top_level_dirs(self) -> _TopDirs:
+        return _TopDirs(self)
+
+
+def _ancestors(path: str) -> List[str]:
+    parts = path.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+def _suffixes(path: str) -> List[str]:
+    parts = path.split("/")
+    return ["/".join(parts[i:]) for i in range(1, len(parts))]
 
 
 class MentionState:
@@ -44,9 +86,10 @@ class MentionState:
         self.settings = settings
         self.incremental = incremental
         self._cands: Dict[str, Sequence[Candidate]] = {}
-        self._segs: Dict[str, frozenset] = {}
-        self._by_seg: Dict[str, Set[str]] = {}
+        self._deps: Dict[str, frozenset] = {}
+        self._watch: Dict[str, Set[str]] = {}                     # lookup key -> docs
         self._glob_docs: Set[str] = set()
+        self._dir_count: Dict[str, int] = {}                      # directory -> files beneath
         self._edges: Dict[str, List[Edge]] = {}
         self._targets: Dict[str, Dict[str, List[Edge]]] = {}     # mention dst -> doc -> edges
         self._glob_targets: Dict[str, int] = {}                   # glob dst -> docs holding it
@@ -54,58 +97,89 @@ class MentionState:
 
     # -- changes ----------------------------------------------------------
 
+    def seed_paths(self, paths: Iterable[str]) -> None:
+        """Tell the state which paths exist before the first change is reported."""
+        counts = self._dir_count
+        counts.clear()
+        for path in paths:
+            for directory in _ancestors(path):
+                counts[directory] = counts.get(directory, 0) + 1
+
     def set_doc(self, doc: str, candidates: Sequence[Candidate]) -> None:
         """Add a doc, or replace its candidates. Resolved at the next ``refresh``."""
-        self._forget_segments(doc)
-        segments, has_glob = candidate_segments(candidates)
         self._cands[doc] = candidates
-        self._segs[doc] = segments
-        for seg in segments:
-            self._by_seg.setdefault(seg, set()).add(doc)
-        if has_glob:
-            self._glob_docs.add(doc)
         self._dirty.add(doc)
 
     def remove_doc(self, doc: str) -> None:
         if doc not in self._cands:
             return
-        self._forget_segments(doc)
         del self._cands[doc]
         self._dirty.discard(doc)
+        self._forget_deps(doc)
         self._replace_edges(doc, None)
 
-    def paths_changed(self, paths: Iterable[str]) -> None:
-        """Tell the state which paths were added to or deleted from the path set."""
-        paths = [p for p in paths if p]
-        if not paths:
+    def paths_changed(self, added: Iterable[str] = (), deleted: Iterable[str] = ()) -> None:
+        """Report files added to and deleted from the path set (each exactly once)."""
+        added = [p for p in added if p]
+        deleted = [p for p in deleted if p]
+        if not added and not deleted:
             return
+        counts = self._dir_count
+        keys: Set[str] = set()
+        for path in deleted:
+            for directory in _ancestors(path):
+                left = counts.get(directory, 0) - 1
+                if left > 0:
+                    counts[directory] = left
+                else:
+                    counts.pop(directory, None)
+                    keys.add("d:" + directory)
+                    keys.update("s:" + s for s in _suffixes(directory))
+        for path in added:
+            for directory in _ancestors(path):
+                have = counts.get(directory, 0)
+                if not have:
+                    keys.add("d:" + directory)
+                    keys.update("s:" + s for s in _suffixes(directory))
+                counts[directory] = have + 1
         if not self.incremental:
             self._dirty.update(self._cands)
             return
+        for path in (*added, *deleted):
+            keys.add("f:" + path)
+            keys.add("b:" + path.rsplit("/", 1)[-1])
+            keys.update("s:" + s for s in _suffixes(path))
         self._dirty.update(self._glob_docs)
-        by_seg = self._by_seg
-        for path in paths:
-            for seg in path.split("/"):
-                hit = by_seg.get(seg)
-                if hit:
-                    self._dirty.update(hit)
+        watch = self._watch
+        for key in keys:
+            hit = watch.get(key)
+            if hit:
+                self._dirty.update(hit)
 
     def refresh(self, index: PathIndex) -> int:
         """Re-resolve the docs that may have changed; returns how many were resolved."""
         dirty = sorted(self._dirty)
         self._dirty.clear()
         for doc in dirty:
-            self._replace_edges(
-                doc, resolve_candidates(doc, self._cands[doc], index, self.settings))
+            recorder = _Recorder(index)
+            edges = resolve_candidates(doc, self._cands[doc], recorder, self.settings)
+            self._forget_deps(doc)
+            deps = frozenset(recorder.deps)
+            self._deps[doc] = deps
+            for key in deps:
+                self._watch.setdefault(key, set()).add(doc)
+            if recorder.glob:
+                self._glob_docs.add(doc)
+            self._replace_edges(doc, edges)
         return len(dirty)
 
-    def _forget_segments(self, doc: str) -> None:
-        for seg in self._segs.pop(doc, ()):
-            bucket = self._by_seg.get(seg)
+    def _forget_deps(self, doc: str) -> None:
+        for key in self._deps.pop(doc, ()):
+            bucket = self._watch.get(key)
             if bucket is not None:
                 bucket.discard(doc)
                 if not bucket:
-                    del self._by_seg[seg]
+                    del self._watch[key]
         self._glob_docs.discard(doc)
 
     def _replace_edges(self, doc: str, edges) -> None:
@@ -163,8 +237,9 @@ class MentionState:
             for i in range(1, len(parts)):
                 wanted.add("/".join(parts[:i]) + "/")
         out: List[Edge] = []
-        for target in wanted:
-            for edges in self._targets.get(target, {}).values():
-                out.extend(edges)
-        out.sort()
+        for target in sorted(wanted):               # a fixed order, without comparing edges
+            bucket = self._targets.get(target)
+            if bucket:
+                for doc in sorted(bucket):
+                    out.extend(bucket[doc])
         return out

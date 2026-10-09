@@ -45,20 +45,21 @@ def test_incremental_state_equals_from_scratch_on_random_histories():
         for doc in ("README.md", "docs/a.md", "docs/design/b.md", "lib/c.md", "tools/gen/d.md"):
             docs[doc] = scan_text(_doc_text(rng))
             state.set_doc(doc, docs[doc])
+        state.seed_paths(paths)
         state.refresh(index)
-        total = 0
+        total = possible = 0
         for _step in range(60):
-            changed = []
-            for _ in range(rng.randint(0, 3)):
-                path = rng.choice(all_paths)
+            added, deleted = [], []
+            for path in rng.sample(all_paths, rng.randint(0, 3)):
                 if path in paths:
                     paths.discard(path)
                     index.remove(path)
+                    deleted.append(path)
                 else:
                     paths.add(path)
                     index.add(path)
-                changed.append(path)
-            state.paths_changed(changed)
+                    added.append(path)
+            state.paths_changed(added, deleted)
             roll = rng.random()
             if roll < 0.25:
                 doc = rng.choice(sorted(docs))
@@ -70,32 +71,58 @@ def test_incremental_state_equals_from_scratch_on_random_histories():
                 state.remove_doc(doc)
             if rng.random() < 0.7:              # sometimes several commits pass unrefreshed
                 total += state.refresh(index)
+                possible += len(docs)
                 for doc, cands in docs.items():
                     assert state.doc_edges(doc) == _scratch(doc, cands, paths), (seed, doc)
                 expected = sorted(e for d, c in docs.items() for e in _scratch(d, c, paths))
                 assert state.edges() == expected
-        # the point of the exercise: far fewer resolutions than docs x steps
-        assert total < 60 * len(docs)
+        assert 0 < total < possible     # selectivity itself is pinned by the next test
 
 
 def test_non_incremental_state_resolves_every_doc_every_time():
     state = MentionState(DEFAULT_SETTINGS, incremental=False)
-    index = PathIndex(["src/a.py"])
+    index = PathIndex(["src/a.py", "src/b.py"])
+    text = "`src/a.py` and `b.py` and `src/gone.py`\n"
     for doc in ("a.md", "b.md", "c.md"):
-        state.set_doc(doc, scan_text("`src/a.py`\n"))
+        state.set_doc(doc, scan_text(text))
+    state.seed_paths(index.paths())
     assert state.refresh(index) == 3
     assert state.refresh(index) == 0            # nothing changed at all
     index.add("zzz/unrelated.txt")
-    state.paths_changed(["zzz/unrelated.txt"])
+    state.paths_changed(added=["zzz/unrelated.txt"])
     assert state.refresh(index) == 3
+
     lean = MentionState(DEFAULT_SETTINGS)
     for doc in ("a.md", "b.md", "c.md"):
-        lean.set_doc(doc, scan_text("`src/a.py`\n"))
+        lean.set_doc(doc, scan_text(text))
+    lean.seed_paths(index.paths())
     lean.refresh(index)
-    lean.paths_changed(["zzz/other.txt"])
+    index.add("src/other.txt")                  # same directory, but nothing asked about it
+    lean.paths_changed(added=["src/other.txt"])
     assert lean.refresh(index) == 0
-    lean.paths_changed(["lib/a.py"])            # shares the basename: must be re-resolved
+    index.add("lib/b.py")                       # a second b.py: the bare name is now ambiguous
+    lean.paths_changed(added=["lib/b.py"])
     assert lean.refresh(index) == 3
+    assert [e.dst for e in lean.doc_edges("a.md")] == ["src/a.py", "src/gone.py"]
+    index.add("src/gone.py")                    # the missing path appears
+    lean.paths_changed(added=["src/gone.py"])
+    assert lean.refresh(index) == 3
+    assert {e.dst_type for e in lean.doc_edges("a.md")} == {"file"}
+    lean.set_doc("glob.md", scan_text("`src/*.py`\n"))
+    lean.refresh(index)
+    index.remove("zzz/unrelated.txt")           # any change re-resolves a doc holding a glob
+    lean.paths_changed(deleted=["zzz/unrelated.txt"])
+    assert lean.refresh(index) == 1
+
+
+def test_recorder_refuses_lookups_it_does_not_track():
+    import pytest
+    from carta.graph.eval.incremental import _Recorder
+    recorder = _Recorder(PathIndex(["src/a.py"]))
+    assert recorder.has_file("src/a.py") and "src" in recorder.top_level_dirs
+    assert recorder.deps == {"f:src/a.py", "d:src"}
+    with pytest.raises(AttributeError):
+        recorder.paths()
 
 
 def test_edges_for_ranks_exactly_like_the_full_edge_set():
