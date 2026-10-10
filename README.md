@@ -487,6 +487,12 @@ carta graph replay --repo ../other-repo --exclude docs/archive/    # needs no Ca
 carta graph replay --no-config              # ignore .carta/config.yaml, use the built-in defaults
 ```
 
+The repository being replayed is treated as untrusted: its config is never read through a
+symbolic link, and its `graph.patterns` (regular expressions) are ignored unless you pass
+`--trust-config`. The same holds for the graph arm as a whole: a doc that is a symbolic link, is
+not a regular file or is larger than 2 MiB is never read, the edge store refuses to open through
+a link, and file names are taken from git byte for byte.
+
 Trees and file contents come from git objects only (never the working tree or the edge store),
 so it can be pointed at any repository, and a doc is judged on what it said at the commit's
 *parent*, not on what the commit itself added. The one thing it takes from the working tree is

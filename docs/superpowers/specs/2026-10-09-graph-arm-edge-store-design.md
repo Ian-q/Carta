@@ -1292,3 +1292,54 @@ keyed by the old fingerprint are not read.
   updated).
 - *A queried path that never existed* triggers the same in-memory pass as a deleted one. It costs
   one extraction over the docs and cannot produce a wrong match, only an unneeded pass.
+
+## Security hardening
+
+A commit-time security review and a follow-up audit ran the implementation against hostile
+repositories. Everything a repository supplies is untrusted input: doc text, file names (any byte
+but NUL and `/`), the files and links under `.carta/`, and config values. The fixes are
+structural, one mechanism per class, and every one has a regression test that fails on the code
+before it (`test_hardening_extract.py`, `test_hardening_fs.py`, `test_hardening_git.py`).
+
+| # | Finding | Change |
+|---|---|---|
+| S1 | A glob compiled to a backtracking regex (`**/` to `(?:.*/)?`, `*` to `[^/]*`), so match time was polynomial in path length with the wildcard count as the degree: nine `**/` against one 81-character path ran for more than 40 s. Reachable from any doc, from stored glob edges at query time, from the replay and from config. | `paths.GlobMatcher`: the glob is run as a state machine, all states advanced one character at a time. A match costs at most `len(glob) * len(path)` steps; nothing backtracks. `glob_to_regex` is kept as an alias (callers only used `.match`). A fuzz test holds the matcher to the old translation on every input the old one accepted. |
+| S2 | A reversed class range (`[z-a]`) raised `re.error` out of the build, the impact query and the MCP tool, and silently switched the scan finding off. | No regex is built, so nothing can raise. A glob with a reversed range, or longer than `MAX_GLOB_LENGTH`, matches nothing; in config it is a `GraphConfigError`. `carta scan` records `stats.missing_path_check: "failed"` when the graph check raises, so a check that did not run no longer reads as a clean repository. |
+| S3 | Stage 1 was quadratic in line length (the link pattern re-scanned the rest of the line from every `](`; code-span membership was a linear scan per match). | The link target and title are length-bounded and the target is atomic (lookahead plus backreference, which also works on Python 3.10); membership is a bisect. |
+| S4 | Bounds were checked after the work: the candidate length after wrapper stripping (quadratic on `((((...))))`, and the strip then let a 400 KB candidate through as a valid edge), and there was no bound on doc size, line length, candidates, distinct globs per doc, or path depth in the suffix index (cubic). | `carta/graph/limits.py`, checked at entry: `MAX_DOC_BYTES` 2 MiB (stat before read; blob size from the `cat-file` header), `MAX_LINE_LENGTH` 8192, `MAX_CANDIDATES_PER_DOC` 50,000, `MAX_RAW_CANDIDATE_LENGTH` 1024 (first statement of `_normalise`), `MAX_WRAPPER_LAYERS` 8, `MAX_GLOBS_PER_DOC` 256, `MAX_SUFFIX_DEPTH` 32. Not configurable: a limit the repository can raise is not a limit. |
+| S5 | A doc that is a symbolic link was read through it: a link to a file outside the repository put that file's lines into `edges.evidence` and into `carta impact` output. A FIFO named like a doc blocked the build forever. | `safeio.read_regular_file`, the one way doc content (and the replay's config) is read: no symbolic link in any component below the root, regular files only, opened non-blocking, size checked before reading. A symlinked doc stays in the path set as a name and is never a source; it is counted in `skipped`. |
+| S6 | `EdgeStore` created directories, wrote `.gitignore` and opened SQLite through symbolic links a repository can ship: any of `.carta`, `.carta/graph`, `edges.db` or its journal files could redirect a write. | The store refuses to open (`StoreUnsafeError`) when the database, a file SQLite keeps beside it, or either of its own two directories is a link; `.gitignore` is created with `O_EXCL | O_NOFOLLOW`. `graph status` reports `unsafe_store`. |
+| S7 | `carta graph replay --json PATH` wrote through an existing link; `--cache-dir` opened SQLite through one; the repository's `config.yaml` was read through one and a YAML error echoed the offending line. | The report is written to a new file and renamed into place (a link is replaced, its target untouched). A linked cache file means no disk cache. The config is read with `read_regular_file`; errors name the file and the line number, never its content. Cache entries are inflated with a size cap and validated field by field; a bad one is a miss. |
+| S8 | `git log` output was framed with `\x01`/`\x02`, which a file name may contain: one name forged a whole commit record and hid the next real change. Tokens were stripped and filtered after the NUL split, and readers skipped what they could not parse, so a file named `\n` shifted every later record. The object-name check used `match` with `$` (a trailing newline passed, putting `cat-file --batch` one reply out of step) and never checked the object type. `check-ignore` returned "nothing ignored" when one path made git exit 128. | `gitio.py` rewritten around four rules: output is split on NUL and never post-processed; each stream is a fixed grammar (arity by status, object names by full match, commits in the order asked) and anything else raises `GitError`; commit boundaries come from `rev-list`, separately from paths (`diff-tree --stdin` with each commit's first parent, so the change stream holds no free text); revisions are refused when empty, starting with `-` or holding a control character, and passed after `--end-of-options`. `BlobReader` checks the reply header in full and closes itself on any reply it did not expect. `ignored_paths` asks with `-v -n` so every path is accounted for, sets aside paths behind a link, and isolates a path git refuses instead of dropping the batch. More redirecting `GIT_*` variables are scrubbed. `diff_name_status` requires a range. |
+| S9 | A doc that failed to read (a permission or I/O error) was treated as gone: its edges were deleted and the store reported fresh. | Its rows are kept, the build reports it under `unreadable`, and `graph status` reports `docs_unreadable` until a build reads every doc. |
+| S10 | Config numbers `inf`/`nan` raised a bare `OverflowError`; `hub_share: .nan` was accepted; list sizes and pattern lengths were unbounded; evidence was printed with terminal escape sequences intact; a `--diff` error told the caller whether an arbitrary path exists. | Finite numbers only; `MAX_CONFIG_GLOBS`, `MAX_PATTERNS`, `MAX_PATTERN_REGEX_LENGTH`; control and bidirectional-override characters are stripped from evidence; the "is a path, not a range" hint is given for names inside the repository only. |
+
+**Extractor version 3.** The bounds and the stripped control characters change what the extractor
+emits for pathological input, so stores re-extract on the next build and old replay caches are
+not read. The replay on this repository's history was re-run before and after
+(`--no-cache`, with and without `--no-config`): every number in the report is identical; only
+`settings.fingerprint` differs, as it must.
+
+**Behaviour that changed on purpose.**
+
+- A symlinked doc is no longer an edge source, even when its target is inside the repository
+  (the target file itself still is). The replay reads git objects, where a link is a small blob
+  holding its target path; it is unchanged.
+- `[!-x]` is now "not `-`, not `x`". The old translation read it as the range `/` to `x`.
+- `diff_name_status("HEAD")` raises. It used to compare with the working tree, against its own
+  docstring.
+- `graph.patterns` from a replayed repository's config are ignored unless `--trust-config`;
+  `settings.config` in the report says so. A regular expression can be written to take
+  exponential time and the stdlib cannot bound one, so patterns are for trusted config only:
+  `carta scan`, `carta graph build` and the MCP tool read the project's own config, as every
+  other Carta command does.
+- git 2.30 or newer is needed (`rev-parse --end-of-options`).
+
+**Left open.**
+
+- An adversarial 2 MiB doc built from `](<` costs seconds, not minutes: stage 1 is linear with a
+  constant of `MAX_LINK_TARGET_LENGTH` per `](`.
+- The checks are `lstat` then open. A process that swaps a file for a link between the two is
+  outside the model (the adversary is repository content, not a concurrent local user); reads
+  additionally open with `O_NOFOLLOW` component by component where the platform allows.
+- fnmatch (`excluded_paths`) is linear on the supported Pythons and was not replaced.
