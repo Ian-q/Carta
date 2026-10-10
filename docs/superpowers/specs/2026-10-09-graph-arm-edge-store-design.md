@@ -2044,6 +2044,27 @@ The symbol arm is written to the standard of the hardening section, and adds the
 | Git lookups | `commits_changing_text` passes the identifier as one `-S` argument and the doc as a literal pathspec; `files_with_word` takes only a full object name and an identifier, reads names with `-z`, and raises when a name is not under the tree it asked about. |
 | Failure | A failed load keeps the edges and is reported stale, by `graph status` and by `carta impact`; a file with lines and no row is a failed load, not an empty index; an incomplete or failed scan check is recorded as such. |
 
+**Final sweep.** Found after the section above was written; each has a test in
+`test_hardening_symbols.py`.
+
+| # | Finding | Change |
+|---|---|---|
+| Y1 | Stored symbol state was read with `int()` and `.get()` on whatever the store held: a doc state that is a list, a count that is text, an `ambiguous` entry that is not a pair, a row count `int()` refuses, or state nested past the parser raised out of `carta graph build`, `graph status`, `carta impact` and `carta scan`. | `symbols.doc_state` parses a doc's state by shape and `_state_intact` decides whether the arm's stored values are this code's. If not, status reports `symbols_changed`, the unchanged shortcut is not taken and the pass writes every doc again; totals leave the bad value out and nothing raises. A stored state name outside `ok | off | unavailable | failed` is never passed on. |
+| Y2 | A load that failed was tried again on every build, and every `carta impact` (and every MCP `carta_impact`) builds first: a repository on which ctags runs into its 600 s limit cost that on each call. | The failure is remembered by what the load read (`symbol.failed_input`: input, settings, extractor version). The same input is not loaded again; the report says so and names `carta graph build --force`, which retries, as does any change to the input. Status still reports `symbols_failed`. |
+| Y3 | `run_ctags` cancelled its timer when ctags' output ended and then waited for the process with no limit: a process that closes its output and lingers was waited on for ever. | The timer stays armed until the process has exited. The capability probe runs in its own process group as well, is killed as a group, and the wait after the kill is bounded. |
+| Y4 | `symbol.detail` (stored, and able to quote `graph.symbols.file` or a file name) and the replay's symbol source label were printed as found. | Every detail is passed through `model.printable` and cut to 400 characters where it is made, where it is stored and where the CLI and `format_impact` print it. |
+| Y5 | Work before the bound: `graph.symbols.file` had its leading `./` stripped by re-slicing before its length was looked at (the replay reads this from the replayed repository's config, up to 1 MiB: hours); a row's path was stripped the same way per line; the dangling-symbol word scan built a list of every word of each code file (up to 32 MiB each). | The config value is refused over 4,096 characters before anything else; the row path is stripped by position; the scan walks the words and keeps only the ones it was asked about. |
+
+Checked and found sound: `MAX_SYMBOL_ROWS` is tested in `_RowReader.feed` before a row is
+appended, for a file and for ctags output alike; ctags output is counted against
+`MAX_CTAGS_OUTPUT_BYTES` as it is read and the process group is killed when either limit is
+passed; ctags is given its files through a list file, each as `./path`, with `--options=NONE`
+and `--links=no`, so no file name is an option and no option file of the repository is read; a
+binary inside the repository is never run.
+
+Not bounded: the replay's ctags source keeps the rows of every `(blob, basename)` it has indexed
+for the length of the run.
+
 ### With co-change edges (#130): three kinds in one store
 
 #130 and #131 were written side by side from the same commit. Stacked, they meet in four
