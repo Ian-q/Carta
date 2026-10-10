@@ -36,20 +36,38 @@ from carta.graph.safeio import SkippedFile, read_regular_file
 from carta.graph.settings import GraphSettings
 from carta.graph.symbols import (
     Ctags, SymbolRow, SymbolsFailed, SymbolTable, find_universal_ctags, parse_symbols,
-    resolve_doc, run_ctags,
+    require_rows, resolve_doc, run_ctags,
 )
 
 LEAK_NOTE = ("the symbol index is today's, used for every commit: a symbol that has moved or "
              "been added since a commit's parent is seen early. Definitions in files the "
              "parent did not have are left out. This is not a clean measurement.")
 
-_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
+_SAFE_NAME = re.compile(r"\.?[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
+_SAFE_SUFFIX = re.compile(r"(?:\.[A-Za-z0-9_+-]{1,16}){1,2}")
 _TRACKED_PATH = re.compile(r"[^\x00-\x1f\x7f]{1,1024}")
 _BATCH = 2000                               # files handed to one scratch ctags run
 
 
 class SymbolSourceError(ValueError):
     """The symbol source asked for cannot be used; the message says what to pass instead."""
+
+
+def scratch_name(basename: str) -> str:
+    """The name a blob is written under for ctags, which tells a language by it.
+
+    The basename itself when it is made of plain characters (a leading dot is
+    one: ``.eslintrc.js`` is a JavaScript file). Otherwise ``file`` plus the
+    extension, so that an oddly named file is still read as its language.
+    """
+    if _SAFE_NAME.fullmatch(basename):
+        return basename
+    if len(basename) <= 1024:
+        dot = basename.rfind(".", max(0, len(basename) - 34))
+        suffix = basename[dot:] if dot > 0 else ""
+        if _SAFE_SUFFIX.fullmatch(suffix):
+            return "file" + suffix
+    return "file"
 
 
 class SymbolSource:
@@ -66,6 +84,8 @@ class SymbolSource:
         self._by_blob: Dict[Tuple[str, str], Tuple[tuple, ...]] = {}
         self._tables: Dict[str, SymbolTable] = {}
         self.indexed_blobs = 0
+        self.parents = 0                    # commit parents an index was asked for
+        self.parents_with_index = 0         # ...of which the tracked file gave at least one row
 
     def describe(self, max_definitions: int) -> dict:
         out = {"source": self.label, "leak": self.leak, "max_definitions": max_definitions,
@@ -73,7 +93,23 @@ class SymbolSource:
                "the symbol index is rebuilt for each commit's parent; nothing later is seen"}
         if self._today is not None:
             out["definitions"] = len(self._today)
+        if self.mode == "tracked":
+            out["parents"] = self.parents
+            out["parents_with_index"] = self.parents_with_index
         return out
+
+    def check(self) -> None:
+        """Raise ``SymbolSourceError`` when the run measured nothing.
+
+        A tracked path that no parent had (a typo, a directory, a file that
+        is not an index) would otherwise score the symbol arm as all zeros
+        and report it as a clean measurement.
+        """
+        if self.mode == "tracked" and self.parents and not self.parents_with_index:
+            raise SymbolSourceError(
+                f"--symbols tracked:{self._tracked} gave no symbol rows at any of the "
+                f"{self.parents:,} commit parents read: the repository did not track a "
+                f"symbols file at that path. Check the path, or use --symbols ctags")
 
     # -- per commit ---------------------------------------------------------
 
@@ -86,6 +122,7 @@ class SymbolSource:
         if self._today is not None:
             return self._today, alive
         if self.mode == "tracked":
+            self.parents += 1
             blob = snapshot.blobs.get(self._tracked)
             if blob is None:
                 return SymbolTable(), None
@@ -99,6 +136,7 @@ class SymbolSource:
                 except SymbolsFailed:
                     rows = []
                 table = self._tables[blob] = SymbolTable(rows)
+            self.parents_with_index += 1 if len(table) else 0
             return table, alive
         return self._ctags_table(snapshot, is_code), None
 
@@ -125,7 +163,8 @@ class SymbolSource:
 
         The content is written under generated names in a new directory
         outside the repository, so no name from the repository reaches the
-        filesystem except a basename made only of plain characters.
+        filesystem except a basename, or an extension, made only of plain
+        characters (``scratch_name``).
         """
         with tempfile.TemporaryDirectory(prefix="carta-replay-ctags-") as scratch:
             placed: Dict[str, Tuple[str, str]] = {}
@@ -134,7 +173,7 @@ class SymbolSource:
                 self._by_blob[key] = ()
                 if not text or "\0" in text:
                     continue
-                name = key[1] if _SAFE_NAME.fullmatch(key[1]) else "file"
+                name = scratch_name(key[1])
                 os.mkdir(os.path.join(scratch, str(i)))
                 rel = f"{i}/{name}"
                 with open(os.path.join(scratch, str(i), name), "w", encoding="utf-8",
@@ -198,6 +237,7 @@ def make_source(root: Path, spec: str, *, accept_leak: bool,
                                     f"{exc.strerror or 'I/O error'}") from None
         try:
             parsed = parse_symbols(data)
+            require_rows(parsed, path.name)
         except SymbolsFailed as exc:
             raise SymbolSourceError(f"--symbols file: {exc}") from None
         return SymbolSource("file", label=f"file:{path.name}", rows=parsed.rows)

@@ -707,6 +707,10 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
         },
     }
     if "symbol" in providers and symbols is not None:
+        try:
+            symbols.check()
+        except SymbolSourceError as exc:
+            raise ReplayError(str(exc)) from None
         report["symbols"] = symbols.describe(settings.symbols_max_definitions)
     if per_commit:
         report["per_commit"] = [
@@ -831,6 +835,9 @@ def format_replay(report: dict) -> str:
         lines.append(f"Symbols: {sym['source']}; a name defined in more than "
                      f"{_plural(sym['max_definitions'], 'file')} is not resolved")
         lines.append(f"  {'WARNING, leaks: ' if sym['leak'] else ''}{sym['note']}")
+        if "parents_with_index" in sym:
+            lines.append(f"  the tracked file gave symbol rows at {sym['parents_with_index']:,} "
+                         f"of {sym['parents']:,} commit parents read")
     lines.append("")
     no_hub = report["no_hub"]
     hubs = bool(no_hub["hub_docs"])

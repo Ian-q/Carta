@@ -77,7 +77,8 @@ def test_a_tracked_index_is_read_as_of_each_parent(history):
     assert got[c["table"]] == 1 and got[c["grid"]] == 1
     assert report["symbols"] == {
         "source": "tracked:index/symbols.jsonl", "leak": False, "max_definitions": 1,
-        "note": "the symbol index is rebuilt for each commit's parent; nothing later is seen"}
+        "note": "the symbol index is rebuilt for each commit's parent; nothing later is seen",
+        "parents": 3, "parents_with_index": 3}      # two scored, one more with no gold doc
     text = format_replay(report)
     assert "Symbols: tracked:index/symbols.jsonl" in text and "WARNING" not in text
 
@@ -197,3 +198,82 @@ def test_ctags_source_without_a_binary_says_what_else_to_pass(history, tmp_path,
     with pytest.raises(SymbolSourceError) as err:
         make_source(history.root, "ctags", accept_leak=False, settings=DEFAULT_SETTINGS)
     assert "universal-ctags" in str(err.value) and "tracked:PATH" in str(err.value)
+
+
+# -- review of #131 ------------------------------------------------------------------
+
+@pytest.mark.parametrize("spec", ["tracked:nope.tsv", "tracked:src", "tracked:docs/other.md"])
+def test_a_tracked_file_no_parent_had_is_an_error_not_a_row_of_zeros(history, spec):
+    source = make_source(history.root, spec, accept_leak=False, settings=DEFAULT_SETTINGS)
+    with pytest.raises(ReplayError) as err:
+        run_replay(history.root, symbols=source, **OPTS)
+    assert "no symbol rows" in str(err.value) and spec.split(":", 1)[1] in str(err.value)
+
+
+def test_a_tracked_index_reports_how_many_parents_had_it(git_repo):
+    repo = git_repo
+    repo.write("src/table.py", "def render_table(rows):\n    return rows\n")
+    repo.write("docs/tables.md", "# Tables\n\nCall `render_table()` to print one.\n")
+    repo.write("docs/other.md", "# Other\n\nNothing named.\n")
+    repo.commit("root", 0)
+    for n in (1, 2, 3):
+        if n == 2:      # the index is only tracked from here on
+            repo.write("index/symbols.jsonl", index_line("render_table", "src/table.py"))
+        repo.write("src/table.py", f"def render_table(rows):\n    return rows  # {n}\n")
+        repo.write("docs/tables.md", f"# Tables\n\nCall `render_table()` to print one. {n}\n")
+        repo.commit(f"change {n}", n)
+    source = make_source(repo.root, "tracked:index/symbols.jsonl", accept_leak=False,
+                         settings=DEFAULT_SETTINGS)
+    report = run_replay(repo.root, symbols=source, **OPTS)
+    assert report["population"]["eligible"] == 3
+    assert (report["symbols"]["parents"], report["symbols"]["parents_with_index"]) == (3, 1)
+    assert "1 of 3" in format_replay(report)
+
+
+# Like _FAKE, but it tells a language by the file name, as ctags does: only a
+# name ending in .py is read.
+_FAKE_BY_NAME = _FAKE.replace("    if not name:\n", "    if not name.endswith('.py'):\n")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs an executable script")
+def test_the_replay_sees_the_definitions_a_live_build_sees(git_repo, tmp_path, monkeypatch):
+    from carta.graph.build import build_graph
+    from carta.graph.store import EdgeStore, store_path
+    assert "endswith" in _FAKE_BY_NAME
+    tool = tmp_path / "bin" / "fake-ctags"
+    tool.parent.mkdir()
+    tool.write_text(_FAKE_BY_NAME.format(python=sys.executable, log=str(tmp_path / "runs.log")))
+    tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("CARTA_CTAGS", str(tool))
+    repo = git_repo
+    code = {".hidden.py": "hidden_fn", "src/we ird.py": "weird_fn", "src/plain.py": "plain_fn",
+            "src/-dash.py": "dash_fn"}
+    for path, name in code.items():
+        repo.write(path, f"def {name}():\n    return 0\n")
+    docs = {name: f"docs/{name}.md" for name in code.values()}
+    for name, doc in docs.items():
+        repo.write(doc, f"# {name}\n\nCall `{name}()`.\n")
+    repo.write("docs/other.md", "# Other\n\nNothing named.\n")
+    repo.commit("root", 0)
+    commits = {}
+    for n, (path, name) in enumerate(sorted(code.items()), 1):
+        repo.write(path, f"def {name}():\n    return {n}\n")
+        repo.write(docs[name], f"# {name}\n\nCall `{name}()`. v{n}\n")
+        commits[name] = repo.commit(f"change {n}", n)
+
+    build_graph(repo.root, {"graph": {"symbols": {"provider": "ctags"}}})
+    with EdgeStore(store_path(repo.root)) as store:
+        live = {(e.src, e.key, e.dst) for e in store.iter_edges(kinds=("symbol",))}
+    assert live == {(docs[name], name, path) for path, name in code.items()}
+
+    source = make_source(repo.root, "ctags", accept_leak=False, settings=DEFAULT_SETTINGS)
+    got = ranks(run_replay(repo.root, symbols=source, **OPTS))
+    assert {name: got[sha] for name, sha in commits.items()} == {name: 1 for name in commits}
+
+
+def test_a_file_source_that_is_not_an_index_is_refused(history, tmp_path):
+    today = tmp_path / "today.jsonl"
+    today.write_bytes(index_line("render_table", "src/grid.py").encode("utf-16"))
+    with pytest.raises(SymbolSourceError) as err:
+        make_source(history.root, f"file:{today}", accept_leak=True, settings=DEFAULT_SETTINGS)
+    assert "no row" in str(err.value)
