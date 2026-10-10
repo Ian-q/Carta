@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import re
 from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+from carta.graph.limits import MAX_GLOB_LENGTH, MAX_SUFFIX_DEPTH
 
 # The same list as carta.scanner.scanner._ALWAYS_EXCLUDED_DIRS. It is repeated
 # here because importing the scanner loads the whole vector stack, which this
@@ -25,48 +26,212 @@ ALWAYS_EXCLUDED_DIRS = (
 PATHSET_EXCLUDED_ROOTS = (".git", ".carta")
 
 
-@lru_cache(maxsize=4096)
-def glob_to_regex(glob: str) -> "re.Pattern[str]":
-    """Translate a path glob into a compiled regex that must match a whole path.
+_LITERAL, _ANY_ONE, _CLASS, _STAR, _DEEP, _DEEP_DIR = range(6)
 
-    ``**/`` is any number of directories (including none), ``**`` is anything,
-    ``*`` and ``?`` stay within one segment, ``[...]`` is a character class.
-    Every other character is literal.
-    """
-    out: List[str] = []
+
+def _class_ranges(body: str) -> Optional[List[Tuple[str, str]]]:
+    """``a-z`` ranges and single characters of a class body; ``None`` for a reversed range."""
+    ranges: List[Tuple[str, str]] = []
+    k, n = 0, len(body)
+    while k < n:
+        low = body[k]
+        if k + 2 < n and body[k + 1] == "-":
+            high = body[k + 2]
+            if high < low:
+                return None
+            ranges.append((low, high))
+            k += 3
+        else:
+            ranges.append((low, low))
+            k += 1
+    return ranges
+
+
+def _glob_tokens(glob: str) -> Optional[list]:
+    """The glob as tokens, or ``None`` when it holds a class that can match nothing."""
+    out: list = []
     i, n = 0, len(glob)
     while i < n:
         c = glob[i]
         if c == "*":
             if glob.startswith("**/", i):
-                out.append("(?:.*/)?")
+                out.append((_DEEP_DIR, None))
                 i += 3
             elif glob.startswith("**", i):
-                out.append(".*")
+                out.append((_DEEP, None))
                 i += 2
             else:
-                out.append("[^/]*")
+                out.append((_STAR, None))
                 i += 1
         elif c == "?":
-            out.append("[^/]")
+            out.append((_ANY_ONE, None))
             i += 1
         elif c == "[":
             j = glob.find("]", i + 2)
             if j == -1:
-                out.append(re.escape(c))
+                out.append((_LITERAL, c))
                 i += 1
             else:
                 body = glob[i + 1:j]
                 negate = body[:1] in ("!", "^")
-                if negate:
-                    body = body[1:]
-                body = body.replace("\\", "\\\\").replace("[", "\\[").replace("^", "\\^")
-                out.append("[" + ("^/" if negate else "") + body + "]")
+                ranges = _class_ranges(body[1:] if negate else body)
+                if ranges is None:
+                    return None
+                out.append((_CLASS, (tuple(ranges), negate)))
                 i = j + 1
         else:
-            out.append(re.escape(c))
+            out.append((_LITERAL, c))
             i += 1
-    return re.compile("".join(out) + r"\Z")
+    return out
+
+
+def glob_problem(glob: str) -> Optional[str]:
+    """Why a glob can never match (so a config that holds it is a mistake), else ``None``."""
+    if len(glob) > MAX_GLOB_LENGTH:
+        return f"is longer than {MAX_GLOB_LENGTH} characters"
+    if _glob_tokens(glob) is None:
+        return "has a character class with a reversed range"
+    return None
+
+
+class GlobMatcher:
+    """One compiled path glob. ``match(path)`` is true when the whole path matches.
+
+    The glob is run as a small state machine, every state it could be in
+    advanced one character at a time, so a match costs at most
+    ``len(glob) * len(path)`` steps whatever the glob looks like. Nothing
+    backtracks, and nothing here can raise on a strange glob: one that is too
+    long, or holds a reversed class range such as ``[z-a]``, matches nothing.
+    """
+
+    __slots__ = ("glob", "_never", "_literal", "_prefix", "_suffix", "_start", "_accept",
+                 "_chars", "_any_one", "_classes", "_loop_deep", "_loop_segment",
+                 "_skip_one", "_skip_three", "_masks")
+
+    def __init__(self, glob: str) -> None:
+        self.glob = glob
+        self._literal: Optional[str] = None
+        self._prefix = self._suffix = ""
+        self._masks: Dict[str, Tuple[int, int]] = {}
+        tokens = None if len(glob) > MAX_GLOB_LENGTH else _glob_tokens(glob)
+        self._never = tokens is None
+        if tokens is None:
+            return
+        if all(kind == _LITERAL for kind, _ in tokens):
+            self._literal = glob
+            return
+        chars: Dict[str, int] = {}
+        classes: List[Tuple[int, tuple, bool]] = []
+        any_one = loop_deep = loop_segment = skip_one = skip_three = 0
+        state = 0
+        prefix_done = False
+        prefix: List[str] = []
+        for kind, value in tokens:
+            bit = 1 << state
+            if kind == _LITERAL:
+                chars[value] = chars.get(value, 0) | bit
+                if not prefix_done:
+                    prefix.append(value)
+            elif kind == _ANY_ONE:
+                any_one |= bit
+            elif kind == _CLASS:
+                classes.append((bit, value[0], value[1]))
+            elif kind == _STAR:
+                loop_segment |= bit
+                skip_one |= bit
+            elif kind == _DEEP:
+                loop_deep |= bit
+                skip_one |= bit
+            else:
+                # "**/" is "nothing, or anything that ends in a slash": an
+                # entry state that may skip the whole group, then a loop that
+                # can only be left through the slash after it. The skip is on
+                # the entry alone, so it cannot be taken after the loop ran.
+                skip_one |= bit
+                skip_three |= bit
+                state += 1
+                loop_deep |= 1 << state
+                skip_one |= 1 << state
+                state += 1
+                chars["/"] = chars.get("/", 0) | (1 << state)
+            if kind != _LITERAL:
+                prefix_done = True
+            state += 1
+        suffix: List[str] = []
+        for kind, value in reversed(tokens):
+            if kind != _LITERAL:
+                break
+            suffix.append(value)
+        self._prefix = "".join(prefix)
+        self._suffix = "".join(reversed(suffix))
+        self._chars, self._any_one, self._classes = chars, any_one, tuple(classes)
+        self._loop_deep, self._loop_segment = loop_deep, loop_segment
+        self._skip_one, self._skip_three = skip_one, skip_three
+        self._accept = 1 << state
+        self._start = self._closure(1 << len(prefix))
+
+    def _closure(self, states: int) -> int:
+        skip_one, skip_three = self._skip_one, self._skip_three
+        while True:
+            grown = states | ((states & skip_one) << 1) | ((states & skip_three) << 3)
+            if grown == states:
+                return states
+            states = grown
+
+    def _char_masks(self, c: str) -> Tuple[int, int]:
+        advance = self._chars.get(c, 0)
+        if c != "/":
+            advance |= self._any_one
+        for bit, ranges, negate in self._classes:
+            inside = any(low <= c <= high for low, high in ranges)
+            if (not inside and c != "/") if negate else inside:
+                advance |= bit
+        stay = 0 if c == "\n" else self._loop_deep
+        if c != "/":
+            stay |= self._loop_segment
+        if len(self._masks) >= 512:
+            self._masks.clear()
+        self._masks[c] = (advance, stay)
+        return advance, stay
+
+    def match(self, path: str) -> bool:
+        if self._never:
+            return False
+        if self._literal is not None:
+            return path == self._literal
+        prefix = self._prefix
+        if not path.startswith(prefix) or not path.endswith(self._suffix):
+            return False
+        states = self._start
+        masks = self._masks
+        skips = self._skip_one
+        for c in path[len(prefix):] if prefix else path:
+            pair = masks.get(c)
+            if pair is None:
+                pair = self._char_masks(c)
+            states = ((states & pair[0]) << 1) | (states & pair[1])
+            if not states:
+                return False
+            if states & skips:
+                states = self._closure(states)
+        return bool(states & self._accept)
+
+
+@lru_cache(maxsize=4096)
+def glob_matcher(glob: str) -> GlobMatcher:
+    """Compile a path glob.
+
+    ``**/`` is any number of directories (including none), ``**`` is anything,
+    ``*`` and ``?`` stay within one segment, ``[...]`` is a character class
+    (``[!...]`` negates and never matches a slash). Every other character is
+    literal.
+    """
+    return GlobMatcher(glob)
+
+
+# The name this had while it compiled to a regular expression; callers only
+# ever used ``.match``.
+glob_to_regex = glob_matcher
 
 
 def expand_braces(text: str, limit: int = 16) -> Optional[List[str]]:
@@ -107,7 +272,7 @@ def is_excluded_rel(rel: str, excluded_paths: Sequence[str]) -> bool:
 
 
 def matches_any_glob(rel: str, globs: Sequence[str]) -> bool:
-    return any(glob_to_regex(g).match(rel) for g in globs)
+    return any(glob_matcher(g).match(rel) for g in globs)
 
 
 def is_doc_glob_match(rel: str, settings) -> bool:
@@ -152,6 +317,8 @@ class PathIndex:
     @staticmethod
     def _proper_suffixes(path: str) -> List[str]:
         parts = path.split("/")
+        if len(parts) > MAX_SUFFIX_DEPTH:
+            return []                   # bounded: suffixes of a deep path would be cubic
         return ["/".join(parts[i:]) for i in range(1, len(parts) - 1)]
 
     def _changed(self) -> None:
@@ -255,8 +422,8 @@ class PathIndex:
         """How many files a root-anchored glob matches."""
         hit = self._glob_cache.get(pattern)
         if hit is None:
-            regex = glob_to_regex(pattern)
-            hit = sum(1 for p in self._files if regex.match(p))
+            matcher = glob_matcher(pattern)
+            hit = sum(1 for p in self._files if matcher.match(p))
             self._glob_cache[pattern] = hit
         return hit
 

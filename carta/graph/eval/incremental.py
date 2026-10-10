@@ -17,7 +17,8 @@ from typing import Dict, Iterable, List, Sequence, Set
 
 from carta.graph.mentions import resolve_candidates
 from carta.graph.model import Candidate, Edge
-from carta.graph.paths import PathIndex, glob_to_regex
+from carta.graph.limits import MAX_SUFFIX_DEPTH
+from carta.graph.paths import PathIndex, glob_matcher
 from carta.graph.settings import GraphSettings
 
 
@@ -75,7 +76,11 @@ def _ancestors(path: str) -> List[str]:
 
 
 def _suffixes(path: str) -> List[str]:
+    """Every suffix a lookup could have asked for. Empty for a path the index does not
+    suffix-index (see ``PathIndex._proper_suffixes``): no answer about it can change."""
     parts = path.split("/")
+    if len(parts) > MAX_SUFFIX_DEPTH:
+        return []
     return ["/".join(parts[i:]) for i in range(1, len(parts))]
 
 
@@ -152,8 +157,8 @@ class MentionState:
             keys.update("s:" + s for s in _suffixes(path))
         changed = (*added, *deleted)
         for pattern, docs in self._glob_watch.items():
-            regex = glob_to_regex(pattern)
-            if any(regex.match(path) for path in changed):
+            matcher = glob_matcher(pattern)
+            if any(matcher.match(path) for path in changed):
                 self._dirty.update(docs)
         watch = self._watch
         for key in keys:

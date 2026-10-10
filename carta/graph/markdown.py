@@ -9,8 +9,12 @@ never read for paths.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from typing import List, Optional, Sequence, Tuple
 
+from carta.graph.limits import (
+    MAX_CANDIDATES_PER_DOC, MAX_DOC_BYTES, MAX_LINE_LENGTH, MAX_LINK_TARGET_LENGTH,
+)
 from carta.graph.model import Candidate
 
 EVIDENCE_LIMIT = 240
@@ -21,17 +25,28 @@ _FRONTMATTER_STRIP = "-:'\"[],"
 _BACKTICKS = re.compile(r"`+")
 _SPACE = re.compile(r"\s")
 # Any "](target)" or "](target "title")": inline links and images, including
-# an image nested in a link's text.
+# an image nested in a link's text. Every run is bounded, and the target is
+# matched inside a lookahead and then by backreference, which makes it atomic
+# (giving characters of a target back can never produce a match, since what
+# follows it must be a space or the closing bracket). Without both, each "]("
+# on a hostile line re-scans the rest of the line: quadratic in its length.
+_N = str(MAX_LINK_TARGET_LENGTH)
 _INLINE_LINK = re.compile(
-    r"""\]\(\s*(<[^>\n]*>|[^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)""")
+    r"""\]\(\s*(?=(<[^>\n]{0,""" + _N + r"""}>|[^)\s]{1,""" + _N + r"""}))\1"""
+    r"""(?:\s+(?:"[^"]{0,""" + _N + r"""}"|'[^']{0,""" + _N + r"""}'|\([^)]{0,""" + _N
+    + r"""}\)))?\s*\)""")
 _REF_DEF = re.compile(r"^ {0,3}\[([^\]]+)\]:\s+(<[^>]*>|\S+)")
+# Terminal control characters (C0, DEL, C1) and the bidirectional overrides:
+# evidence is printed, and a doc must not be able to drive the terminal or
+# reorder what is shown.
+_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 _CALL_HEAD = re.compile(
     r"[&*@]?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|->|#)[A-Za-z_][A-Za-z0-9_]*)*\(")
 
 
 def collapse_evidence(line: str, limit: int = EVIDENCE_LIMIT) -> str:
     """Collapse whitespace and cut to ``limit`` characters, ending ``…`` when cut."""
-    text = " ".join(line.split())
+    text = _CONTROL.sub("", " ".join(line.split()))
     if len(text) > limit:
         text = text[:limit - 1] + "…"
     return text
@@ -82,8 +97,15 @@ def _code_spans(line: str) -> List[Tuple[int, int, int, int]]:
     return spans
 
 
-def _inside(pos: int, spans: Sequence[Tuple[int, int, int, int]]) -> bool:
-    return any(s[0] <= pos < s[1] for s in spans)
+def _inside(pos: int, spans: Sequence[Tuple[int, int, int, int]],
+            starts: Optional[Sequence[int]] = None) -> bool:
+    """True when ``pos`` is inside a code span. Spans are in order and do not overlap."""
+    if not spans:
+        return False
+    if starts is None:
+        starts = [s[0] for s in spans]
+    i = bisect_right(starts, pos) - 1
+    return i >= 0 and pos < spans[i][1]
 
 
 def _frontmatter_end(lines: Sequence[str]) -> Optional[int]:
@@ -97,7 +119,14 @@ def _frontmatter_end(lines: Sequence[str]) -> Optional[int]:
 
 
 def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
-    """Return every candidate in ``text``, ordered by line then column."""
+    """Return every candidate in ``text``, ordered by line then column.
+
+    Bounded before any work: a text over ``MAX_DOC_BYTES`` characters yields
+    nothing, a line over ``MAX_LINE_LENGTH`` is not scanned (it still counts
+    for line numbers), and at most ``MAX_CANDIDATES_PER_DOC`` are returned.
+    """
+    if len(text) > MAX_DOC_BYTES:
+        return []
     if text.startswith("﻿"):
         text = text[1:]
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -105,11 +134,14 @@ def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
 
     def emit(line_no: int, col: int, raw: str, ctx: str, evidence: str,
              single: bool = True, pattern: str = "") -> None:
+        if len(found) >= MAX_CANDIDATES_PER_DOC:
+            return
         found.append((line_no, col, len(found),
                       Candidate(raw, ctx, line_no, evidence, single, pattern)))
 
     def run_patterns(line_no: int, line: str, evidence: str, zone: str,
-                     spans: Sequence[Tuple[int, int, int, int]] = ()) -> None:
+                     spans: Sequence[Tuple[int, int, int, int]] = (),
+                     starts: Sequence[int] = ()) -> None:
         # zone: 'meta' (frontmatter), 'fence', or 'body'
         for spec in patterns:
             if spec.where == "prose" and zone != "body":
@@ -118,7 +150,7 @@ def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
                 continue
             for m in spec.compiled.finditer(line):
                 if zone == "body" and spec.where != "all":
-                    in_code = _inside(m.start(), spans)
+                    in_code = _inside(m.start(), spans, starts)
                     if in_code != (spec.where == "code"):
                         continue
                 raw = m.group(1) if spec.compiled.groups else m.group(0)
@@ -130,7 +162,9 @@ def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
     fence_len = 0
     for idx, line in enumerate(lines):
         line_no = idx + 1
-        if not line.strip():
+        if len(found) >= MAX_CANDIDATES_PER_DOC:
+            break
+        if len(line) > MAX_LINE_LENGTH or not line.strip():
             continue
         evidence = collapse_evidence(line)
 
@@ -169,6 +203,7 @@ def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
             continue
 
         spans = _code_spans(line)
+        starts = [span[0] for span in spans]
         for outer_start, _outer_end, inner_start, inner_end in spans:
             content = line[inner_start:inner_end].strip()
             if not content:
@@ -188,12 +223,12 @@ def scan_text(text: str, patterns: Sequence = ()) -> List[Candidate]:
                     sub += len(part)
                 col += len(token)
         for m in _INLINE_LINK.finditer(line):
-            if not _inside(m.start(), spans):
+            if not _inside(m.start(), spans, starts):
                 emit(line_no, m.start(1), m.group(1), "link", evidence)
         ref = _REF_DEF.match(line)
-        if ref and not ref.group(1).startswith("^") and not _inside(ref.start(), spans):
+        if ref and not ref.group(1).startswith("^") and not _inside(ref.start(), spans, starts):
             emit(line_no, ref.start(2), ref.group(2), "link", evidence)
-        run_patterns(line_no, line, evidence, "body", spans)
+        run_patterns(line_no, line, evidence, "body", spans, starts)
 
     found.sort(key=lambda item: item[:3])
     return [item[3] for item in found]

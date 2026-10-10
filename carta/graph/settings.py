@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from carta.config import DEFAULTS, ConfigError
+from carta.graph.limits import (
+    MAX_CONFIG_GLOBS, MAX_GLOB_LENGTH, MAX_PATTERN_REGEX_LENGTH, MAX_PATTERNS,
+)
 from carta.graph.model import MENTION_EXTRACTOR_VERSION
+from carta.graph.paths import glob_problem
 
 _NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _WHERE = ("all", "prose", "code")
@@ -92,9 +96,27 @@ def _str_list(value: Any, where: str, *, non_empty: bool = False) -> tuple:
     return tuple(value)
 
 
+def _glob_list(value: Any, where: str, *, non_empty: bool = False,
+               path_globs: bool = True) -> tuple:
+    """A bounded list of globs. A glob that can match nothing is a config mistake."""
+    globs = _str_list(value, where, non_empty=non_empty)
+    if len(globs) > MAX_CONFIG_GLOBS:
+        raise GraphConfigError(f"{where} has {len(globs)} entries; at most "
+                               f"{MAX_CONFIG_GLOBS} are allowed")
+    for glob in globs:
+        problem = glob_problem(glob) if path_globs else (
+            f"is longer than {MAX_GLOB_LENGTH} characters"
+            if len(glob) > MAX_GLOB_LENGTH else None)
+        if problem:
+            raise GraphConfigError(f"{where}: {glob[:60]!r} {problem}")
+    return globs
+
+
 def _number(value: Any, where: str, kind: type) -> Any:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise GraphConfigError(f"{where} must be a number, got {value!r}")
+    if not math.isfinite(value):
+        raise GraphConfigError(f"{where} must be a finite number, got {value!r}")
     if kind is int and int(value) != value:
         raise GraphConfigError(f"{where} must be a whole number, got {value!r}")
     return kind(value)
@@ -110,6 +132,9 @@ def _flag(value: Any, where: str) -> bool:
 def _patterns(value: Any) -> tuple:
     if not isinstance(value, (list, tuple)):
         raise GraphConfigError("graph.patterns must be a list of pattern mappings")
+    if len(value) > MAX_PATTERNS:
+        raise GraphConfigError(f"graph.patterns has {len(value)} entries; at most "
+                               f"{MAX_PATTERNS} are allowed")
     out = []
     seen = set()
     for i, item in enumerate(value):
@@ -127,6 +152,10 @@ def _patterns(value: Any) -> tuple:
         regex = item.get("regex")
         if not isinstance(regex, str) or not regex:
             raise GraphConfigError(f"graph.patterns: pattern {name!r} needs a regex")
+        if len(regex) > MAX_PATTERN_REGEX_LENGTH:
+            raise GraphConfigError(
+                f"graph.patterns: pattern {name!r} has a regex of {len(regex)} characters; "
+                f"at most {MAX_PATTERN_REGEX_LENGTH} are allowed")
         where = item.get("where", "all")
         if where not in _WHERE:
             raise GraphConfigError(
@@ -159,8 +188,8 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
         raise GraphConfigError(f"graph.impact.min_score must be a finite number, got {min_score}")
     return GraphSettings(
         enabled=_flag(g["enabled"], "graph.enabled"),
-        doc_globs=_str_list(g["doc_globs"], "graph.doc_globs", non_empty=True),
-        excluded_paths=_str_list(excluded or [], "excluded_paths"),
+        doc_globs=_glob_list(g["doc_globs"], "graph.doc_globs", non_empty=True),
+        excluded_paths=_glob_list(excluded or [], "excluded_paths", path_globs=False),
         ident_enabled=_flag(ident["enabled"], "graph.identifiers.enabled"),
         ident_min_length=_number(ident["min_length"], "graph.identifiers.min_length", int),
         ident_stoplist=frozenset(_str_list(ident["stoplist"], "graph.identifiers.stoplist")),
@@ -171,7 +200,7 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
         impact_weights=tuple(sorted(
             (str(k), _number(v, f"graph.impact.weights.{k}", float)) for k, v in weights.items())),
         scan_missing_paths=_flag(scan["missing_paths"], "graph.scan.missing_paths"),
-        scan_ignore_docs=_str_list(scan["ignore_docs"], "graph.scan.ignore_docs"),
+        scan_ignore_docs=_glob_list(scan["ignore_docs"], "graph.scan.ignore_docs"),
         scan_history_limit=_number(scan["history_limit"], "graph.scan.history_limit", int),
         replay_hub_share=_number(replay["hub_share"], "graph.replay.hub_share", float),
         replay_max_files=_number(replay["max_files"], "graph.replay.max_files", int),

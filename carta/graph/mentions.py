@@ -16,6 +16,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 from urllib.parse import unquote
 
 from carta.graph.idents import parse_identifier
+from carta.graph.limits import MAX_GLOBS_PER_DOC, MAX_RAW_CANDIDATE_LENGTH, MAX_WRAPPER_LAYERS
 from carta.graph.markdown import scan_text
 from carta.graph.model import (
     MENTION_EXTRACTOR, MENTION_EXTRACTOR_VERSION, Candidate, Edge, canonical_meta,
@@ -55,17 +56,22 @@ def _normalise(raw: str, ctx: str, keep_hash: bool = False
     ``keep_hash`` leaves a ``#`` in place: the reading in which it is part of
     a file or directory name rather than the start of a fragment.
     """
+    # The bound comes first: everything below is linear in the candidate, and
+    # nothing this long can end up within MAX_CANDIDATE_LENGTH as a repo path.
+    if len(raw) > MAX_RAW_CANDIDATE_LENGTH:
+        return None
     is_link = ctx == "link"
     text = raw.strip()
     # N1: wrappers and trailing punctuation
-    changed = True
-    while changed and len(text) >= 2:
-        changed = False
+    for _layer in range(MAX_WRAPPER_LAYERS):
+        if len(text) < 2:
+            break
         for left, right in (("<", ">"), ('"', '"'), ("'", "'"), ("(", ")"), ("`", "`")):
             if text[0] == left and text[-1] == right:
                 text = text[1:-1].strip()
-                changed = True
                 break
+        else:
+            break
     # Bold markers that ended up inside the span: "**src/a.py**". A real glob
     # keeps its stars because they sit next to a slash ("**/x", "src/**").
     if text.startswith("**") and not text.startswith("**/"):
@@ -165,6 +171,7 @@ class _Resolver:
         self.index = index
         self.settings = settings
         self._type_cache: Dict[str, str] = {}
+        self._globs: set = set()        # distinct globs counted for this doc (bounded)
 
     def _file_type(self, path: str) -> str:
         hit = self._type_cache.get(path)
@@ -245,6 +252,12 @@ class _Resolver:
                 return []
             if not _LITERAL.search(_GLOB_CLASS.sub("", pattern)):
                 return []
+            # Counting a glob walks the whole path set, so a doc gets a
+            # bounded number of distinct ones.
+            if pattern not in self._globs:
+                if len(self._globs) >= MAX_GLOBS_PER_DOC:
+                    return []
+                self._globs.add(pattern)
             matches = index.glob_matches(pattern)
             if not matches:
                 return []
