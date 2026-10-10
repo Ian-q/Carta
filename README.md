@@ -478,18 +478,26 @@ graph:
   `CARTA_CTAGS` to name a binary. The repository's own ctags option files are not read.
 - `provider: file` reads a symbols file: JSON lines
   (`{"name": "parse_frame", "kind": "function", "file": "src/frame.py", "line": 12}`, optional
-  `"scope"`), tab-separated `name kind file line [scope]`, or saved
+  `"scope"` and `"language"`), tab-separated `name kind file line [scope]`, or saved
   `ctags --output-format=json` output. Any code-graph tool can be exported to the first two.
+  The file has to be UTF-8; `#` lines are comments. A row counts only while its file is in the
+  tree, so adding or deleting a code file updates the edges without the symbols file changing.
 - No provider, no binary or no file means no symbol edges, and `carta graph status` says which.
-  It is never an error. An index that fails to load (too large, a symbolic link, ctags
-  crashing) keeps the edges already stored and reports the store stale.
+  It is never an error. An index that fails to load (too large, a symbolic link, lines but not
+  one readable row, ctags crashing or running past its time limit) keeps the edges already
+  stored and reports the store stale; `carta impact` then says that the symbol matches it
+  printed may be out of date (`symbols.stale` in the JSON).
 
 A name defined in more than one file is ambiguous. It still resolves when the doc qualifies it
 (`Store.put`, `table.init`) or mentions one of the defining files or a directory above it;
-otherwise it makes no edge. On this repository 95.7% of 3,825 indexed names are defined in a
+otherwise it makes no edge. On this repository 96.5% of 3,564 indexed names are defined in a
 single file, and raising the limit to 2, 3 or 5 changed the replay score below by less than
-0.001, so the default keeps the stricter rule. Locals, parameters and import aliases are never
-definitions, and neither is anything in a doc or under `excluded_paths`.
+0.001, so the default keeps the stricter rule. A qualifier that matches nothing in the
+repository makes no edge either: `subprocess.check_output` is not your `check_output`, and
+nothing in `page.get_text` says whose `page` it is (`self.`, `this.` and `cls.` are the
+exception). Locals, parameters and import aliases are never definitions, and neither is a key
+in a data file (JSON, YAML, TOML, XML), a heading, or anything in a doc or under
+`excluded_paths`.
 
 Once a provider is configured, `carta impact` reads symbol edges too and labels them:
 
@@ -571,13 +579,16 @@ parent's code, read from git objects into a scratch directory and cached per fil
 whole history above takes about 8 s). `--symbols tracked:PATH` reads a symbols file the
 repository tracks, as of each parent. `--symbols file:PATH` uses one file as it is today for
 every commit, which **leaks** later knowledge; it is refused unless you add
-`--accept-symbol-leak`, and the report then carries a warning. On the same 54 commits, adding
-symbol edges to mentions moves MRR from 0.191 to 0.201 (paired difference +0.010, 95% interval
--0.000 to +0.021; 25 commits better, 5 worse, 24 tied) and recall@10 from 0.262 to 0.315; symbol
-edges alone score 0.151. Without the hub docs (21 commits, too few to call) the two are level,
-0.273 against 0.276. So symbol edges help a little at depth and do not change the verdict. The
-leaking variant scores +0.013 with an interval that excludes zero (+0.001 to +0.024), which is
-exactly the mistake the per-parent index is there to prevent.
+`--accept-symbol-leak`, and the report then carries a warning. On the same 54 commits
+(`--range 792b6690`), adding symbol edges to mentions moves MRR from 0.191 to 0.201 (paired
+difference +0.010, 95% interval -0.000 to +0.021; 25 commits better, 4 worse, 25 tied) and
+recall@10 from 0.262 to 0.315; symbol edges alone score 0.147. Without the hub docs (21
+commits, too few to call) the two are level, 0.273 against 0.276. So symbol edges help a
+little at depth and do not change the verdict. That interval sits on zero and moves with the
+range: ending four commits later (58 eligible) the same clean run reads +0.018 (+0.001 to
++0.041), so "significant or not" is not something this history can settle. The leak is small
+here: today's index scores the combined arm 0.003 higher than each parent's own (paired over
+the 54 commits: 3 better, none worse, 51 tied).
 
 #### Co-change edges: what git history says moves together
 
