@@ -200,7 +200,7 @@ last_reviewed: 2026-03-20
 | `/doc-search` | Natural language search over the embedded knowledge base |
 | `carta focus` / `carta_focus` | Deep retrieval scoped to one file: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `/doc-search` (locate → go deep) |
 | `carta remember` / `carta_remember` | Save a curated project note (quirk / bug-note / helpful-note) as a repo markdown file and embed it. `--about <file>` records which file the note is about |
-| `carta impact` / `carta_impact` | Reverse lookup: given the files you changed (or a git range), the docs that name them, ranked, with the lines to re-read. No model, no Qdrant, no Ollama |
+| `carta impact` / `carta_impact` | Reverse lookup: given the files you changed (or a git range), the docs that name them or that git history shows changing with them, ranked and labelled, with the lines to re-read. No model, no Qdrant, no Ollama |
 
 ---
 
@@ -446,7 +446,7 @@ graph:
   impact:
     top: 10
     min_score: 0.0
-    kinds: ["mention"]
+    kinds: ["mention", "cochange"]   # what docs name, and what git history shows
   scan:
     missing_paths: true
     ignore_docs: ["CHANGELOG*", "**/CHANGELOG*"]
@@ -507,6 +507,104 @@ left, which is too few to call (0.276 against 0.564 and 0.287). The docs edited 
 here (README, changelog) do not name files, and the docs that do name files are dated plans
 nobody edits again. Numbers, populations and the reading of them are in
 [the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
+
+#### Co-change edges: what git history says moves together
+
+Mention edges only exist where a doc names a file. A second kind of edge covers what nobody
+wrote down: `carta graph build` also walks the first-parent git history and records, for every
+pair of files, how often they changed in the same commit. No parsing, no model. One mainline
+commit is one unit (one pull request on a squash-merge repository; on a merge-commit repository
+the merge carries the whole branch).
+
+```console
+$ carta graph build
+Graph: 113 docs, 12,931 edges (113 re-extracted, 0 unchanged)
+  history: 5,419 co-change edges from 430 commits (438 new, 3 skipped as bulk)
+```
+
+`carta impact` reads both kinds and **labels every reason**, so "the doc names this file" is
+never confused with "these changed together":
+
+```console
+$ carta impact carta/cli.py --top 2
+Top 2 of 49 docs that are tied to 1 path (113 docs, 12,991 edges)
+  named: the doc names the path.   history: they changed in the same commits; that is correlation, not a claim that the doc describes it.
+
+ 1. CLAUDE.md  score 1.412548
+      carta/cli.py  [history] changed together in 8 of 49 commits (git history; the doc need not name it)
+      carta/cli.py  [named] exact, named by 42 docs
+        L27: - argparse (stdlib) - CLI argument parsing in `carta/cli.py`
+```
+
+In `--json` a history match has `"kind": "cochange"`. `--kinds mention` or `--kinds cochange`
+reads one kind alone. With `--diff`, a pair whose only shared commits are inside the range is
+left out: a change is not evidence about itself.
+
+How it counts, and what it will not do:
+
+- **A commit touching more than 30 paths adds nothing** (`max_files`). A formatting sweep or a
+  vendored drop would otherwise couple everything to everything.
+- The score is **confidence**: the share of the changed file's commits that also changed the
+  other one. Two files that each change constantly, but separately, score low and get no edge
+  (`min_score` 0.1). Older co-changes count for less (`half_life`, in commits).
+- A deleted file loses its history. A file that is moved **without being edited in the same
+  commit** keeps it; a move with edits starts again.
+- It is incremental: only commits after the last one seen are read. A rebase, a branch switch
+  or an amended commit is noticed and the history is mined again. One pass over 438 commits
+  takes under a second.
+- A shallow clone, a repository with no commits and a directory that is not a repository give
+  no edges and no error.
+- It claims no causation, and it needs history in proportion to the size of the tree.
+
+```yaml
+graph:
+  impact:
+    kinds: ["mention", "cochange"]
+    combine: norm               # how the two rankings are fused: norm | rrf | sum | max
+  cochange:
+    enabled: true               # `carta graph build --no-cochange` skips it for one run
+    max_files: 30               # larger commits are bulk changes and are not counted
+    min_support: 1              # shared commits needed before a pair is an edge
+    min_score: 0.1              # and the confidence it must reach
+    measure: confidence         # confidence | lift
+    half_life: 100              # commits after which a co-change counts half; 0 = never
+    pending_window: 1000        # with min_support > 1: forget a pair that does not recur
+    follow_renames: true        # a pure move (same content) keeps its history
+```
+
+**Does it help?** Two evals, both from git objects only.
+
+`carta graph replay --arm mention=mention --arm cochange=cochange --arm both=mention+cochange`
+scores each kind and their union on the same commits; the co-change edges for a commit come only
+from commits before it. On this repository (54 eligible commits) co-change alone has MRR 0.615
+against 0.191 for mentions and 0.731 for "the most-edited docs"; the union scores 0.489. Without
+the three hub docs 21 commits are left, too few to call (0.404, 0.276, 0.564; union 0.381). On a
+second, larger history (306 eligible commits, 284 without its one hub) co-change alone and the
+union each beat all three baselines with intervals clear of zero: MRR 0.499 and 0.526 against
+0.255 for most-edited docs and 0.289 for basename grep, and 0.289 for mentions alone. The union
+beats co-change alone on recall@5 there (+0.039 [+0.009, +0.073]) and ties it on MRR.
+
+`carta graph holdout` is the stricter test for the edges themselves: build them from the history
+before a cut, then for each later commit give a method **one** of its files and ask for the
+others.
+
+```bash
+carta graph holdout                                   # cut after the first 80% of commits
+carta graph holdout --cut v1.4.0 --cochange lift=measure:lift --cochange base
+carta graph holdout --graph imports=imports.tsv       # score another tool's file graph too
+```
+
+On this repository (322 commits before the cut, 63 scored after it, 397 seed queries): MRR 0.724
+for co-change, 0.401 for "the most-changed files", 0.365 for "the other files in this
+directory". `--graph NAME=PATH` scores an external file-to-file graph (JSON or
+`src<TAB>dst[<TAB>weight]` lines) on the identical queries. Carta cannot check when such a graph
+was built, so build it from the tree at the cut.
+
+The defaults came from these runs: confidence beat lift on every population, a support floor of 2
+lost recall on every population, and adding the two kinds' raw scores was no better than mentions
+alone, which is why they are fused after normalising each kind. Numbers, populations and what is
+still open are in
+[the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#co-change-edges-130).
 
 ### Capturing notes (quirks, bug notes, helpful notes)
 
