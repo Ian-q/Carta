@@ -642,7 +642,7 @@ def format_impact(result: dict) -> str:
         lines.append(f"No doc mentions the {_count(len(query['paths']), 'queried ' + noun)} "
                      f"{corpus}")
     if query["diff"]:
-        lines.append(f"Range: {query['diff']}")
+        lines.append(f"Range: {printable(query['diff'])}")
     if labelled:
         lines.append("  named: the doc names the path.   history: they changed in the same "
                      "commits; that is correlation, not a claim that the doc describes it.")
@@ -654,7 +654,7 @@ def format_impact(result: dict) -> str:
                      f"score {item['score']:.6f}")
         for match in item["matches"]:
             label = f"[{_relation(match)}] " if labelled else ""
-            lines.append(f"      {match['path']}  {label}{_match_reason(match)}")
+            lines.append(f"      {printable(match['path'])}  {label}{_match_reason(match)}")
             if match["match"] == "cochange":
                 continue                    # its one evidence line is the reason above
             evidence = match["evidence"]
@@ -667,7 +667,8 @@ def format_impact(result: dict) -> str:
     tail: List[str] = []
     if result["unmatched_paths"]:
         nothing = "No doc names or has changed with" if labelled else "No doc mentions"
-        tail.append(f"{nothing}: " + ", ".join(result["unmatched_paths"]))
+        tail.append(f"{nothing}: " + ", ".join(
+            printable(path) for path in result["unmatched_paths"]))
     if result["skipped_paths"]:
         tail.append("Skipped: " + ", ".join(
             f"{printable(s['path'])} ({s['reason']})" for s in result["skipped_paths"]))
