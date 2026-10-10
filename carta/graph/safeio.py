@@ -74,6 +74,32 @@ def _classify(root: str, parts: list) -> None:
             raise SkippedFile("not_regular")
 
 
+def entry_kind(root: PathLike, rel: str) -> str:
+    """What ``root/rel`` is, decided without following a link: ``dir``, ``file`` or ``""``.
+
+    ``file`` is anything there that is not a directory, a symbolic link
+    itself included. ``""`` is everything that is not an entry of the tree
+    under ``root``: nothing there, a path that is not a plain relative one,
+    and anything reached through a symbolic link. What a link points at is
+    outside the tree, so whether it exists, and what it is, is never reported.
+    """
+    current = str(root)
+    try:
+        parts = _parts(rel[:-1] if rel.endswith("/") else rel)
+    except SkippedFile:
+        return ""
+    mode = 0
+    for part in parts:
+        if stat.S_ISLNK(mode):
+            return ""                       # the rest lies beyond a link
+        current = os.path.join(current, part)
+        try:
+            mode = os.lstat(current).st_mode
+        except (OSError, ValueError):
+            return ""
+    return "dir" if stat.S_ISDIR(mode) else "file"
+
+
 def _open(root: str, parts: list) -> int:
     """Open the file read-only without following a link in any component."""
     final = os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC | _O_BINARY

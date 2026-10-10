@@ -15,7 +15,7 @@ from carta.graph import limits
 from carta.graph.build import build_graph, graph_status, list_repo_paths, read_doc
 from carta.graph.eval.cache import ReplayCache
 from carta.graph.eval.replay import main as replay_main
-from carta.graph.query import ImpactError, format_impact, run_impact
+from carta.graph.query import ImpactError, format_impact, normalise_query_paths, run_impact
 from carta.graph.safeio import (
     SkippedFile, create_exclusive, read_regular_file, write_text_replacing,
 )
@@ -200,6 +200,83 @@ def test_the_not_a_range_hint_is_not_an_existence_oracle(git_repo, tmp_path):
         with pytest.raises(ImpactError) as raised:
             run_impact(git_repo.root, CFG, diff=probe)
         assert "is a path" not in str(raised.value), probe
+
+
+@needs_symlinks
+@requires_git
+def test_the_not_a_range_hint_does_not_look_through_a_link(git_repo, tmp_path):
+    """A repository can ship a link to any directory; the hint must not probe it."""
+    beyond = tmp_path / "beyond"
+    beyond.mkdir()
+    (beyond / "there.txt").write_text("x")
+    git_repo.write("README.md", "x\n")
+    os.symlink(beyond, git_repo.root / "link")
+    git_repo.commit("first", 0)
+    messages = set()
+    for probe in ("link/there.txt", "link/not-there.txt"):
+        with pytest.raises(ImpactError) as raised:
+            run_impact(git_repo.root, CFG, diff=probe)
+        messages.add(str(raised.value).replace(probe, "PROBE"))
+    assert len(messages) == 1 and "is a path" not in messages.pop()
+
+
+@requires_git
+def test_a_bad_range_error_does_not_pass_on_what_git_printed(git_repo):
+    git_repo.write("README.md", "x\n")
+    git_repo.commit("first", 0)
+    for bad in ("nope..HEAD", "HEAD:README.md..HEAD", "HEAD..@{u}", "HEAD:../x..HEAD"):
+        with pytest.raises(ImpactError) as raised:
+            run_impact(git_repo.root, CFG, diff=bad)
+        text = str(raised.value)
+        assert "fatal" not in text and "usage" not in text and "\n" not in text, bad
+        assert str(git_repo.root) not in text and str(git_repo.root.resolve()) not in text, bad
+
+
+@needs_symlinks
+def test_query_paths_do_not_say_what_a_link_points_at(tree, tmp_path):
+    beyond = tmp_path / "beyond"
+    (beyond / "sub").mkdir(parents=True)
+    (beyond / "a-file").write_text("x")
+    os.symlink(beyond / "sub", tree / "to-dir")
+    os.symlink(beyond / "a-file", tree / "to-file")
+    os.symlink(beyond / "nothing", tree / "to-nothing")
+    os.symlink(beyond, tree / "link")
+    typed = ["to-dir", "to-file", "to-nothing", "link/sub", "link/a-file", "link/nothing"]
+    paths, skipped = normalise_query_paths(tree, tree, typed)
+    assert (paths, skipped) == (sorted(typed), [])          # none gains a "/", none is dropped
+    # the same question from a directory below the root: the reading never depends
+    # on whether something exists beyond the link
+    os.symlink(beyond, tree / "src" / "link")
+    paths, _ = normalise_query_paths(tree, tree / "src", ["link/a-file", "link/nothing"])
+    assert paths == ["link/a-file", "link/nothing"]
+    # a real directory still reads as one
+    assert normalise_query_paths(tree, tree, ["src"]) == (["src/"], [])
+
+
+def test_impact_output_writes_out_control_characters_in_names(tree):
+    name = "docs/\x1b[2J\x1b]0;owned\x07\u202egpj.md"
+    write(tree, name, "see `src/app.py` and `lib/\x1b[31mgone.py`\n")
+    result = run_impact(tree, CFG, paths=["src/app.py", "lib/\x1b[31mgone.py", "\x1b[1mnone.py"])
+    assert name in [r["doc"] for r in result["results"]]    # the data keeps the real name
+    text = format_impact(result)
+    assert "\x1b" not in text and "\x07" not in text and "\u202e" not in text
+    assert "\\x1b[2J" in text and "\\u202e" in text
+
+
+@needs_symlinks
+def test_impact_errors_name_the_store_by_its_place_in_the_repository(tree, tmp_path):
+    build_graph(tree, CFG)
+    db = store_path(tree)
+    db.write_bytes(b"not a database" * 100)
+    with pytest.raises(ImpactError) as unreadable:
+        run_impact(tree, CFG, paths=["src/app.py"], build=False)
+    db.unlink()
+    os.symlink(tmp_path / "elsewhere.db", db)
+    with pytest.raises(ImpactError) as unsafe:
+        run_impact(tree, CFG, paths=["src/app.py"])
+    for raised in (unreadable, unsafe):
+        assert ".carta/graph/edges.db" in str(raised.value)
+        assert str(tmp_path) not in str(raised.value)
 
 
 # -- the store ---------------------------------------------------------------------

@@ -18,8 +18,9 @@ from typing import Collection, Dict, Iterable, List, Mapping, Optional, Sequence
 from carta.graph.build import build_graph, decode_text, list_repo_paths, read_doc
 from carta.graph.gitio import GitError, default_branch, diff_name_status
 from carta.graph.mentions import extract_mentions
-from carta.graph.model import KINDS, MENTION_EXTRACTOR, Edge
+from carta.graph.model import KINDS, MENTION_EXTRACTOR, Edge, printable
 from carta.graph.paths import PathIndex, glob_matcher, in_path_set, is_doc_path
+from carta.graph.safeio import entry_kind
 from carta.graph.settings import GraphSettings, graph_settings
 from carta.graph.store import (
     EdgeStore, StoreUnreadableError, StoreUnsafeError, StoreVersionError, store_path,
@@ -36,6 +37,9 @@ _PATH_TYPES = frozenset(("file", "doc", "dir", "glob", "missing"))
 # Matches that name the queried path itself; directory and glob matches are
 # the weaker kind and are aggregated per target (see rank_impact).
 _STRONG = frozenset(("exact", "under", "cochange"))
+
+
+_STORE = ".carta/graph/edges.db"
 
 
 class ImpactError(ValueError):
@@ -271,11 +275,21 @@ def normalise_query_paths(repo_root: Path, cwd: Path,
     trailing ``/`` (or naming an existing directory) asks about everything
     under that directory.
 
+    "Exists" and "is a directory" are asked of the repository's own tree and
+    never through a symbolic link in it: a link can point anywhere, and the
+    answer would say what is there.
+
     Returns ``(paths, skipped)``; ``skipped`` holds ``{"path", "reason"}`` with
     reason ``outside_repo`` or ``repo_root``.
     """
     root = os.path.realpath(str(repo_root))
     here = os.path.realpath(str(cwd))
+
+    def inside_root(full: str) -> Optional[str]:
+        rel = os.path.relpath(full, root).replace(os.sep, "/")
+        if rel == ".." or rel.startswith("../"):
+            return None
+        return "" if rel == "." else rel
     paths, skipped = set(), {}
     for raw in raw_paths:
         text = str(raw).strip().replace(os.sep, "/")
@@ -289,16 +303,15 @@ def normalise_query_paths(repo_root: Path, cwd: Path,
         else:
             from_cwd = os.path.normpath(os.path.join(here, text))
             from_root = os.path.normpath(os.path.join(root, text))
-            candidates = [from_cwd, from_root] if os.path.lexists(from_cwd) else [from_root]
+            there = inside_root(from_cwd)
+            candidates = ([from_cwd, from_root] if there == "" or (there and entry_kind(root, there))
+                          else [from_root])
         rel = None
         for full in candidates:
-            inside = os.path.relpath(full, root).replace(os.sep, "/")
-            if inside == ".." or inside.startswith("../"):
+            inside = inside_root(full)
+            if inside is None:
                 continue
-            if inside == ".":
-                rel = ""
-                break
-            if wants_dir or os.path.isdir(full):
+            if inside and (wants_dir or entry_kind(root, inside) == "dir"):
                 inside += "/"
             rel = inside
             break
@@ -319,15 +332,17 @@ def _diff_paths(repo_root: Path, diff: str) -> Tuple[str, Dict[str, str]]:
             range_spec = f"{default_branch(repo_root)}...HEAD"
         return range_spec, diff_name_status(repo_root, range_spec)
     except GitError as exc:
-        # The hint is only for a name inside the repository: anything else
-        # would tell the caller whether an arbitrary file exists.
+        # The hint is only for an entry of the repository's own tree, never
+        # one reached through a link in it: anything else would tell the
+        # caller whether an arbitrary file exists. And git's own message is
+        # not passed on: it can name absolute paths, and say what is on disk.
         inside = posixpath.normpath(diff) if diff and "\0" not in diff else ""
-        if (inside and not inside.startswith(("/", "../")) and inside not in (".", "..")
-                and os.path.lexists(os.path.join(str(repo_root), inside))):
+        if inside and entry_kind(repo_root, inside):
             raise ImpactError(
-                f"`{diff}` is a path, not a range; pass it without --diff") from exc
+                f"`{printable(diff)}` is a path, not a range; pass it without --diff") from exc
         raise ImpactError(
-            f"`{range_spec}` is not a revision range git can diff here: {exc}") from exc
+            f"`{printable(range_spec)}` is not a revision range git can diff here "
+            f"(try `git diff --name-status` with it)") from exc
 
 
 def _edges_before(repo_root: Path, settings: GraphSettings, gone: Sequence[str],
@@ -409,18 +424,28 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
                 query.append(path)
     else:
         query, skipped = normalise_query_paths(repo_root, cwd or repo_root, paths)
-        gone = [q for q in query if not q.endswith("/")
-                and not os.path.lexists(os.path.join(str(repo_root), q))]
+        gone = [q for q in query if not q.endswith("/") and not entry_kind(repo_root, q)]
         came = []
 
     try:
         if build:
             build_graph(repo_root, cfg)
         store = EdgeStore.open_readonly(store_path(repo_root))
-    except (StoreVersionError, StoreUnsafeError) as exc:
-        raise ImpactError(str(exc)) from exc
+    # The store's own messages name it by absolute path; this result also goes
+    # to an MCP client, which is told where it is in the repository and no more.
+    except StoreVersionError as exc:
+        raise ImpactError(
+            f"the edge store at {_STORE} was written by a newer Carta; upgrade Carta, or "
+            f"delete the file to rebuild it") from exc
+    except StoreUnsafeError as exc:
+        raise ImpactError(
+            f"the edge store at {_STORE} is, or is behind, a symbolic link, or is larger "
+            f"than Carta opens; it is never read. Remove it and run `carta graph build`"
+        ) from exc
     except StoreUnreadableError as exc:
-        raise ImpactError(f"{exc}; run `carta graph build` to rebuild it") from exc
+        raise ImpactError(
+            f"the edge store at {_STORE} cannot be read (damaged, or not a store Carta "
+            f"wrote); run `carta graph build` to rebuild it") from exc
     if store is None:
         raise ImpactError("no edge store yet; run `carta graph build` (or drop --no-build)")
     with store:
@@ -466,14 +491,18 @@ def _match_reason(match: dict) -> str:
     if kind == "exact":
         return f"exact, {named}"
     if kind == "under":
-        return f"names {match['target']} under it, {named}"
+        return f"names {printable(match['target'])} under it, {named}"
     if kind == "cochange":
         return f"changes with it ({_count(match['df'], 'doc')})"
-    return f"via {match['target']} ({kind}), {named}"
+    return f"via {printable(match['target'])} ({kind}), {named}"
 
 
 def format_impact(result: dict) -> str:
-    """The human form of a ``run_impact`` result."""
+    """The human form of a ``run_impact`` result.
+
+    Every name in it comes from the repository (a file name can hold an
+    escape sequence), so each is printed through ``printable``.
+    """
     query, store, results = result["query"], result["store"], result["results"]
     noun = "changed path" if query["diff"] else "path"
     corpus = f"({_count(store['docs'], 'doc')}, {_count(store['edges'], 'edge')})"
@@ -495,27 +524,29 @@ def format_impact(result: dict) -> str:
         lines.append(f"No doc mentions the {_count(len(query['paths']), 'queried ' + noun)} "
                      f"{corpus}")
     if query["diff"]:
-        lines.append(f"Range: {query['diff']}")
+        lines.append(f"Range: {printable(query['diff'])}")
     if results:
         lines.append("")
     for item in results:
         flag = "  [already in this diff]" if item["in_diff"] else ""
-        lines.append(f"{item['rank']:>2}. {item['doc']}{flag}  score {item['score']:.6f}")
+        lines.append(f"{item['rank']:>2}. {printable(item['doc'])}{flag}  "
+                     f"score {item['score']:.6f}")
         for match in item["matches"]:
-            lines.append(f"      {match['path']}  {_match_reason(match)}")
+            lines.append(f"      {printable(match['path'])}  {_match_reason(match)}")
             evidence = match["evidence"]
             for ev in evidence[:EVIDENCE_LINES_SHOWN]:
                 where = f"L{ev['line']}: " if ev["line"] else ""
-                lines.append(f"        {where}{ev['text']}")
+                lines.append(f"        {where}{printable(ev['text'])}")
             if len(evidence) > EVIDENCE_LINES_SHOWN:
                 more = len(evidence) - EVIDENCE_LINES_SHOWN
                 lines.append(f"        ... {_count(more, 'more line')}")
     tail: List[str] = []
     if result["unmatched_paths"]:
-        tail.append("No doc mentions: " + ", ".join(result["unmatched_paths"]))
+        tail.append("No doc mentions: " + ", ".join(
+            printable(path) for path in result["unmatched_paths"]))
     if result["skipped_paths"]:
         tail.append("Skipped: " + ", ".join(
-            f"{s['path']} ({s['reason']})" for s in result["skipped_paths"]))
+            f"{printable(s['path'])} ({s['reason']})" for s in result["skipped_paths"]))
     if tail:
         lines.append("")
         lines.extend(tail)
