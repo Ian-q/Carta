@@ -1092,6 +1092,20 @@ def _plural(n: int, noun: str) -> str:
     return f"{n:,} {noun}" + ("" if n == 1 else "s")
 
 
+def _print_cochange_build(history: dict) -> None:
+    """One line on the history pass of `carta graph build`."""
+    status = history.get("status")
+    if status == "ok":
+        cut = " (shallow clone: history is cut off, so are the counts)" if history.get(
+            "shallow") else ""
+        print(f"  history: {_plural(history['edges'], 'co-change edge')} from "
+              f"{_plural(history['counted'], 'commit')} ({history['new_commits']:,} new, "
+              f"{history['bulk']:,} skipped as bulk){cut}")
+    elif status == "failed":
+        print(f"  history: co-change edges were not updated ({history.get('detail', '')}); "
+              f"what the store held was kept")
+
+
 def cmd_graph(args):
     import json
     from carta.config import ConfigError
@@ -1102,6 +1116,9 @@ def cmd_graph(args):
         # its own options so it can also run as `python -m carta.graph.eval.replay`.
         from carta.graph.eval.replay import main as replay_main
         sys.exit(replay_main(args.replay_args))
+    if action == "holdout":
+        from carta.graph.eval.holdout import main as holdout_main
+        sys.exit(holdout_main(args.replay_args))
     if action not in ("build", "status"):
         print(args.graph_usage, file=sys.stderr, end="")
         sys.exit(1)
@@ -1110,7 +1127,8 @@ def cmd_graph(args):
     from carta.graph.store import StoreUnsafeError, StoreVersionError
     try:
         if action == "build":
-            report = build_graph(repo_root, cfg, force=args.force)
+            report = build_graph(repo_root, cfg, force=args.force,
+                                 cochange=not args.no_cochange)
         else:
             report = graph_status(repo_root, cfg)
     except (ConfigError, StoreVersionError, StoreUnsafeError) as e:
@@ -1135,6 +1153,7 @@ def cmd_graph(args):
         if report.get("unreadable"):
             print(f"  {_plural(report['unreadable'], 'doc')} could not be read; what the "
                   f"store held for them was kept, and it stays stale until they can be")
+        _print_cochange_build(report.get("cochange") or {})
         return
     if not report["exists"]:
         print("No edge store yet. Run `carta graph build`.")
@@ -1162,6 +1181,10 @@ def cmd_graph(args):
     print(f"  schema {report['schema_version']}, mention extractor "
           f"{report['extractor_version']}")
     print(f"  digest {report['digest']}")
+    history = report.get("cochange") or {}
+    if history.get("enabled"):
+        print(f"  history: co-change edges from {_plural(history['commits'], 'mainline commit')}"
+              + (f", up to {history['head'][:12]}" if history.get("head") else ""))
 
 
 def cmd_impact(args):
@@ -1474,6 +1497,10 @@ def main():
         "build", help="Bring the edge store up to date (incremental by content hash)")
     graph_build.add_argument(
         "--force", action="store_true", help="Re-extract every doc, changed or not")
+    graph_build.add_argument(
+        "--no-cochange", action="store_true",
+        help="Skip the git-history pass this run (stored co-change edges are left as they "
+             "are; graph.cochange.enabled turns it off for good)")
     graph_build.add_argument("--json", action="store_true", help="Print the build report as JSON")
     graph_status = graph_sub.add_parser(
         "status", help="Describe the edge store and whether it is stale (never builds)")
@@ -1482,6 +1509,10 @@ def main():
         "replay", add_help=False,
         help="Score the graph arm against this repository's history (PR replay); "
              "`carta graph replay --help` lists its options")
+    graph_sub.add_parser(
+        "holdout", add_help=False,
+        help="Temporal holdout for co-change edges: build before a cut, predict the files "
+             "of later commits; `carta graph holdout --help` lists its options")
     graph_p.set_defaults(graph_usage=graph_p.format_usage())
 
     impact_p = sub.add_parser(
@@ -1510,7 +1541,7 @@ def main():
     # `graph replay` owns its options (it also runs as a module), so they are
     # passed through untouched; every other command rejects unknown arguments.
     args, extra = parser.parse_known_args()
-    if args.command == "graph" and getattr(args, "graph_action", None) == "replay":
+    if args.command == "graph" and getattr(args, "graph_action", None) in ("replay", "holdout"):
         args.replay_args = extra
     elif extra:
         parser.error("unrecognized arguments: " + " ".join(extra))

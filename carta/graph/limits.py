@@ -44,3 +44,9 @@ MAX_IMPACT_WEIGHT = 1000.0              # graph.impact.weights.*
 MAX_IDENT_MIN_LENGTH = 64               # graph.identifiers.min_length
 MAX_SCAN_HISTORY_LIMIT = 100_000        # graph.scan.history_limit (commits git is asked for)
 MAX_REPLAY_WINDOW = 1_000_000           # graph.replay.popularity_window and .min_population
+
+# -- co-change (#130) ----------------------------------------------------------
+MAX_COCHANGE_COMMIT_FILES = 500         # upper bound of graph.cochange.max_files (pairs are n^2)
+MAX_COCHANGE_PATH_LENGTH = 1024         # a longer path is never counted
+MAX_EXTERNAL_GRAPH_BYTES = 64 * 1024 * 1024     # an adjacency file given to the holdout eval
+MAX_EXTERNAL_GRAPH_EDGES = 2_000_000
