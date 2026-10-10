@@ -1122,7 +1122,7 @@ def _symbols_line(symbols: dict) -> str:
     if state == "unavailable":
         return f"symbols: no symbol edges ({symbols.get('detail', '')})"
     counts = (f"{_plural(symbols.get('edges', 0), 'symbol edge')} from "
-              f"{symbols.get('rows', 0):,} definitions; identifiers: "
+              f"{_plural(symbols.get('rows', 0), 'definition')}; identifiers: "
               f"{symbols.get('resolved', 0):,} resolved, {symbols.get('ambiguous', 0):,} "
               f"ambiguous, {symbols.get('unknown', 0):,} not in the index")
     if state == "failed":

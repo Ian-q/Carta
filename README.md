@@ -451,19 +451,76 @@ graph:
     missing_paths: true
     ignore_docs: ["CHANGELOG*", "**/CHANGELOG*"]
     history_limit: 5000         # commits of history searched for deletions and renames
+    dangling_symbols: false     # see "Symbol edges" below
+    ambiguous_symbols: false
 ```
 
 This section is separate from `search.graph` above, which only controls `related:` expansion
 inside retrieval. The top-level `excluded_paths` decides which docs are read; an excluded doc is
 never a source of edges, but any path may still be named.
 
+**Symbol edges (optional).** Docs name functions and classes more often than files. With a
+symbol index, Carta resolves each backticked identifier to the file that defines it and stores a
+`symbol` edge (doc, defining file, the identifier, the doc line). Carta still does not parse
+code: it reads rows of `(name, kind, file, line)` that another tool wrote.
+
+```yaml
+graph:
+  symbols:
+    provider: ctags        # none (default) | ctags | file
+    file: ""               # for provider: file, a path inside the repository
+    max_definitions: 1     # a name defined in more files than this makes no edge
+```
+
+- `provider: ctags` runs [universal-ctags](https://ctags.io) over the repository's code files
+  if it is installed. It is recognised by what it can do (`--list-features` lists `json`), not
+  by its name: the `ctags` that macOS ships is a different program and is passed over. Set
+  `CARTA_CTAGS` to name a binary. The repository's own ctags option files are not read.
+- `provider: file` reads a symbols file: JSON lines
+  (`{"name": "parse_frame", "kind": "function", "file": "src/frame.py", "line": 12}`, optional
+  `"scope"`), tab-separated `name kind file line [scope]`, or saved
+  `ctags --output-format=json` output. Any code-graph tool can be exported to the first two.
+- No provider, no binary or no file means no symbol edges, and `carta graph status` says which.
+  It is never an error. An index that fails to load (too large, a symbolic link, ctags
+  crashing) keeps the edges already stored and reports the store stale.
+
+A name defined in more than one file is ambiguous. It still resolves when the doc qualifies it
+(`Store.put`, `table.init`) or mentions one of the defining files or a directory above it;
+otherwise it makes no edge. On this repository 95.7% of 3,825 indexed names are defined in a
+single file, and raising the limit to 2, 3 or 5 changed the replay score below by less than
+0.001, so the default keeps the stricter rule. Locals, parameters and import aliases are never
+definitions, and neither is anything in a doc or under `excluded_paths`.
+
+Once a provider is configured, `carta impact` reads symbol edges too and labels them:
+
+```text
+ 1. docs/parser.md  score 0.878890
+      src/parser/frame.py  symbol: the doc names an identifier defined here (1 doc does)
+        L3: Call `parse_frame()` on each chunk.
+```
+
+`carta scan` has two findings for identifiers, **both off by default**
+(`graph.scan.dangling_symbols`, `graph.scan.ambiguous_symbols`). `dangling_symbol` reports a doc
+that names an identifier which has left the code. Most identifiers no index knows are simply
+not yours (a library class, a shell command), so absence is never enough: the name must occur as
+a word in no code file today, **and** git must show the code had it at a commit that changed
+that mention in the doc. An external name fails the second test and stays silent. It needs git
+and no symbol index. On this repository it produced 10 findings from 103 candidates; by hand, 8
+were symbols defined here and since removed, 2 were names the code once used and never
+defined, and 6 of the 8 sat in dated plans. That is too small a sample, and too archival, to
+switch on for everyone. `ambiguous_symbol` is informational: a name the index defines in too
+many files to resolve (33 here, `main` and `__init__` among them).
+
 What it does **not** do:
 
-- It does not parse source code. Edges come from doc text only.
+- It does not parse source code. Edges come from doc text, and symbol edges from an index
+  another tool wrote.
 - It does not read paths written in plain prose. A path must be in backticks, a markdown link, a
   fenced block or frontmatter. That is deliberate: "read/write" and "and/or" are not paths.
-- Backticked identifiers (`parse_frame()`, `MAX_RETRIES`) are stored but **not yet resolved** to
-  the files that define them, and they play no part in `carta impact` ranking today.
+- Backticked identifiers (`parse_frame()`, `MAX_RETRIES`) are stored, and resolved to the files
+  that define them only when a symbol provider is configured (above). Without one they play no
+  part in `carta impact`.
+- It does not follow calls. A symbol edge says where a name is defined, not who uses it.
 - It does not follow renames. A doc that still names the old path is a `carta scan` finding,
   because the text on the page is now wrong.
 - Its edges do not feed `carta search`.
@@ -507,6 +564,20 @@ left, which is too few to call (0.276 against 0.564 and 0.287). The docs edited 
 here (README, changelog) do not name files, and the docs that do name files are dated plans
 nobody edits again. Numbers, populations and the reading of them are in
 [the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
+
+Symbol edges can be scored the same way: `--arm both=mention+symbol --symbols ctags`. The replay
+may only use what a commit's parent had, so `--symbols ctags` re-runs universal-ctags on each
+parent's code, read from git objects into a scratch directory and cached per file content (the
+whole history above takes about 8 s). `--symbols tracked:PATH` reads a symbols file the
+repository tracks, as of each parent. `--symbols file:PATH` uses one file as it is today for
+every commit, which **leaks** later knowledge; it is refused unless you add
+`--accept-symbol-leak`, and the report then carries a warning. On the same 54 commits, adding
+symbol edges to mentions moves MRR from 0.191 to 0.201 (paired difference +0.010, 95% interval
+-0.000 to +0.021; 25 commits better, 5 worse, 24 tied) and recall@10 from 0.262 to 0.315; symbol
+edges alone score 0.151. Without the hub docs (21 commits, too few to call) the two are level,
+0.273 against 0.276. So symbol edges help a little at depth and do not change the verdict. The
+leaking variant scores +0.013 with an interval that excludes zero (+0.001 to +0.024), which is
+exactly the mistake the per-parent index is there to prevent.
 
 #### Co-change edges: what git history says moves together
 

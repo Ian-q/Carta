@@ -705,6 +705,8 @@ def carta_impact(
     and may now be out of date. This is a deterministic reverse lookup over the
     paths docs name in backticks, links and code blocks: no embeddings, no model,
     and it works when Qdrant and Ollama are down. Rarely named paths count for more.
+    When the project has a symbol index configured, a doc that names a function or
+    class defined in the file is found too (match "kind": "symbol").
 
     Give exactly one of:
         paths: repo-relative paths that changed; a trailing "/" asks about

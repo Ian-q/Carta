@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -140,6 +141,7 @@ def test_an_unreadable_code_file_means_absence_is_not_proven(repo):
     assert findings == [] and stats["symbol_check"] == "incomplete"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs symbolic links")
 def test_words_in_code_reads_code_only_and_whole_words(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "a.py").write_text("decode_header_v2 = 1\nrender_table()\n")

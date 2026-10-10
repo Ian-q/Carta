@@ -368,7 +368,7 @@ def test_a_failed_load_keeps_the_edges_and_leaves_the_store_stale(tmp_path, monk
     assert graph_status(root, cfg)["stale"] is False
 
 
-@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symbolic links")
+@pytest.mark.skipif(sys.platform == "win32", reason="needs symbolic links")
 def test_a_symlinked_symbols_file_is_never_followed(tmp_path):
     outside = tmp_path / "outside.jsonl"
     outside.write_bytes(fixture_bytes("symbols.jsonl"))
@@ -486,6 +486,20 @@ def test_a_ctags_inside_the_repository_is_never_run(tmp_path, monkeypatch):
     found = symbols.find_universal_ctags(root)
     assert found is None or Path(found.path).resolve() != planted.resolve()
     assert not (root / "ctags.log").exists()
+
+
+def test_real_universal_ctags_agrees_with_the_recorded_fixture(tmp_path, monkeypatch):
+    """Runs only where universal-ctags is installed; everything else uses the recording."""
+    monkeypatch.delenv("CARTA_CTAGS", raising=False)
+    root = make_repo(tmp_path / "repo", {"docs/frames.md": DOC}, symbols_file="")
+    found = symbols.find_universal_ctags(root)
+    if found is None:
+        pytest.skip("universal-ctags is not installed")
+    parsed = symbols.run_ctags(root, found, sorted(CODE))
+    live = SymbolTable(parsed.rows).rows()
+    recorded = table_from("ctags_sample.json", accept=lambda f: not f.endswith(".md")).rows()
+    assert [(r.name, r.kind, r.file, r.scope) for r in live] == [
+        (r.name, r.kind, r.file, r.scope) for r in recorded]
 
 
 # -- impact ----------------------------------------------------------------------

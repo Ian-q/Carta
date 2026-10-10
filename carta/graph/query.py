@@ -603,7 +603,8 @@ def _match_reason(match: dict) -> str:
     if match["kind"] == "symbol":
         # No doc names the path: it names an identifier this file defines.
         docs = _count(match["df"], "doc")
-        return f"symbol: defines an identifier this doc names ({docs} name one it defines)"
+        return (f"symbol: the doc names an identifier defined here "
+                f"({docs} {'does' if match['df'] == 1 else 'do'})")
     if kind == "exact":
         return f"exact, {named}"
     if kind == "under":

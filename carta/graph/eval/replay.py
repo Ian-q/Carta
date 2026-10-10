@@ -829,7 +829,7 @@ def format_replay(report: dict) -> str:
     sym = report.get("symbols")
     if sym:
         lines.append(f"Symbols: {sym['source']}; a name defined in more than "
-                     f"{sym['max_definitions']} files is not resolved")
+                     f"{_plural(sym['max_definitions'], 'file')} is not resolved")
         lines.append(f"  {'WARNING, leaks: ' if sym['leak'] else ''}{sym['note']}")
     lines.append("")
     no_hub = report["no_hub"]
