@@ -231,7 +231,10 @@ def _with_symbols(report: dict, repo_root: Path, settings: GraphSettings, index:
     """
     from carta.graph.symbols import build_symbol_edges
     report["symbols"] = build_symbol_edges(repo_root, settings, index, force=force)
-    if report["symbols"]["state"] != "off" or report["symbols"]["written"]:
+    # Counted again whenever the pass may have changed the store, which includes a
+    # provider that was just turned off: its edges were in the count above and are gone.
+    if (report["symbols"]["state"] != "off" or report["symbols"]["written"]
+            or "symbol" in report["by_kind"]):
         with EdgeStore(store_path(repo_root)) as store:
             counts = store.counts()
         report["edges"], report["by_kind"] = counts["edges"], counts["by_kind"]

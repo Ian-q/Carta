@@ -503,7 +503,8 @@ def test_impact_reads_symbol_edges_and_labels_them(tmp_path):
     plain = run_impact(root, cfg, paths=["src/pkg/table.py"], kinds=["mention"])
     assert plain["results"] == []
     result = run_impact(root, cfg, paths=["src/pkg/table.py"])
-    assert result["query"]["kinds"] == ["mention", "symbol"]
+    # Beside the kinds graph.impact.kinds lists (mentions and, since #130, history).
+    assert result["query"]["kinds"] == ["cochange", "mention", "symbol"]
     assert [r["doc"] for r in result["results"]] == ["docs/frames.md"]
     match = result["results"][0]["matches"][0]
     assert match["kind"] == "symbol" and match["target"] == "src/pkg/table.py"
@@ -512,10 +513,11 @@ def test_impact_reads_symbol_edges_and_labels_them(tmp_path):
     assert "symbol" in text and "render_table" in text
 
 
-def test_impact_without_a_provider_reads_mentions_only(tmp_path):
+def test_impact_without_a_provider_reads_no_symbol_edges(tmp_path):
     root = make_repo(tmp_path, {"docs/frames.md": DOC})
     result = run_impact(root, {}, paths=["src/pkg/table.py"])
-    assert result["query"]["kinds"] == ["mention"] and result["results"] == []
+    assert result["query"]["kinds"] == ["cochange", "mention"] and result["results"] == []
+    assert "symbols" not in result
 
 
 # -- review of #131: what the first version got wrong -------------------------------

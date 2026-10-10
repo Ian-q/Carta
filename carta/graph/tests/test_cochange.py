@@ -870,8 +870,16 @@ def test_a_build_with_nothing_new_does_not_read_the_pair_state(git_repo, monkeyp
     def loaded(*args, **kwargs):
         raise AssertionError("the pair state was loaded for a build with no new commit")
 
+    real_source_meta = EdgeStore.source_meta
+
+    def pair_state(store, extractor):
+        # Only the history pass's own rows: the symbol pass (#131) asks for its own.
+        if extractor == cochange_mod.COCHANGE_EXTRACTOR:
+            loaded()
+        return real_source_meta(store, extractor)
+
     monkeypatch.setattr(PairTable, "load", loaded)
-    monkeypatch.setattr(EdgeStore, "source_meta", loaded)
+    monkeypatch.setattr(EdgeStore, "source_meta", pair_state)
     again = build_graph(repo.root, SMALL, cochange=True)["cochange"]
     assert again == dict(first, new_commits=0, written=0, full=False)
     assert again["digest"] == digest(repo.root) and again["edges"] == 2
