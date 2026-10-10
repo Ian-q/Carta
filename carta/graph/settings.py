@@ -19,6 +19,7 @@ from carta.graph.limits import (
 )
 from carta.graph.model import MENTION_EXTRACTOR_VERSION
 from carta.graph.paths import glob_problem
+from carta.graph.limits import MAX_REPLAY_COMMIT_FILES  # noqa: I001
 
 _NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _WHERE = ("all", "prose", "code")
@@ -183,6 +184,12 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
     top = _number(impact["top"], "graph.impact.top", int)
     if top < 1:
         raise GraphConfigError(f"graph.impact.top must be at least 1, got {top}")
+    # The bulk rule is what keeps one huge commit from being ranked; a value
+    # the repository's own config could raise without limit would not be a rule.
+    max_files = _number(replay["max_files"], "graph.replay.max_files", int)
+    if not 1 <= max_files <= MAX_REPLAY_COMMIT_FILES:
+        raise GraphConfigError(f"graph.replay.max_files must be between 1 and "
+                               f"{MAX_REPLAY_COMMIT_FILES}, got {max_files}")
     min_score = _number(impact["min_score"], "graph.impact.min_score", float)
     if not math.isfinite(min_score):
         raise GraphConfigError(f"graph.impact.min_score must be a finite number, got {min_score}")
@@ -203,7 +210,7 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
         scan_ignore_docs=_glob_list(scan["ignore_docs"], "graph.scan.ignore_docs"),
         scan_history_limit=_number(scan["history_limit"], "graph.scan.history_limit", int),
         replay_hub_share=_number(replay["hub_share"], "graph.replay.hub_share", float),
-        replay_max_files=_number(replay["max_files"], "graph.replay.max_files", int),
+        replay_max_files=max_files,
         replay_popularity_window=_number(
             replay["popularity_window"], "graph.replay.popularity_window", int),
         replay_min_population=_number(

@@ -55,11 +55,12 @@ from carta.graph.gitio import (
 )
 from carta.graph.limits import MAX_CONFIG_BYTES, MAX_DOC_BYTES
 from carta.graph.markdown import scan_text
-from carta.graph.model import Edge
+from carta.graph.model import Edge, printable
 from carta.graph.paths import PathIndex, in_path_set, is_doc_glob_match, is_excluded_rel
 from carta.graph.query import ImpactIndex, rank_impact
 from carta.graph.safeio import SkippedFile, read_regular_file, write_text_replacing
 from carta.graph.settings import DEFAULT_SETTINGS, GraphSettings, graph_settings
+from carta.graph.limits import MAX_REPLAY_TEXT_BYTES
 
 REPLAY_SCHEMA = 1
 DEFAULT_KS = (1, 3, 5, 10)
@@ -394,6 +395,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
     tree_ready = False
     reader = BlobReader(root)
     texts: Dict[str, str] = {}                       # blob -> text, for the current commit only
+    held = [0, 0]                                    # characters in ``texts`` now, and at most
 
     def read_blob_text(blob: str) -> str:
         text = texts.get(blob)
@@ -402,8 +404,18 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
                 data = reader.read(blob, max_bytes=MAX_DOC_BYTES)
             except BlobTooLarge:
                 data = b""                  # the same rule as a build: too large is not read
-            text = texts[blob] = decode_text(data)
+            text = decode_text(data)
             counters["blob_reads"] += 1
+            # MAX_DOC_BYTES bounds one doc; the first sync reads every doc of
+            # the tree. What is kept is only ever a saving (the two readers
+            # of a doc share one read), so it is dropped when it gets large.
+            if held[0] + len(text) > MAX_REPLAY_TEXT_BYTES:
+                texts.clear()
+                held[0] = 0
+            if len(text) <= MAX_REPLAY_TEXT_BYTES:
+                texts[blob] = text
+                held[0] += len(text)
+                held[1] = max(held[1], held[0])
         return text
 
     def read_text(path: str) -> str:
@@ -498,6 +510,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
                     skipped[got.reason] += 1
                 if got.reason is None or got.reason == "no_docs_edited":
                     texts.clear()
+                    held[0] = 0
                     rankings = rank_all(parent, got.query)
                     if got.reason is None:
                         eligible.append((entry.sha, len(got.query), got.gold, rankings))
@@ -655,7 +668,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
         stats.update({
             "commits_walked": len(log), "commits_scanned": n_scanned,
             "cache_hits": cache.hits, "cache_misses": cache.misses,
-            "cache_on_disk": cache_on_disk,
+            "cache_on_disk": cache_on_disk, "text_held_peak": held[1],
             "walk_seconds": walked - started, "score_seconds": done - walked,
             "seconds": done - started,
         })
@@ -743,7 +756,7 @@ def format_replay(report: dict) -> str:
     head = report["repo"]["head"][:12] or "(none)"
     scanned, n = pop["commits_scanned"], pop["eligible"]
     share = f" ({100.0 * n / scanned:.1f}%)" if scanned else ""
-    lines = [f"Replay  repo={head}  range={report['repo']['range']}",
+    lines = [f"Replay  repo={head}  range={printable(report['repo']['range'])}",
              f"Population: {_plural(scanned, 'commit')} scanned, {n:,} eligible{share}"]
     reasons = sorted(((count, reason) for reason, count in pop["skipped"].items() if count),
                      key=lambda item: (-item[0], item[1]))
@@ -756,9 +769,12 @@ def format_replay(report: dict) -> str:
     if pop["excluded_doc_paths"]:
         lines.append(f"  doc-named paths under excluded directories, ignored: "
                      f"{pop['excluded_doc_paths']:,}")
+    # Globs come from the repository's config and hub docs are file names:
+    # both are printed with their control characters written out.
     lines.append(f"Settings: config={cfg.get('config', 'defaults')}; "
-                 f"docs: {', '.join(cfg['doc_globs'])}")
-    lines.append(f"  excluded_paths: {', '.join(cfg.get('excluded_paths', [])) or '(none)'}")
+                 f"docs: {printable(', '.join(cfg['doc_globs']))}")
+    lines.append("  excluded_paths: "
+                 f"{printable(', '.join(cfg.get('excluded_paths', []))) or '(none)'}")
     lines.append("")
     no_hub = report["no_hub"]
     hubs = bool(no_hub["hub_docs"])
@@ -773,7 +789,8 @@ def format_replay(report: dict) -> str:
                      f"without them.")
     lines.append("")
     if hubs:
-        named = ", ".join(f"{h['doc']} {100 * h['share']:.0f}%" for h in no_hub["hub_docs"])
+        named = ", ".join(f"{printable(h['doc'])} {100 * h['share']:.0f}%"
+                          for h in no_hub["hub_docs"])
         lines.append(f"Without hub docs (>{pct} of eligible commits: {named}): "
                      f"{no_hub['population']['eligible']:,} eligible")
         _tables(lines, no_hub["methods"], no_hub["paired"], no_hub["judgement"], ks,
