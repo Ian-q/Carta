@@ -18,6 +18,12 @@ tracked or not, unless ``--no-config`` is given. ``excluded_paths`` and
 ``graph.doc_globs`` decide which paths are docs and so which commits are
 eligible, which is why every report records where its settings came from and
 lists the exclusions it used.
+
+The repository being replayed is not trusted. Its config is read without
+following a symbolic link, and its ``graph.patterns`` (regular expressions,
+which can be written to take exponential time) are ignored unless
+``--trust-config`` is given. The report file is written by renaming a new
+file into place, never through a link.
 """
 from __future__ import annotations
 
@@ -44,12 +50,15 @@ from carta.graph.eval.metrics import (
     RESAMPLES, aggregate, bootstrap_ci, paired_bootstrap, score_ranking,
 )
 from carta.graph.gitio import (
-    BlobReader, GitError, LogEntry, first_parent_log, ls_tree, rev_list_first_parent, toplevel,
+    BlobReader, BlobTooLarge, GitError, LogEntry, first_parent_log, ls_tree,
+    rev_list_first_parent, toplevel,
 )
+from carta.graph.limits import MAX_CONFIG_BYTES, MAX_DOC_BYTES
 from carta.graph.markdown import scan_text
 from carta.graph.model import Edge
 from carta.graph.paths import PathIndex, in_path_set, is_doc_glob_match, is_excluded_rel
 from carta.graph.query import ImpactIndex, rank_impact
+from carta.graph.safeio import SkippedFile, read_regular_file, write_text_replacing
 from carta.graph.settings import DEFAULT_SETTINGS, GraphSettings, graph_settings
 
 REPLAY_SCHEMA = 1
@@ -389,7 +398,11 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
     def read_blob_text(blob: str) -> str:
         text = texts.get(blob)
         if text is None:
-            text = texts[blob] = decode_text(reader.read(blob))
+            try:
+                data = reader.read(blob, max_bytes=MAX_DOC_BYTES)
+            except BlobTooLarge:
+                data = b""                  # the same rule as a build: too large is not read
+            text = texts[blob] = decode_text(data)
             counters["blob_reads"] += 1
         return text
 
@@ -818,6 +831,10 @@ def build_parser(prog: str = "carta graph replay") -> argparse.ArgumentParser:
     parser.add_argument("--no-config", action="store_true",
                         help="Ignore <repo>/.carta/config.yaml and use the built-in defaults "
                              "(the report records which was used)")
+    parser.add_argument("--trust-config", action="store_true",
+                        help="Also use graph.patterns from the repository's config. They are "
+                             "regular expressions run over every doc line; only for a "
+                             "repository you trust")
     parser.add_argument("--resamples", type=int, default=RESAMPLES, metavar="N",
                         help=f"Bootstrap resamples (default {RESAMPLES})")
     parser.add_argument("--per-commit", action="store_true",
@@ -831,28 +848,63 @@ def build_parser(prog: str = "carta graph replay") -> argparse.ArgumentParser:
     return parser
 
 
+def _read_repo_config(root: Path) -> Optional[dict]:
+    """The repository's ``.carta/config.yaml`` as a mapping; ``None`` when it has none.
+
+    Read without following a symbolic link (the file, or ``.carta`` itself,
+    could point anywhere), and an error never quotes the file: what a YAML
+    parser prints about a bad line is that line.
+    """
+    name = ".carta/config.yaml"
+    try:
+        data = read_regular_file(root, name, MAX_CONFIG_BYTES)
+    except SkippedFile as skipped:
+        if skipped.reason == "missing":
+            return None
+        why = {"symlink": "is (or is behind) a symbolic link",
+               "too_large": f"is larger than {MAX_CONFIG_BYTES} bytes"}.get(
+                   skipped.reason, "is not a regular file")
+        raise ConfigError(f"{name} {why}; it was not read (pass --no-config to "
+                          f"replay with the defaults)") from None
+    except OSError as exc:
+        raise ConfigError(f"could not read {name}: {exc.strerror or 'I/O error'}") from None
+    import yaml
+    try:
+        raw = yaml.safe_load(data.decode("utf-8")) or {}
+    except UnicodeDecodeError:
+        raise ConfigError(f"{name} is not UTF-8 text") from None
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f" at line {mark.line + 1}" if mark is not None else ""
+        raise ConfigError(f"{name} is not valid YAML{where}") from None
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{name} must be a mapping")
+    return raw
+
+
 def _repo_settings(root: Path, doc_globs: Sequence[str], excludes: Sequence[str],
-                   use_config: bool = True) -> Tuple[GraphSettings, str]:
+                   use_config: bool = True, trust_config: bool = False
+                   ) -> Tuple[GraphSettings, str]:
     """Graph settings for a repository, and a label saying where they came from.
 
     The repository's Carta config when it has one (read from the work tree),
-    else the defaults; command-line options on top of either.
+    else the defaults; command-line options on top of either. Unless
+    ``trust_config`` is set the config's ``graph.patterns`` are dropped (and
+    the label says so): they are regular expressions, and the repository
+    being replayed need not be one the caller wrote.
     """
     cfg: Dict[str, Any] = {}
     source = "defaults"
-    config = root / ".carta" / "config.yaml"
-    if use_config and config.is_file():
+    raw = _read_repo_config(root) if use_config else None
+    if raw is not None:
         source = ".carta/config.yaml"
-        import yaml
-        try:
-            raw = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
-        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
-            raise ConfigError(f"could not read {config.name}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise ConfigError(".carta/config.yaml must be a mapping")
         for key in ("graph", "excluded_paths"):
             if raw.get(key) is not None:
                 cfg[key] = raw[key]
+        graph_cfg = cfg.get("graph")
+        if not trust_config and isinstance(graph_cfg, dict) and graph_cfg.get("patterns"):
+            cfg["graph"] = {k: v for k, v in graph_cfg.items() if k != "patterns"}
+            source += " (graph.patterns ignored)"
     if doc_globs:
         graph = dict(cfg.get("graph") or {}) if isinstance(cfg.get("graph"), dict) else {}
         if "graph" in cfg and not isinstance(cfg["graph"], dict):
@@ -893,7 +945,8 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "carta graph replay")
             except ValueError:
                 raise ReplayError(f"--k {args.k!r}: expected positive integers") from None
         settings, source = _repo_settings(root, args.doc_glob, args.exclude,
-                                          use_config=not args.no_config)
+                                          use_config=not args.no_config,
+                                          trust_config=args.trust_config)
         cache_path = None
         if args.cache_dir:
             cache_path = Path(args.cache_dir) / default_cache_path(root).name
@@ -907,9 +960,7 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "carta graph replay")
         if args.json and args.json != "-":
             out = Path(args.json)
             try:
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
-                               encoding="utf-8")
+                write_text_replacing(out, json.dumps(report, indent=2, sort_keys=True) + "\n")
             except OSError as exc:
                 raise ReplayError(f"could not write the report to {out}: {exc}") from exc
     except (ReplayError, ConfigError) as exc:

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence
 
 from carta.graph.model import SCHEMA_VERSION, Edge
+from carta.graph.safeio import create_exclusive, is_symlink
 
 _SCHEMA = """
 CREATE TABLE meta (
@@ -65,6 +67,35 @@ class StoreUnreadableError(RuntimeError):
     """The file is there but is not a store this Carta can read (damaged, or not SQLite)."""
 
 
+class StoreUnsafeError(StoreUnreadableError):
+    """The store, or a directory of its own, is a symbolic link. It is never followed."""
+
+
+_SIDECARS = ("", "-journal", "-wal", "-shm")
+
+
+def _refuse_symlinks(db_path: Path) -> None:
+    """Raise ``StoreUnsafeError`` if opening ``db_path`` would go through a symbolic link.
+
+    A repository can ship ``.carta/graph``, the database or a file beside it
+    as a link to anywhere, and SQLite (and ``mkdir``, and a plain write)
+    would follow it. Checked: the database and the files SQLite keeps beside
+    it, and the store's own two directories when the path is laid out as
+    ``store_path`` lays it out. The repository root is the user's choice and
+    is not checked.
+    """
+    path = Path(db_path)
+    suspects = [Path(str(path) + suffix) for suffix in _SIDECARS]
+    parent = path.parent
+    if parent.name == "graph" and parent.parent.name == ".carta":
+        suspects += [parent, parent.parent]
+    for suspect in suspects:
+        if is_symlink(suspect):
+            raise StoreUnsafeError(
+                f"{suspect} is a symbolic link; the edge store is never read or written "
+                f"through one. Remove the link and run `carta graph build`.")
+
+
 def store_path(repo_root: Path) -> Path:
     """Where a repository's edge store lives."""
     return Path(repo_root) / ".carta" / "graph" / "edges.db"
@@ -93,15 +124,18 @@ class EdgeStore:
     def __init__(self, db_path: Path) -> None:
         self.path = Path(db_path)
         self._depth = 0
+        self._con = None  # type: ignore[assignment]
+        _refuse_symlinks(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        ignore = self.path.parent / ".gitignore"
-        if not ignore.exists():
-            ignore.write_text("*\n", encoding="utf-8")
+        _refuse_symlinks(self.path)
+        # Created only if the name is free, and never through a link.
+        create_exclusive(self.path.parent / ".gitignore", "*\n")
         self._con = self._open()
 
     @classmethod
     def open_existing(cls, db_path: Path) -> Optional["EdgeStore"]:
         """Open the store only if the file is already there; never create anything."""
+        _refuse_symlinks(Path(db_path))
         if not Path(db_path).is_file():
             return None
         return cls(db_path)
@@ -115,6 +149,7 @@ class EdgeStore:
         and ``StoreVersionError`` for one written by a newer Carta.
         """
         path = Path(db_path)
+        _refuse_symlinks(path)
         if not path.is_file():
             return None
         con = None
@@ -177,10 +212,11 @@ class EdgeStore:
         return self._recreate()
 
     def _recreate(self) -> sqlite3.Connection:
-        for suffix in ("", "-journal", "-wal", "-shm"):
-            stale = Path(str(self.path) + suffix)
-            if stale.exists():
-                stale.unlink()
+        _refuse_symlinks(self.path)
+        for suffix in _SIDECARS:
+            stale = str(self.path) + suffix
+            if os.path.lexists(stale):
+                os.unlink(stale)
         con = self._connect()
         self._create_schema(con)
         return con

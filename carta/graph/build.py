@@ -14,15 +14,20 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from carta.graph.gitio import GitError, is_work_tree, ls_files
+from carta.graph.limits import MAX_DOC_BYTES
 from carta.graph.mentions import extract_mentions
 from carta.graph.model import MENTION_EXTRACTOR, MENTION_EXTRACTOR_VERSION
 from carta.graph.paths import PathIndex, in_path_set, is_doc_path, is_excluded_rel
 from carta.graph.settings import GraphSettings, graph_settings
-from carta.graph.store import EdgeStore, StoreUnreadableError, StoreVersionError, store_path
+from carta.graph.safeio import SkippedFile, read_regular_file
+from carta.graph.store import (
+    EdgeStore, StoreUnreadableError, StoreUnsafeError, StoreVersionError, store_path,
+)
 
 META_SETTINGS = "mention.settings_sha"
 META_PATHS = "mention.paths_sha"
 META_VERSION = "mention.extractor_version"
+META_UNREADABLE = "mention.unreadable_docs"
 
 
 def content_sha256(data: bytes) -> str:
@@ -81,16 +86,29 @@ def _scan_tree(repo_root: Path, settings: GraphSettings) -> Tuple[PathIndex, Lis
     return index, docs
 
 
-def _read(repo_root: Path, rel: str) -> Optional[bytes]:
+def read_doc(repo_root: Path, rel: str) -> Tuple[Optional[bytes], str]:
+    """The bytes of one doc, and why there are none: ``''``, ``skipped`` or ``unreadable``.
+
+    The one way doc content is read from the working tree. ``skipped`` is a
+    rule, the same on every run: the doc is, or sits behind, a symbolic link
+    (it would be read from wherever the link points, in or out of the
+    repository); it is not a regular file; it is larger than
+    ``MAX_DOC_BYTES``; or it has gone. ``unreadable`` is a failure (a
+    permission or I/O error on a file that is there) and says nothing about
+    what the doc holds.
+    """
     try:
-        return (repo_root / rel).read_bytes()
+        return read_regular_file(repo_root, rel, MAX_DOC_BYTES), ""
+    except SkippedFile:
+        return None, "skipped"
     except OSError:
-        return None
+        return None, "unreadable"
 
 
 def _disabled_report() -> dict:
     return {"enabled": False, "docs": 0, "extracted": 0, "unchanged": 0, "written": 0,
-            "removed": 0, "skipped": 0, "edges": 0, "full": False, "digest": "", "by_kind": {}}
+            "removed": 0, "skipped": 0, "unreadable": 0, "edges": 0, "full": False,
+            "digest": "", "by_kind": {}}
 
 
 def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
@@ -99,8 +117,15 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
     Returns a report: ``docs`` (sources found), ``extracted`` (re-extracted
     this run), ``unchanged`` (not re-extracted), ``written`` (sources whose
     stored rows actually changed), ``removed`` (sources dropped), ``skipped``
-    (docs that could not be read), ``edges`` and ``by_kind`` (store totals),
-    ``full`` (every doc was re-extracted) and ``digest``.
+    (docs that were not read: see ``read_doc``), ``unreadable`` (the part of
+    ``skipped`` that failed rather than being ruled out), ``edges`` and
+    ``by_kind`` (store totals), ``full`` (every doc was re-extracted) and
+    ``digest``.
+
+    A doc that fails to read keeps the rows it had: a permission error is not
+    evidence that it stopped naming anything. The store records that it
+    happened, and ``graph_status`` reports the store stale until a build
+    reads every doc.
     """
     repo_root = Path(repo_root)
     settings = graph_settings(cfg)
@@ -110,7 +135,7 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
     settings_sha = settings.fingerprint()
     paths_sha = index.fingerprint()
     version = str(MENTION_EXTRACTOR_VERSION)
-    extracted = unchanged = written = skipped = 0
+    extracted = unchanged = written = skipped = unreadable = 0
 
     with EdgeStore(store_path(repo_root)) as store, store.transaction():
         full = (
@@ -123,9 +148,12 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
         known = store.source_hashes(MENTION_EXTRACTOR)
         present = set()
         for doc in docs:
-            data = _read(repo_root, doc)
+            data, state = read_doc(repo_root, doc)
             if data is None:
                 skipped += 1
+                if state == "unreadable":
+                    unreadable += 1
+                    present.add(doc)        # keep what is stored for it
                 continue
             present.add(doc)
             sha = content_sha256(data)
@@ -148,12 +176,14 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
         store.set_meta(META_SETTINGS, settings_sha)
         store.set_meta(META_PATHS, paths_sha)
         store.set_meta(META_VERSION, version)
+        store.set_meta(META_UNREADABLE, str(unreadable))
         counts = store.counts()
         digest = store.edges_digest((MENTION_EXTRACTOR,))
 
-    return {"enabled": True, "docs": len(present), "extracted": extracted,
+    return {"enabled": True, "docs": len(present) - unreadable, "extracted": extracted,
             "unchanged": unchanged, "written": written, "removed": len(gone),
-            "skipped": skipped, "edges": counts["edges"], "full": bool(full),
+            "skipped": skipped, "unreadable": unreadable, "edges": counts["edges"],
+            "full": bool(full),
             "digest": digest, "by_kind": counts["by_kind"]}
 
 
@@ -162,9 +192,12 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
 
     ``stale`` is true when a build would change the store; ``stale_reasons``
     lists why, from ``no_store``, ``newer_schema``, ``extractor_changed``,
-    ``settings_changed``, ``paths_changed``, ``docs_changed`` and ``unreadable``
-    (the file is damaged or is not a store; it is left exactly as found, and
-    the next build replaces it).
+    ``settings_changed``, ``paths_changed``, ``docs_changed``,
+    ``docs_unreadable`` (a doc could not be read, now or at the last build, so
+    its rows may be out of date), ``unreadable`` (the file is damaged or is
+    not a store; it is left exactly as found, and the next build replaces it)
+    and ``unsafe_store`` (the store or its directory is a symbolic link, which
+    is never followed).
     """
     repo_root = Path(repo_root)
     settings = graph_settings(cfg)
@@ -175,6 +208,9 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
         store = EdgeStore.open_readonly(store_path(repo_root))
     except StoreVersionError:
         status.update(exists=True, stale_reasons=["newer_schema"])
+        return status
+    except StoreUnsafeError:
+        status.update(exists=True, stale_reasons=["unsafe_store"])
         return status
     except StoreUnreadableError:
         status.update(exists=True, stale_reasons=["unreadable"])
@@ -192,13 +228,18 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
         if store.get_meta(META_PATHS) != index.fingerprint():
             reasons.append("paths_changed")
         current: Dict[str, str] = {}
+        failed = set()
         for doc in docs:
-            data = _read(repo_root, doc)
+            data, state = read_doc(repo_root, doc)
             if data is not None:
                 current[doc] = content_sha256(data)
+            elif state == "unreadable":
+                failed.add(doc)
         known = store.source_hashes(MENTION_EXTRACTOR)
-        if current != known:
+        if current != {doc: sha for doc, sha in known.items() if doc not in failed}:
             reasons.append("docs_changed")
+        if failed or (store.get_meta(META_UNREADABLE) or "0") != "0":
+            reasons.append("docs_unreadable")
         counts = store.counts()
         status.update(
             exists=True, schema_version=store.schema_version,

@@ -1107,13 +1107,13 @@ def cmd_graph(args):
         sys.exit(1)
     cfg, repo_root = _graph_context()
     from carta.graph.build import build_graph, graph_status
-    from carta.graph.store import StoreVersionError
+    from carta.graph.store import StoreUnsafeError, StoreVersionError
     try:
         if action == "build":
             report = build_graph(repo_root, cfg, force=args.force)
         else:
             report = graph_status(repo_root, cfg)
-    except (ConfigError, StoreVersionError) as e:
+    except (ConfigError, StoreVersionError, StoreUnsafeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     if args.json:
@@ -1128,8 +1128,13 @@ def cmd_graph(args):
               f"{report['unchanged']:,} unchanged)")
         if report["removed"]:
             print(f"  {_plural(report['removed'], 'doc')} no longer present, removed")
-        if report["skipped"]:
-            print(f"  {_plural(report['skipped'], 'doc')} could not be read, skipped")
+        ruled_out = report["skipped"] - report.get("unreadable", 0)
+        if ruled_out:
+            print(f"  {_plural(ruled_out, 'doc')} not read (a symbolic link, not a regular "
+                  f"file, or over the size limit), skipped")
+        if report.get("unreadable"):
+            print(f"  {_plural(report['unreadable'], 'doc')} could not be read; what the "
+                  f"store held for them was kept, and it stays stale until they can be")
         return
     if not report["exists"]:
         print("No edge store yet. Run `carta graph build`.")
@@ -1137,6 +1142,11 @@ def cmd_graph(args):
     if report["stale_reasons"] == ["newer_schema"]:
         print("The edge store was written by a newer Carta. Upgrade Carta, or delete "
               ".carta/graph/edges.db to rebuild it.")
+        return
+    if report["stale_reasons"] == ["unsafe_store"]:
+        print("The edge store at .carta/graph/edges.db, or a directory above it, is a "
+              "symbolic link. Carta never reads or writes the store through one; remove "
+              "the link and run `carta graph build`.")
         return
     if report["stale_reasons"] == ["unreadable"]:
         print("The edge store at .carta/graph/edges.db cannot be read (damaged, or not a "

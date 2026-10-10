@@ -16,7 +16,14 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from carta.graph.limits import (
+    MAX_CACHE_PAYLOAD_BYTES, MAX_CACHED_TOKENS, MAX_CANDIDATES_PER_DOC, MAX_LINE_LENGTH,
+)
+from carta.graph.markdown import EVIDENCE_LIMIT
 from carta.graph.model import Candidate
+from carta.graph.safeio import is_symlink
+
+_CONTEXTS = frozenset(("link", "code", "fence", "frontmatter", "pattern"))
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS scan (blob TEXT NOT NULL, fingerprint TEXT NOT NULL, "
@@ -55,7 +62,41 @@ def _pack(obj) -> bytes:
 
 
 def _unpack(payload):
-    return json.loads(zlib.decompress(payload).decode("utf-8", "surrogatepass"))
+    """Decode one entry. ``ValueError`` when it inflates past the bound: nothing this
+    module wrote does, and a cache file is only as trustworthy as its directory."""
+    inflater = zlib.decompressobj()
+    data = inflater.decompress(payload, MAX_CACHE_PAYLOAD_BYTES)
+    if inflater.unconsumed_tail or not inflater.eof:
+        raise ValueError("cache entry is truncated or too large")
+    return json.loads(data.decode("utf-8", "surrogatepass"))
+
+
+def _candidates(rows) -> Optional[List[Candidate]]:
+    """Cached rows as candidates, or ``None`` if they are not what ``put_scan`` writes."""
+    if not isinstance(rows, list) or len(rows) > MAX_CANDIDATES_PER_DOC:
+        return None
+    out = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 6:
+            return None
+        raw, ctx, line, evidence, single, pattern = row
+        if not (isinstance(raw, str) and isinstance(evidence, str) and isinstance(pattern, str)
+                and isinstance(line, int) and not isinstance(line, bool) and line >= 1
+                and isinstance(single, bool) and ctx in _CONTEXTS
+                and len(raw) <= MAX_LINE_LENGTH and len(evidence) <= EVIDENCE_LIMIT):
+            return None
+        out.append(Candidate(raw, ctx, line, evidence, single, pattern))
+    return out
+
+
+def _token_counts(loaded) -> Optional[Dict[str, int]]:
+    if not isinstance(loaded, dict) or len(loaded) > MAX_CACHED_TOKENS:
+        return None
+    for token, count in loaded.items():
+        if (not isinstance(token, str) or isinstance(count, bool) or not isinstance(count, int)
+                or count < 0):
+            return None
+    return loaded
 
 
 class ReplayCache:
@@ -70,6 +111,11 @@ class ReplayCache:
         if path is not None:
             try:
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
+                # SQLite follows a symbolic link, to the database or to the
+                # files it keeps beside it. A cache is not worth that.
+                for suffix in ("", "-journal", "-wal", "-shm"):
+                    if is_symlink(str(path) + suffix):
+                        raise OSError(f"{path}{suffix} is a symbolic link")
                 conn = sqlite3.connect(str(path))
                 for statement in _SCHEMA:
                     conn.execute(statement)
@@ -123,11 +169,7 @@ class ReplayCache:
         if hit is None:
             rows = self._load("scan", "fingerprint", blob, fingerprint)
             if rows is not None:
-                try:
-                    hit = [Candidate(str(r[0]), str(r[1]), int(r[2]), str(r[3]), bool(r[4]),
-                                     str(r[5])) for r in rows]
-                except (TypeError, ValueError, IndexError):
-                    hit = None
+                hit = _candidates(rows)
                 if hit is not None:
                     self._scan.put((blob, fingerprint), hit)
         if hit is None:
@@ -144,8 +186,8 @@ class ReplayCache:
     def get_tokens(self, blob: str, version: int) -> Optional[Dict[str, int]]:
         hit = self._tokens.get((blob, version))
         if hit is None:
-            loaded = self._load("tokens", "version", blob, version)
-            if isinstance(loaded, dict):
+            loaded = _token_counts(self._load("tokens", "version", blob, version))
+            if loaded is not None:
                 hit = loaded
                 self._tokens.put((blob, version), hit)
         if hit is None:

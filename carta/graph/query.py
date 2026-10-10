@@ -15,13 +15,15 @@ from bisect import bisect_left
 from pathlib import Path
 from typing import Collection, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from carta.graph.build import build_graph, decode_text, list_repo_paths
+from carta.graph.build import build_graph, decode_text, list_repo_paths, read_doc
 from carta.graph.gitio import GitError, default_branch, diff_name_status
 from carta.graph.mentions import extract_mentions
 from carta.graph.model import KINDS, MENTION_EXTRACTOR, Edge
-from carta.graph.paths import PathIndex, glob_to_regex, in_path_set, is_doc_path
+from carta.graph.paths import PathIndex, glob_matcher, in_path_set, is_doc_path
 from carta.graph.settings import GraphSettings, graph_settings
-from carta.graph.store import EdgeStore, StoreUnreadableError, StoreVersionError, store_path
+from carta.graph.store import (
+    EdgeStore, StoreUnreadableError, StoreUnsafeError, StoreVersionError, store_path,
+)
 
 IMPACT_SCHEMA = 1
 DEFAULT_KIND_WEIGHTS: Dict[str, float] = {"mention": 1.0, "symbol": 0.8, "cochange": 0.5}
@@ -133,7 +135,7 @@ class ImpactIndex:
                 out.append((parent, "dir", 1.0 / (1 + len(parts) - i)))
         if not q.endswith("/"):
             for glob in self._globs.get(kind, ()):
-                if glob_to_regex(glob).match(q):
+                if glob_matcher(glob).match(q):
                     out.append((glob, "glob", GLOB_SPEC))
         return out
 
@@ -317,7 +319,11 @@ def _diff_paths(repo_root: Path, diff: str) -> Tuple[str, Dict[str, str]]:
             range_spec = f"{default_branch(repo_root)}...HEAD"
         return range_spec, diff_name_status(repo_root, range_spec)
     except GitError as exc:
-        if diff and os.path.lexists(os.path.join(str(repo_root), diff)):
+        # The hint is only for a name inside the repository: anything else
+        # would tell the caller whether an arbitrary file exists.
+        inside = posixpath.normpath(diff) if diff and "\0" not in diff else ""
+        if (inside and not inside.startswith(("/", "../")) and inside not in (".", "..")
+                and os.path.lexists(os.path.join(str(repo_root), inside))):
             raise ImpactError(
                 f"`{diff}` is a path, not a range; pass it without --diff") from exc
         raise ImpactError(
@@ -343,11 +349,8 @@ def _edges_before(repo_root: Path, settings: GraphSettings, gone: Sequence[str],
     for doc in current:
         if not is_doc_path(doc, settings):
             continue
-        try:
-            data = (repo_root / doc).read_bytes()
-        except OSError:
-            continue
-        if b"\0" in data:
+        data, _state = read_doc(repo_root, doc)
+        if data is None or b"\0" in data:
             continue
         out.extend(e for e in extract_mentions(doc, decode_text(data), before, settings)
                    if e.kind == "mention")
@@ -414,7 +417,7 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         if build:
             build_graph(repo_root, cfg)
         store = EdgeStore.open_readonly(store_path(repo_root))
-    except StoreVersionError as exc:
+    except (StoreVersionError, StoreUnsafeError) as exc:
         raise ImpactError(str(exc)) from exc
     except StoreUnreadableError as exc:
         raise ImpactError(f"{exc}; run `carta graph build` to rebuild it") from exc

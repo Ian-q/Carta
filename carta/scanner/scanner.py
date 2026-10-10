@@ -983,11 +983,15 @@ def run_scan(
     if progress:
         progress.scan_step("checking mentioned paths")
     missing_mentions: list[dict] = []
+    # "failed" is recorded: a check that could not run finds nothing, and
+    # that must not read as a repository with nothing to find.
+    missing_check = "ok"
     try:
         from carta.graph import scan as graph_scan
         missing_mentions = graph_scan.missing_path_findings(repo_root, cfg)
     except Exception:
         missing_mentions = []
+        missing_check = "failed"
     issues.extend(missing_mentions)
 
     # Related auto-suggest (semantic; degrades gracefully when Qdrant/Ollama unavailable)
@@ -1018,6 +1022,7 @@ def run_scan(
             "sidecars": len(sidecar_files),
             "homeless": sum(1 for i in issues if i["type"] == "homeless_doc"),
             "missing_path_mentions": len(missing_mentions),
+            "missing_path_check": missing_check,
             "by_status": {
                 s: sum(1 for fm in frontmatters.values() if fm and fm.get("status") == s)
                 for s in ("active", "prototype", "archived")
