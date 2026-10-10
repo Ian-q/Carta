@@ -728,12 +728,13 @@ def carta_impact(
         the symbol index could not be loaded and the symbol matches come from the
         last good build, so they may be out of date. Or {"error", "detail"}.
 
-        A match's "kind" says which of two things it means. "mention": the doc
-        names the path (re-read the evidence lines). "cochange" (match
-        "cochange"): the doc and the path changed in the same commits, and the
-        evidence text is the count ("changed together in 9 of 14 commits"); that
-        is git history, a correlation, and the doc may not name the path at all.
-        Pass kinds=["mention"] or kinds=["cochange"] to read one of them alone.
+        A match's "kind" says what it means. "mention": the doc names the path
+        (re-read the evidence lines). "symbol": the doc names an identifier the
+        path defines (same). "cochange" (match "cochange"): the doc and the path
+        changed in the same commits, and the evidence text is the count
+        ("changed together in 9 of 14 commits"); that is git history, a
+        correlation, and the doc may not name the path at all. Pass
+        kinds=["mention"], ["symbol"] or ["cochange"] to read one of them alone.
     """
     return _impact(paths=paths, diff=diff, top_k=top_k, kinds=kinds, include_docs=include_docs)
 

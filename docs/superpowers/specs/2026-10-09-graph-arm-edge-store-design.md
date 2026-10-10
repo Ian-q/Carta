@@ -1988,7 +1988,7 @@ runs its own mention state to get each doc's identifiers at the parent, so `--ar
 works without a mention arm. `--max-definitions N` overrides the limit for a run.
 
 Results, `carta graph replay --range 792b6690 --no-cache --no-config --arm mention=mention
---arm symbol=symbol --arm both=mention+symbol --symbols ctags`, 403 commits scanned, 54
+--arm symbol=symbol --arm both=mention+symbol@max --symbols ctags`, 403 commits scanned, 54
 eligible, 7.4 s:
 
 | | R@1 | R@3 | R@5 | R@10 | any@5 | MRR |
@@ -2044,6 +2044,62 @@ The symbol arm is written to the standard of the hardening section, and adds the
 | Git lookups | `commits_changing_text` passes the identifier as one `-S` argument and the doc as a literal pathspec; `files_with_word` takes only a full object name and an identifier, reads names with `-z`, and raises when a name is not under the tree it asked about. |
 | Failure | A failed load keeps the edges and is reported stale, by `graph status` and by `carta impact`; a file with lines and no row is a failed load, not an empty index; an incomplete or failed scan check is recorded as such. |
 
+### With co-change edges (#130): three kinds in one store
+
+#130 and #131 were written side by side from the same commit. Stacked, they meet in four
+places. Each is covered by `carta/graph/tests/test_three_kinds.py`.
+
+- **Build.** One build runs three passes in a fixed order: mentions, history, symbols. Each
+  pass writes only its own extractor's rows, with its own version, fingerprint and digest.
+  Turning the symbol provider off removes the symbol edges only; `graph.cochange.enabled:
+  false` removes the co-change edges only; `--no-cochange` skips the history pass and still
+  brings symbol edges up to date. The report's `edges` and `by_kind` are counted after the
+  last pass that changed the store. Stacking showed one error here: a build that had just
+  turned the provider off reported the symbol edges it had deleted. It now counts again.
+- **`carta impact`.** The default kinds are `graph.impact.kinds` (`mention`, `cochange`) plus
+  `symbol` when a provider is configured, so a project with a provider reads three kinds.
+  They are fused with `graph.impact.combine`. In the text form a symbol reason carries the
+  `[named]` label, because it comes from what the doc says, not from history.
+- **Combine mode.** Before #130 several kinds were scored in one pool, which is now the mode
+  `max`. #130 changed the default to `norm`. Every mention-plus-symbol number in this section
+  was measured in one pool, so its command now says `@max`. The `max_definitions` table and
+  the range and leak comparisons above are `@max` too.
+- **Replay.** An arm may list all three kinds, with or without `@MODE`; the symbol source
+  (`--symbols`) is needed as soon as one arm reads `symbol`.
+
+Measured, `carta graph replay --range 792b6690 --no-cache --no-config --symbols ctags` with one
+arm per row, 403 commits scanned, 54 eligible, 21 without the hub docs (inconclusive):
+
+| Arm | MRR | R@5 | R@10 | MRR, no hubs |
+|---|---|---|---|---|
+| mention | 0.191 | 0.210 | 0.262 | 0.276 |
+| cochange | 0.615 | 0.637 | 0.725 | 0.404 |
+| mention+symbol@max | 0.201 | 0.210 | 0.315 | 0.273 |
+| mention+symbol@norm | 0.185 | 0.182 | 0.299 | 0.271 |
+| mention+symbol@rrf | 0.207 | 0.201 | 0.278 | 0.280 |
+| mention+cochange (norm) | 0.489 | 0.602 | 0.799 | 0.381 |
+| mention+cochange+symbol (norm) | 0.407 | 0.523 | 0.740 | 0.355 |
+| mention+cochange+symbol@rrf | 0.341 | 0.415 | 0.635 | 0.378 |
+| mention+cochange+symbol@sum | 0.244 | 0.282 | 0.422 | 0.319 |
+| mention+cochange+symbol@max | 0.254 | 0.282 | 0.431 | 0.321 |
+
+Paired MRR differences, 95% bootstrap intervals over commits:
+
+- mention+symbol@norm against mention: -0.006 (-0.020 to +0.006), 19 better, 12 worse, 23
+  tied. Under the default mode the small gain of the pooled arm is gone.
+- Three kinds against mention+cochange, both `norm`: -0.082 (-0.135 to -0.031), 5 better, 20
+  worse, 29 tied. Without hubs: -0.026 (-0.077 to +0.002), 1 better, 6 worse, 14 tied.
+- Three kinds against cochange alone: -0.209 (-0.311 to -0.104).
+- Three kinds, `norm` against `rrf`: +0.065 (+0.012 to +0.118); without hubs -0.023 (-0.074
+  to +0.005).
+
+Reading: on this history, adding symbol edges to the two default kinds lowers MRR, and the
+interval excludes zero on the table with hubs. The table without hubs has 21 commits and
+decides nothing. This is one repository whose most-edited docs name few identifiers, the same
+population every default was chosen on. Nothing was tuned in response: the symbol weight
+stays 0.8 and the provider stays off by default. A project that turns a provider on and wants
+the two-kind ranking can pass `--kinds mention,cochange`.
+
 ### Amendments from the review of #131
 
 | # | Finding | Change |
@@ -2088,3 +2144,9 @@ The symbol arm is written to the standard of the hardening section, and adds the
 - The word scan treats every non-doc text file as code, so a name that survives only in a
   comment or a data file is "still there". That errs towards silence.
 - Tested against universal-ctags 6.2.1 on macOS only.
+- With a provider configured, `carta impact` reads three kinds by default, and on this
+  repository's history that ranks worse than mentions plus co-change (see *With co-change
+  edges*). Whether `symbol` should join the default kinds, and at what weight, needs a
+  history where symbol edges carry more than they do here; it was not tuned on this one.
+- The range-sensitivity, leak and `max_definitions` comparisons were measured in one pool
+  (`@max`) and were not re-run under `norm`.

@@ -573,7 +573,7 @@ here (README, changelog) do not name files, and the docs that do name files are 
 nobody edits again. Numbers, populations and the reading of them are in
 [the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
 
-Symbol edges can be scored the same way: `--arm both=mention+symbol --symbols ctags`. The replay
+Symbol edges can be scored the same way: `--arm both=mention+symbol@max --symbols ctags`. The replay
 may only use what a commit's parent had, so `--symbols ctags` re-runs universal-ctags on each
 parent's code, read from git objects into a scratch directory and cached per file content (the
 whole history above takes about 8 s). `--symbols tracked:PATH` reads a symbols file the
@@ -589,6 +589,16 @@ range: ending four commits later (58 eligible) the same clean run reads +0.018 (
 +0.041), so "significant or not" is not something this history can settle. The leak is small
 here: today's index scores the combined arm 0.003 higher than each parent's own (paired over
 the 54 commits: 3 better, none worse, 51 tied).
+
+Those numbers score the two kinds in one pool (`@max`). An arm with no `@MODE`, and
+`carta impact` itself, fuse kinds with `graph.impact.combine` (default `norm`, see co-change
+edges below). Under `norm` the same arm scores 0.185, which cannot be told from mentions alone
+(paired -0.006, -0.020 to +0.006). All three kinds in one arm
+(`--arm all=mention+cochange+symbol`) score MRR 0.407 against 0.489 for mentions plus
+co-change (paired -0.082, -0.135 to -0.031; 5 commits better, 20 worse, 29 tied); without the
+hub docs it is 0.355 against 0.381 (21 commits, too few to call). So on this history symbol
+edges do not improve the default pair of kinds. That is reported as measured; no weight was
+tuned to change it.
 
 #### Co-change edges: what git history says moves together
 
