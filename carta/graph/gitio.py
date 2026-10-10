@@ -259,6 +259,55 @@ def deleted_and_renamed(repo: Path, limit: int) -> Tuple[FrozenSet[str], Dict[st
     return _parse_deleted_renamed(out)
 
 
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,199}")
+
+
+def commits_changing_text(repo: Path, path: str, needle: str, limit: int = 64) -> List[str]:
+    """Commits, newest first, that changed how often ``needle`` occurs in ``path``.
+
+    A pickaxe (``git log -S``) limited to one file, so it costs a walk over
+    that file's own history. ``path`` is taken literally, never as a pathspec
+    pattern; ``needle`` is one argument and never a pattern either.
+    """
+    if (not needle or len(needle) > 200
+            or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in needle)):
+        raise GitError("not a text git can search history for")
+    if not path or "\0" in path:
+        raise GitError("not a path")
+    out = run_git(repo, "--literal-pathspecs", "log", "--format=%H", "-n", str(max(1, int(limit))),
+                  f"-S{needle}", "--end-of-options", "HEAD", "--", path)
+    rows = _oid_rows(out)
+    if any(len(row) != 1 for row in rows):
+        raise GitError("git log printed more than one object name per line")
+    return [row[0] for row in rows]
+
+
+def files_with_word(repo: Path, commit: str, word: str) -> List[str]:
+    """Paths in the tree of ``commit`` whose text holds ``word`` as a whole word.
+
+    ``commit`` must be a full object name and ``word`` an identifier, so
+    neither can be read as an option or a pattern. The answer is a list of
+    names (``git grep -l -z``); no matched text is read.
+    """
+    if not _is_oid(commit):
+        raise GitError(f"{commit!r} is not a full object name")
+    if _WORD.fullmatch(word) is None:
+        raise GitError("not a word git can search a tree for")
+    proc = _run(repo, ("grep", "-l", "-z", "-I", "-w", "-F", "-e", word, commit, "--"))
+    if proc.returncode == 1 and not proc.stdout:
+        return []                                   # git grep: nothing matched
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()
+        raise GitError(f"git grep failed ({proc.returncode}): {detail}")
+    prefix = commit.encode("ascii") + b":"
+    paths = []
+    for token in _records(proc.stdout):
+        if not token.startswith(prefix):
+            raise GitError("git grep printed a name outside the tree it was asked about")
+        paths.append(_path(token[len(prefix):]))
+    return paths
+
+
 def _beyond_symlink(repo: Path, rel: str) -> bool:
     """True when git cannot be asked about ``rel``: it is not a plain path below ``repo``,
     or one of its parent directories is a symbolic link."""
