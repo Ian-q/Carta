@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 # On-disk layout of the edge store. A store with a lower version is rebuilt;
@@ -17,6 +18,19 @@ MENTION_EXTRACTOR = "mention"
 KINDS = ("mention", "ident", "pattern", "cochange", "symbol", "related")
 DST_TYPES = ("file", "doc", "dir", "glob", "missing", "token", "pattern")
 SRC_TYPES = ("doc", "file")
+
+
+# Terminal control characters (C0, DEL, C1) and the bidirectional overrides.
+# Evidence is stored without them, and anything else a repository names (a
+# file name can hold any of them) is printed through ``printable``: a
+# repository must not be able to drive the terminal or reorder what is shown.
+CONTROL_CHARS = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+
+
+def printable(text: str) -> str:
+    """``text`` with each control character written out as its escape (``\\x1b``)."""
+    return CONTROL_CHARS.sub(
+        lambda m: m.group().encode("unicode_escape").decode("ascii"), str(text))
 
 
 def canonical_meta(data: dict) -> str:

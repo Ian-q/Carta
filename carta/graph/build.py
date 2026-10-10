@@ -197,7 +197,7 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
     its rows may be out of date), ``unreadable`` (the file is damaged or is
     not a store; it is left exactly as found, and the next build replaces it)
     and ``unsafe_store`` (the store or its directory is a symbolic link, which
-    is never followed).
+    is never followed, or the file is larger than ``MAX_STORE_BYTES``).
     """
     repo_root = Path(repo_root)
     settings = graph_settings(cfg)

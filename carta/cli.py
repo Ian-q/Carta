@@ -1145,8 +1145,8 @@ def cmd_graph(args):
         return
     if report["stale_reasons"] == ["unsafe_store"]:
         print("The edge store at .carta/graph/edges.db, or a directory above it, is a "
-              "symbolic link. Carta never reads or writes the store through one; remove "
-              "the link and run `carta graph build`.")
+              "symbolic link, or the file is larger than Carta opens. Carta never reads "
+              "or writes such a store; remove it and run `carta graph build`.")
         return
     if report["stale_reasons"] == ["unreadable"]:
         print("The edge store at .carta/graph/edges.db cannot be read (damaged, or not a "

@@ -25,3 +25,14 @@ MAX_PATTERN_REGEX_LENGTH = 512
 
 MAX_CACHE_PAYLOAD_BYTES = 16 * 1024 * 1024      # one decompressed replay-cache entry
 MAX_CACHED_TOKENS = 200_000                     # distinct tokens in one cached doc
+
+# -- the edge store, read back --------------------------------------------------
+# The store sits in the repository's own ``.carta/``, so a repository can ship
+# one. What is read back from it is held to what Carta writes.
+MAX_STORE_BYTES = 1024 * 1024 * 1024    # a larger store (with its journal) is not opened
+MAX_STORED_TEXT_LENGTH = 4096           # a path, target, key or evidence in one row
+MAX_STORED_EDGE_META_LENGTH = 64 * 1024  # one edge's meta JSON
+
+# -- the replay -----------------------------------------------------------------
+MAX_REPLAY_COMMIT_FILES = 5000          # upper bound of graph.replay.max_files (the bulk rule)
+MAX_REPLAY_TEXT_BYTES = 64 * 1024 * 1024    # doc text held at once while one commit is ranked

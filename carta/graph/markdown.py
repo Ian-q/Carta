@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 from carta.graph.limits import (
     MAX_CANDIDATES_PER_DOC, MAX_DOC_BYTES, MAX_LINE_LENGTH, MAX_LINK_TARGET_LENGTH,
 )
-from carta.graph.model import Candidate
+from carta.graph.model import CONTROL_CHARS, Candidate
 
 EVIDENCE_LIMIT = 240
 
@@ -36,10 +36,8 @@ _INLINE_LINK = re.compile(
     r"""(?:\s+(?:"[^"]{0,""" + _N + r"""}"|'[^']{0,""" + _N + r"""}'|\([^)]{0,""" + _N
     + r"""}\)))?\s*\)""")
 _REF_DEF = re.compile(r"^ {0,3}\[([^\]]+)\]:\s+(<[^>]*>|\S+)")
-# Terminal control characters (C0, DEL, C1) and the bidirectional overrides:
-# evidence is printed, and a doc must not be able to drive the terminal or
-# reorder what is shown.
-_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+# Evidence is printed, so it is stored without control characters.
+_CONTROL = CONTROL_CHARS
 _CALL_HEAD = re.compile(
     r"[&*@]?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|->|#)[A-Za-z_][A-Za-z0-9_]*)*\(")
 
