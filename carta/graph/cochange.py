@@ -20,10 +20,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import (
+    Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple,
+)
 
 from carta.graph.gitio import (
-    GitError, LogEntry, first_parent_rows, is_shallow, log_entries, toplevel,
+    GitError, LogEntry, first_parent_rows, is_shallow, is_unborn, iter_added_deleted,
+    iter_log_entries, work_tree_root,
 )
 from carta.graph.limits import MAX_COCHANGE_PATH_LENGTH
 from carta.graph.model import Edge, canonical_meta
@@ -33,7 +36,7 @@ from carta.graph.store import EdgeStore, store_path
 
 COCHANGE_EXTRACTOR = "cochange"
 # Bump whenever the miner would store different rows for an unchanged history.
-COCHANGE_EXTRACTOR_VERSION = 1
+COCHANGE_EXTRACTOR_VERSION = 2
 COCHANGE_KIND = "cochange"
 
 META_CURSOR = "cochange.last_commit"
@@ -41,6 +44,7 @@ META_SEQ = "cochange.seq"
 META_SETTINGS = "cochange.settings_sha"
 META_VERSION = "cochange.extractor_version"
 META_TOTALS = "cochange.totals"
+META_SUMMARY = "cochange.summary"
 
 # The empty blob, as SHA-1 and as SHA-256. Every empty file shares it, so it
 # says nothing about which file moved where.
@@ -48,25 +52,24 @@ _EMPTY_BLOBS = frozenset((
     "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
     "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
 ))
-_LOG_BATCH = 2000           # commits read from git per call, to bound memory
+_LOG_BATCH = 2000           # commits asked of git per call; entries are streamed, never held
 
 
 def countable_path(path: str) -> bool:
     """True when a path from history may be counted and stored.
 
-    File names are untrusted. One is left out when it is outside the path set
-    (``.git/``, ``.carta/``), is over-long, holds a control character (it would
-    be printed), or is not valid UTF-8 (it could not be stored as text).
+    File names are untrusted, and a counted name is stored and later printed.
+    One is left out when it is outside the path set (``.git/``, ``.carta/``),
+    is over-long, or holds anything but printable characters and the plain
+    space: a control character (C0 or C1), a line or paragraph separator, a
+    format character such as a bidirectional override, an unassigned code
+    point, or a byte that was not valid UTF-8.
     """
     if not isinstance(path, str) or not in_path_set(path):
         return False
     if len(path) > MAX_COCHANGE_PATH_LENGTH:
         return False
-    for ch in path:
-        code = ord(ch)
-        if code < 0x20 or code == 0x7f or 0xd800 <= code <= 0xdfff:
-            return False
-    return True
+    return path.isprintable()
 
 
 class _File:
@@ -155,11 +158,11 @@ class PairTable:
     def _move(self, old: str, new: str) -> None:
         self._drop(new)
         state = self.files.pop(old, None)
+        if state is None:               # a file with no counts has nothing to carry over
+            return
         partners = self.adj.pop(old, {})
         self.gone.add(old)
         self.dirty.discard(old)
-        if state is None:
-            return
         self.files[new] = state
         self.gone.discard(new)
         self.dirty.add(new)
@@ -239,6 +242,28 @@ class PairTable:
                 pair.support += 1
                 pair.last = sha
                 pair.seq = seq
+
+    def observe_bulk(self, sha: str, deleted: Iterable[str],
+                     renames: Iterable[Tuple[str, str]] = (), *, has_parent: bool = True) -> None:
+        """Count one mainline commit that is over ``max_files``, without its change list.
+
+        What ``observe`` does with such a commit, given only what it uses:
+        the paths it ``deleted`` and its pure moves as ``(old, new)``. Paths
+        this table holds no counts for may be left out of both; they change
+        nothing. ``sha`` is unused (a bulk commit is recorded on no pair) and
+        is taken so the two calls read alike.
+        """
+        self.seq += 1
+        moved: Set[str] = set()
+        if self.settings.follow_renames:
+            for old, new in sorted(set(renames)):
+                self._move(old, new)
+                moved.add(old)
+        for path in sorted(set(deleted)):
+            if path not in moved:
+                self._drop(path)
+        if has_parent:
+            self.bulk += 1
 
     # -- reading ------------------------------------------------------------
 
@@ -416,13 +441,82 @@ def observe_entry(table: PairTable, entry: LogEntry, prefix: str = "") -> None:
         removed={p[cut:]: b for p, b in entry.removed.items() if p.startswith(prefix)})
 
 
+def _bulk_changes(top: Path, row: Sequence[str], prefix: str,
+                  tables: Sequence[PairTable]) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """What a commit over the limit still does to ``tables``: ``(deleted, renames)``.
+
+    Its change list was never collected, so the two things a bulk commit is
+    used for are read from git again, each in one streamed pass that keeps
+    only what a table can use: the deleted paths some table has counts for,
+    and, for those, whether exactly one path was deleted and exactly one
+    added with the same content. Memory is bounded by the tables, not by the
+    commit.
+    """
+    cut = len(prefix)
+    deleted: Dict[str, str] = {}
+    for status, path, blob in iter_added_deleted(top, row, prefix=prefix):
+        path = path[cut:]
+        if status == "D" and countable_path(path) and any(path in t.files for t in tables):
+            deleted[path] = blob
+    wanted = {blob for blob in deleted.values() if blob and blob not in _EMPTY_BLOBS}
+    if not wanted or not any(t.settings.follow_renames for t in tables):
+        return sorted(deleted), []
+    olds = dict.fromkeys(wanted, 0)
+    news: Dict[str, List] = {blob: [0, ""] for blob in wanted}
+    for status, path, blob in iter_added_deleted(top, row, prefix=prefix):
+        path = path[cut:]
+        if blob not in wanted or not countable_path(path):
+            continue
+        if status == "D":
+            olds[blob] += 1
+        else:
+            news[blob][0] += 1
+            news[blob][1] = path
+    renames = sorted((old, news[blob][1]) for old, blob in deleted.items()
+                     if blob in wanted and olds[blob] == 1 and news[blob][0] == 1)
+    return sorted(deleted), renames
+
+
+def mine_rows(top: Path, rows: Sequence[Sequence[str]], tables: Sequence[PairTable],
+              prefix: str = "", *, limit: int = 0) -> Iterator[LogEntry]:
+    """Feed the commits of ``rows`` to every table, oldest first, and yield each entry.
+
+    The bulk limit is applied while git's answer is read, not after: a commit
+    that changes more paths than every table's ``max_files`` (and than
+    ``limit``, for a caller with a limit of its own) comes back ``truncated``,
+    with a count and no paths, and is fed through ``observe_bulk``. So memory
+    is one commit of at most that many paths, whatever the history holds.
+    """
+    cap = max([limit] + [table.settings.max_files for table in tables])
+    for begin in range(0, len(rows), _LOG_BATCH):
+        batch = rows[begin:begin + _LOG_BATCH]
+        for row, entry in zip(batch, iter_log_entries(top, batch, max_changes=cap,
+                                                      prefix=prefix)):
+            if not tables:
+                pass                    # a caller that only reads: nothing to feed
+            elif not entry.truncated:
+                for table in tables:
+                    observe_entry(table, entry, prefix)
+            elif not entry.parents:
+                for table in tables:
+                    table.observe_bulk(entry.sha, (), has_parent=False)
+            else:
+                deleted, renames = _bulk_changes(top, row, prefix, tables)
+                for table in tables:
+                    table.observe_bulk(entry.sha, deleted, renames)
+            yield entry
+
+
 def _history(repo_root: Path) -> Tuple[Optional[Path], str, List[List[str]]]:
     """The git root, the Carta root's prefix below it, and the mainline rows.
 
-    ``(None, '', [])`` when there is no usable history: not a repository, git
-    missing, or no commit yet. That is "no edges", never an error.
+    ``(None, '', [])`` when ``repo_root`` is in no repository and ``(top,
+    prefix, [])`` when the branch has no commit yet: both are "no edges",
+    never an error. Anything else git cannot answer (a damaged ref, a missing
+    object, git itself failing) raises ``GitError``: a history that cannot be
+    read is not an empty one, and the caller must not act as if it were.
     """
-    top = toplevel(repo_root)
+    top = work_tree_root(repo_root)
     if top is None:
         return None, "", []
     try:
@@ -430,15 +524,15 @@ def _history(repo_root: Path) -> Tuple[Optional[Path], str, List[List[str]]]:
     except ValueError:
         return None, "", []
     rel = rel.replace(os.sep, "/")
-    if rel == "..":
-        return None, "", []
-    if rel.startswith("../"):
+    if rel == ".." or rel.startswith("../"):
         return None, "", []
     prefix = "" if rel == "." else rel + "/"
     try:
         rows = first_parent_rows(top, "HEAD")
     except GitError:
-        return top, prefix, []
+        if is_unborn(top):
+            return top, prefix, []
+        raise
     return top, prefix, rows
 
 
@@ -450,18 +544,19 @@ def _empty_report(status: str, enabled: bool) -> dict:
 
 def _clear(store: EdgeStore) -> None:
     store.clear_extractor(COCHANGE_EXTRACTOR)
-    for key in (META_CURSOR, META_SEQ, META_SETTINGS, META_VERSION, META_TOTALS):
+    for key in (META_CURSOR, META_SEQ, META_SETTINGS, META_VERSION, META_TOTALS, META_SUMMARY):
         store.set_meta(key, "")
 
 
-def _stored_table(store: EdgeStore, settings: CochangeSettings, fingerprint: str,
-                  rows: Sequence[Sequence[str]]) -> Optional[PairTable]:
-    """The table the store holds, if it can be advanced along ``rows``; else ``None``.
+def _stored_seq(store: EdgeStore, fingerprint: str,
+                rows: Sequence[Sequence[str]]) -> Optional[int]:
+    """How many of ``rows`` the store has already counted, or ``None`` to start over.
 
-    It can when it was written by this version with these settings, and the
-    commit it stopped at is still at the same position on the mainline. A
-    rewritten or lengthened history (a rebase, a branch switch, a shallow
-    clone that was deepened) fails that test and is mined again from the start.
+    A number when the store was written by this version with these settings
+    and the commit it stopped at is still at the same position on the
+    mainline. A rewritten or lengthened history (a rebase, a branch switch, a
+    shallow clone that was deepened) fails that test and is mined again from
+    the start.
     """
     if store.get_meta(META_SETTINGS) != fingerprint:
         return None
@@ -477,11 +572,35 @@ def _stored_table(store: EdgeStore, settings: CochangeSettings, fingerprint: str
             return None
     elif seq > len(rows) or rows[seq - 1][0] != cursor:
         return None
+    return seq
+
+
+def _stored_table(store: EdgeStore, settings: CochangeSettings, seq: int) -> Optional[PairTable]:
+    """The table the store holds, or ``None`` when its rows are not what this code wrote."""
     try:
         return PairTable.load(settings, seq, store.get_meta(META_TOTALS) or "",
                               store.source_meta(COCHANGE_EXTRACTOR))
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def _summary(table: PairTable, edges: int, digest: str) -> str:
+    sizes = table.counts()
+    return canonical_meta({"counted": table.total, "bulk": table.bulk, "files": sizes["files"],
+                           "pairs": sizes["pairs"], "edges": edges, "digest": digest})
+
+
+def _stored_summary(store: EdgeStore) -> Optional[dict]:
+    """What the last build reported about the store, or ``None`` if it is not on record."""
+    try:
+        data = _obj(store.get_meta(META_SUMMARY) or "")
+        for key in ("counted", "bulk", "files", "pairs", "edges"):
+            _int(data[key])
+        if not isinstance(data["digest"], str):
+            return None
+    except (ValueError, KeyError, TypeError):
+        return None
+    return data
 
 
 def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = False) -> dict:
@@ -491,6 +610,11 @@ def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = Fa
     files they touch are rewritten. The whole update is one store transaction,
     so a failure part-way (``GitError``) leaves the previous state, cursor
     included, and the store still knows it is behind.
+
+    A history git cannot read raises ``GitError`` before anything is touched;
+    only a directory in no repository and a branch with no commit count as an
+    empty history. A build with no new commit returns what the last one
+    recorded, without reading the pair state.
 
     Returns a report: ``status`` (``ok``, ``no_history`` or ``disabled``),
     ``commits`` (mainline commits seen in all), ``new_commits`` (read this
@@ -512,12 +636,26 @@ def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = Fa
 
     top, prefix, rows = _history(repo_root)
     fingerprint = cs.fingerprint(settings, COCHANGE_EXTRACTOR_VERSION)
+    head = rows[-1][0] if rows else ""
+    status = "ok" if rows else "no_history"
 
     def is_doc(path: str) -> bool:
         return is_doc_path(path, settings)
 
     with EdgeStore(store_path(repo_root)) as store, store.transaction():
-        table = None if force else _stored_table(store, cs, fingerprint, rows)
+        seq = None if force else _stored_seq(store, fingerprint, rows)
+        if seq is not None and seq == len(rows):
+            # Nothing new on the mainline. The pair state is not read at all:
+            # a build that has nothing to do must not cost what the state weighs.
+            summary = _stored_summary(store)
+            if summary is not None:
+                return {"enabled": True, "status": status, "commits": seq, "new_commits": 0,
+                        "counted": summary["counted"], "bulk": summary["bulk"],
+                        "files": summary["files"], "pairs": summary["pairs"],
+                        "edges": summary["edges"], "written": 0, "full": False,
+                        "shallow": bool(top is not None and rows and is_shallow(top)),
+                        "head": head, "digest": summary["digest"]}
+        table = None if seq is None else _stored_table(store, cs, seq)
         full = table is None
         if table is None:
             had_rows = bool(store.source_meta(COCHANGE_EXTRACTOR))
@@ -527,9 +665,9 @@ def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = Fa
         else:
             written = 0
         start = table.seq
-        for begin in range(start, len(rows), _LOG_BATCH):
-            for entry in log_entries(top, rows[begin:begin + _LOG_BATCH]):
-                observe_entry(table, entry, prefix)
+        if top is not None:
+            for _entry in mine_rows(top, rows[start:], [table], prefix):
+                pass
         new_commits = len(rows) - start
 
         if cs.measure == "lift" and new_commits:
@@ -549,17 +687,17 @@ def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = Fa
             store.replace_source(COCHANGE_EXTRACTOR, path, "", COCHANGE_EXTRACTOR_VERSION,
                                  edges, meta)
             written += 1
-        head = rows[-1][0] if rows else ""
+        n_edges = store.counts()["by_kind"].get(COCHANGE_KIND, 0)
+        digest = store.edges_digest((COCHANGE_EXTRACTOR,))
         store.set_meta(META_CURSOR, head)
         store.set_meta(META_SEQ, str(table.seq))
         store.set_meta(META_SETTINGS, fingerprint)
         store.set_meta(META_VERSION, str(COCHANGE_EXTRACTOR_VERSION))
         store.set_meta(META_TOTALS, table.totals())
-        n_edges = store.counts()["by_kind"].get(COCHANGE_KIND, 0)
-        digest = store.edges_digest((COCHANGE_EXTRACTOR,))
+        store.set_meta(META_SUMMARY, _summary(table, n_edges, digest))
 
     sizes = table.counts()
-    return {"enabled": True, "status": "ok" if rows else "no_history", "commits": table.seq,
+    return {"enabled": True, "status": status, "commits": table.seq,
             "new_commits": new_commits, "counted": table.total, "bulk": table.bulk,
             "files": sizes["files"], "pairs": sizes["pairs"], "edges": n_edges,
             "written": written, "full": full,
@@ -580,7 +718,12 @@ def cochange_status(repo_root: Path, settings: GraphSettings, store: EdgeStore) 
         if held:
             status.update(stale=True, reason="cochange_disabled")
         return status
-    _top, _prefix, rows = _history(repo_root)
+    try:
+        _top, _prefix, rows = _history(repo_root)
+    except GitError:
+        # The history cannot be read, so nobody can say the rows match it.
+        status.update(stale=True, reason="cochange_git_failed")
+        return status
     head = rows[-1][0] if rows else ""
     fingerprint = cs.fingerprint(settings, COCHANGE_EXTRACTOR_VERSION)
     mined = bool(store.get_meta(META_SETTINGS))

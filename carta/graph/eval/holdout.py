@@ -12,6 +12,14 @@ commits, and the candidate set is the files that existed at the cut. A file
 created later can be neither a seed nor an answer, since nothing frozen at
 the cut could know it.
 
+A deletion is not a co-change: the miner drops a deleted file and counts
+nothing for it, so a path a commit deletes is neither a seed nor an answer
+here either. The questions asked are the ones the edges are defined to answer.
+
+History is read as a stream. A commit over the bulk limit is counted and
+never collected, so memory follows the pair tables and the tree at the cut,
+not the size of the largest commit or the length of the history.
+
 An external file-to-file graph (``--graph NAME=PATH``, JSON or TSV adjacency)
 is scored as one more method on the identical queries, so a code graph from
 another tool can be compared with history on the same footing. Carta cannot
@@ -32,10 +40,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from carta.config import ConfigError
-from carta.graph.cochange import PairTable, countable_path
+from carta.graph.cochange import PairTable, countable_path, mine_rows
 from carta.graph.eval.metrics import RESAMPLES, aggregate, bootstrap_ci, paired_bootstrap
-from carta.graph.gitio import GitError, first_parent_log, rev_parse, toplevel
-from carta.graph.limits import MAX_EXTERNAL_GRAPH_BYTES, MAX_EXTERNAL_GRAPH_EDGES
+from carta.graph.gitio import (
+    GitError, first_parent_rows, is_unborn, ls_tree, rev_parse, toplevel,
+)
+from carta.graph.limits import (
+    MAX_COCHANGE_COMMIT_FILES, MAX_EXTERNAL_GRAPH_BYTES, MAX_EXTERNAL_GRAPH_EDGES,
+)
 from carta.graph.safeio import write_text_replacing
 from carta.graph.settings import DEFAULT_SETTINGS, CochangeSettings, GraphSettings
 
@@ -264,8 +276,9 @@ def run_holdout(repo: Path, *, rev: str = "HEAD", cut: Optional[str] = None,
     if clash:
         raise HoldoutError(f"method name {sorted(clash)[0]!r} is taken")
     max_files = int(settings.cochange.max_files if max_files is None else max_files)
-    if max_files < 2:
-        raise HoldoutError(f"max_files must be at least 2, got {max_files}")
+    if not 2 <= max_files <= MAX_COCHANGE_COMMIT_FILES:
+        raise HoldoutError(f"max_files must be between 2 and {MAX_COCHANGE_COMMIT_FILES}, "
+                           f"got {max_files}")
     window = int(popularity_window)
     if window < 0:
         raise HoldoutError(f"the popularity window must not be negative, got {window}")
@@ -274,32 +287,29 @@ def run_holdout(repo: Path, *, rev: str = "HEAD", cut: Optional[str] = None,
     if root is None:
         raise HoldoutError(f"{repo} is not inside a git repository")
     try:
-        log = first_parent_log(root, rev)
-    except GitError:
-        log = []                            # no commit yet: an empty history, not an error
-    shas = [entry.sha for entry in log]
-    n_train = _cut_index(root, shas, cut, cut_share) if log else 0
-    train, test = log[:n_train], log[n_train:]
+        head = rev_parse(root, rev)
+    except GitError as exc:
+        # Only a branch with no commit yet is an empty history. A revision that
+        # names nothing is a mistake, and must not pass for a quiet repository.
+        if rev != "HEAD" or not is_unborn(root):
+            raise HoldoutError(f"--rev {rev!r} does not name a commit: {exc}") from exc
+        mainline: List[List[str]] = []
+    else:
+        mainline = first_parent_rows(root, head)
+    shas = [row[0] for row in mainline]
+    n_train = _cut_index(root, shas, cut, cut_share) if mainline else 0
+    train, test = mainline[:n_train], mainline[n_train:]
 
     # Everything a method may know, built from the commits before the cut only.
     tables = {name: PairTable(cs) for name, cs in sorted(variants.items())}
-    known: Set[str] = set()
     touched: List[Tuple[str, ...]] = []
-    for entry in train:
-        for table in tables.values():
-            table.observe(entry.sha, entry.changes, has_parent=bool(entry.parents),
-                          blobs=entry.blobs, removed=entry.removed)
-        live = []
-        for status, path in entry.changes:
-            if not countable_path(path):
-                continue
-            if status == "D":
-                known.discard(path)
-            else:
-                known.add(path)
-                live.append(path)
-        if entry.parents and len(entry.changes) <= max_files:
-            touched.append(tuple(live))
+    for entry in mine_rows(root, train, list(tables.values()), limit=max_files):
+        if entry.parents and not entry.truncated and entry.n_changes <= max_files:
+            touched.append(tuple(path for status, path in entry.changes
+                                 if status != "D" and countable_path(path)))
+    known: Set[str] = set()
+    if n_train:
+        known = {path for path in ls_tree(root, shas[n_train - 1]) if countable_path(path)}
     counts: Dict[str, int] = {}
     for paths in (touched[-window:] if window else touched):
         for path in paths:
@@ -334,11 +344,12 @@ def run_holdout(repo: Path, *, rev: str = "HEAD", cut: Optional[str] = None,
     commit_rows: List[dict] = []
     n_queries = 0
     gold_sizes: List[int] = []
-    for entry in test:
-        files = sorted({p for _s, p in entry.changes if countable_path(p)})
-        if len(entry.changes) > max_files:
+    # No table is fed here: the commits after the cut are read and scored, never learned.
+    for entry in mine_rows(root, test, (), limit=max_files):
+        if entry.truncated or entry.n_changes > max_files:
             skipped["bulk"] += 1
             continue
+        files = sorted({p for s, p in entry.changes if s != "D" and countable_path(p)})
         if len(files) < 2:
             skipped["single_file"] += 1
             continue
@@ -404,7 +415,7 @@ def run_holdout(repo: Path, *, rev: str = "HEAD", cut: Optional[str] = None,
                        for name, (graph, info) in external.items()},
         },
         "population": {
-            "commits": len(log), "train_commits": len(train), "test_commits": len(test),
+            "commits": len(mainline), "train_commits": len(train), "test_commits": len(test),
             "eligible": n, "queries": n_queries, "skipped": skipped,
             "files_at_cut": len(known),
             "gold_files_mean": statistics.fmean(gold_sizes) if gold_sizes else 0.0,

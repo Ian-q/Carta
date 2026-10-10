@@ -173,6 +173,11 @@ def test_scores_never_exceed_one_under_decay():
     ("a\nb", False), ("a\tb", False), ("a\x1b[31m", False), ("a\x7f", False),
     ("x" * 1025, False), ("", False), (".git/config", False), (".carta/x", False),
     ("bad\udcff", False), ("nested/", False),
+    # Not plain printable text: C1 controls (CSI among them), a bidirectional
+    # override, line and paragraph separators, a zero-width joiner, a no-break space.
+    ("a\u009b31m.py", False), ("a\u0085b.py", False), ("a\u202e.py", False),
+    ("a\u2028b.py", False), ("a\u2029b.py", False), ("a\u200db.py", False),
+    ("a\u00a0b.py", False), ("日本語.md", True), ("a b/c d.py", True),
 ])
 def test_countable_path(path, ok):
     assert countable_path(path) is ok
@@ -417,21 +422,29 @@ def test_build_reads_only_the_commits_after_the_cursor(git_repo, monkeypatch):
     repo.write("src/a.py", "a = 9\n")
     repo.commit("one more", 9)
     asked = []
-    real = cochange_mod.log_entries
+    real = cochange_mod.iter_log_entries
 
-    def spy(top, rows):
+    def spy(top, rows, **kwargs):
         asked.append(len(rows))
-        return real(top, rows)
+        return real(top, rows, **kwargs)
 
-    monkeypatch.setattr(cochange_mod, "log_entries", spy)
+    monkeypatch.setattr(cochange_mod, "iter_log_entries", spy)
     assert build_graph(repo.root, SMALL)["cochange"]["new_commits"] == 1
     assert build_graph(repo.root, SMALL)["cochange"]["new_commits"] == 0
     assert asked == [1]
 
 
 @requires_git
-def test_a_shallow_clone_gives_no_edges_and_no_error(git_repo, tmp_path):
+def test_a_shallow_clone_is_mined_as_far_as_its_history_goes(git_repo, tmp_path):
     repo = seed_history(git_repo)
+    clone = tmp_path / "four"
+    subprocess.run(["git", "clone", "-q", "--depth", "4", repo.root.as_uri(), str(clone)],
+                   check=True, capture_output=True)
+    report = build_graph(clone, SMALL)["cochange"]
+    # The boundary commit looks like a root and is not counted; "change a" is.
+    assert report["status"] == "ok" and report["shallow"] is True
+    assert (report["commits"], report["counted"], report["edges"]) == (4, 2, 2)
+    assert graph_status(clone, SMALL)["stale"] is False
     for depth, name in ((1, "one"), (2, "two")):
         clone = tmp_path / name
         subprocess.run(["git", "clone", "-q", "--depth", str(depth), repo.root.as_uri(),
@@ -526,17 +539,17 @@ def test_a_git_failure_leaves_the_store_as_it_was_and_still_stale(git_repo, monk
     repo.write("docs/a.md", "nine\n")
     repo.commit("later", 9)
 
-    def broken(top, rows):
+    def broken(top, rows, **kwargs):
         raise GitError("git went away")
 
-    def noisy(top, rows):
+    def noisy(top, rows, **kwargs):
         raise GitError("bad name \x1b[31m\n" + "x" * 500)
 
-    monkeypatch.setattr(cochange_mod, "log_entries", noisy)
+    monkeypatch.setattr(cochange_mod, "iter_log_entries", noisy)
     detail = build_graph(repo.root, SMALL)["cochange"]["detail"]
     assert detail.startswith("bad name ?[31m?x") and len(detail) == 300
 
-    monkeypatch.setattr(cochange_mod, "log_entries", broken)
+    monkeypatch.setattr(cochange_mod, "iter_log_entries", broken)
     report = build_graph(repo.root, SMALL)
     assert report["cochange"] == {"enabled": True, "status": "failed", "detail": "git went away"}
     assert report["docs"] == 2                          # the mention pass still ran
@@ -554,19 +567,19 @@ def test_a_failure_part_way_through_a_batch_writes_nothing(git_repo, monkeypatch
     repo = seed_history(git_repo)
     monkeypatch.setattr(cochange_mod, "_LOG_BATCH", 2)
     calls = []
-    real = cochange_mod.log_entries
+    real = cochange_mod.iter_log_entries
 
-    def second_batch_fails(top, rows):
+    def second_batch_fails(top, rows, **kwargs):
         calls.append(len(rows))
         if len(calls) == 2:
             raise GitError("cut off")
-        return real(top, rows)
+        return real(top, rows, **kwargs)
 
-    monkeypatch.setattr(cochange_mod, "log_entries", second_batch_fails)
+    monkeypatch.setattr(cochange_mod, "iter_log_entries", second_batch_fails)
     assert build_graph(repo.root, SMALL)["cochange"]["status"] == "failed"
     with EdgeStore(store_path(repo.root)) as store:
         assert not store.get_meta(META_CURSOR) and not store.source_meta(COCHANGE_EXTRACTOR)
-    monkeypatch.setattr(cochange_mod, "log_entries", real)
+    monkeypatch.setattr(cochange_mod, "iter_log_entries", real)
     assert build_graph(repo.root, SMALL)["cochange"]["commits"] == 5
 
 
@@ -627,7 +640,8 @@ def test_hostile_file_names_are_read_exactly_and_never_stored(git_repo):
     repo.write("README.md", "x\n")
     repo.commit("root", 0)
     names = ["line\nbreak.py", "tab\tname.py", "\x01ctl.py", "-dash.py", "--end-of-options",
-             "sp ace.md", "quote\".py", "dollar$(x).py"]
+             "sp ace.md", "quote\".py", "dollar$(x).py", "bidi\u202eevil.py",
+             "csi\u009b31m.py", "sep\u2028line.py"]
     made = []
     for name in names:
         try:
@@ -647,7 +661,7 @@ def test_hostile_file_names_are_read_exactly_and_never_stored(git_repo):
     assert report["status"] == "ok" and report["counted"] == 2
     with EdgeStore(store_path(repo.root)) as store:
         stored = set(store.source_meta(COCHANGE_EXTRACTOR))
-    printable = {n for n in made if all(ord(c) >= 0x20 for c in n)} | {"plain.py"}
+    printable = {n for n in made if n.isprintable()} | {"plain.py"}
     assert stored == printable
     assert all(dst in printable for _src, dst, *_ in cochange_edges(repo.root))
     assert ("plain.py", "-dash.py", "file", 1.0, 2) in cochange_edges(repo.root)
@@ -690,3 +704,194 @@ def test_build_cochange_is_reachable_on_its_own(git_repo):
     off = graph_settings(cfg(enabled=False))
     assert build_cochange(repo.root, off)["status"] == "disabled"
     assert cochange_edges(repo.root) == []
+
+
+# -- review findings (#130) --------------------------------------------------------
+
+def _break_head(repo):
+    """Point the branch at an object that is not there, as a damaged repository would."""
+    ref = repo.root / ".git" / "refs" / "heads" / "main"
+    if not ref.is_file():
+        pytest.skip("this git does not keep the branch as a loose ref")
+    saved = ref.read_bytes()
+    ref.write_bytes(b"1" * 40 + b"\n")
+    return ref, saved
+
+
+@requires_git
+def test_a_history_git_cannot_list_is_a_failure_not_an_empty_history(git_repo, monkeypatch):
+    repo = seed_history(git_repo)
+    assert build_graph(repo.root, SMALL)["cochange"]["edges"] == 2
+    before = digest(repo.root)
+    head = repo.git("rev-parse", "HEAD").strip()
+    ref, saved = _break_head(repo)
+
+    report = build_graph(repo.root, SMALL)
+    assert report["cochange"]["status"] == "failed" and report["cochange"]["detail"]
+    assert report["docs"] == 2                          # the mention pass still ran
+    assert digest(repo.root) == before
+    with EdgeStore(store_path(repo.root)) as store:
+        assert store.get_meta(META_CURSOR) == head
+    status = graph_status(repo.root, SMALL)
+    assert status["stale"] is True and status["stale_reasons"] == ["cochange_git_failed"]
+    assert status["by_kind"]["cochange"] == 2
+    with pytest.raises(GitError):
+        build_cochange(repo.root, graph_settings(SMALL))
+
+    ref.write_bytes(saved)
+    assert graph_status(repo.root, SMALL)["stale"] is False
+
+    def timed_out(top, rev="HEAD"):
+        raise GitError("git timed out")
+
+    monkeypatch.setattr(cochange_mod, "first_parent_rows", timed_out)
+    assert build_graph(repo.root, SMALL)["cochange"] == {
+        "enabled": True, "status": "failed", "detail": "git timed out"}
+    assert digest(repo.root) == before
+    assert graph_status(repo.root, SMALL)["stale_reasons"] == ["cochange_git_failed"]
+
+
+@requires_git
+def test_a_repository_git_refuses_is_a_failure_not_a_plain_directory(git_repo, tmp_path):
+    repo = seed_history(git_repo)
+    build_graph(repo.root, SMALL)
+    before = digest(repo.root)
+    (repo.root / ".git").rename(tmp_path / "moved.git")
+    (repo.root / ".git").write_text("gitdir: /nonexistent/elsewhere\n")
+    assert build_graph(repo.root, SMALL)["cochange"]["status"] == "failed"
+    assert digest(repo.root) == before
+    assert graph_status(repo.root, SMALL)["stale_reasons"] == ["cochange_git_failed"]
+    # With no .git entry at all it is simply not a repository: no history, no rows.
+    (repo.root / ".git").unlink()
+    assert build_graph(repo.root, SMALL)["cochange"]["status"] == "no_history"
+    assert cochange_edges(repo.root) == []
+
+
+@requires_git
+def test_an_orphan_branch_is_an_empty_history(git_repo):
+    repo = seed_history(git_repo)
+    build_graph(repo.root, SMALL)
+    repo.git("checkout", "-q", "--orphan", "fresh")
+    report = build_graph(repo.root, SMALL)["cochange"]
+    assert report["status"] == "no_history" and report["edges"] == 0
+    assert cochange_edges(repo.root) == []
+    assert graph_status(repo.root, SMALL)["stale"] is False
+
+
+def _bulk_history(repo, rng):
+    """A history whose bulk commits also delete files and move them without edits."""
+    names = [f"src/f{i}.py" for i in range(12)]
+    for i, name in enumerate(names):
+        repo.write(name, f"file {i}\n")
+    repo.commit("root", 0)
+    live = list(names)
+    for day in range(1, 26):
+        kind = rng.choice(["small", "small", "small", "sweep", "exodus"])
+        if kind == "small" or len(live) < 8:
+            for name in rng.sample(live, rng.randint(1, 3)):
+                repo.write(name, f"{name} on day {day}\n")
+        elif kind == "sweep":                       # every file edited: over any small limit
+            for name in live:
+                repo.write(name, f"{name} swept on day {day}\n")
+        else:                                       # a mass move, some deletions, one copy pair
+            for name in list(live[:6]):
+                fresh = name.replace("src/", f"moved{day}/")
+                (repo.root / fresh).parent.mkdir(parents=True, exist_ok=True)
+                (repo.root / name).rename(repo.root / fresh)
+                live[live.index(name)] = fresh
+            gone = live.pop()
+            repo.rm(gone)
+            twin = live.pop()
+            body = (repo.root / twin).read_bytes()
+            repo.rm(twin)
+            for copy in (f"twin{day}/a.py", f"twin{day}/b.py"):     # one old, two new: no move
+                (repo.root / copy).parent.mkdir(parents=True, exist_ok=True)
+                (repo.root / copy).write_bytes(body)
+                live.append(copy)
+            repo.write(f"new{day}.py", f"new on {day}\n")
+            live.append(f"new{day}.py")
+        repo.commit(f"day {day}", day)
+
+
+@requires_git
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_bulk_commits_read_without_their_paths_give_the_same_table(git_repo, seed):
+    from carta.graph.gitio import first_parent_rows, log_entries
+    _bulk_history(git_repo, random.Random(seed))
+    rows = first_parent_rows(git_repo.root)
+    settings = dataclasses.replace(PLAIN, max_files=4)
+    whole = PairTable(settings)                     # every change of every commit in hand
+    for entry in log_entries(git_repo.root, rows):
+        cochange_mod.observe_entry(whole, entry)
+    streamed = PairTable(settings)
+    seen = list(cochange_mod.mine_rows(git_repo.root, rows, [streamed]))
+    assert whole.bulk >= 3 and whole.total >= 3
+    assert _dump(streamed) == _dump(whole)
+    assert (streamed.seq, streamed.total, streamed.bulk) == (whole.seq, whole.total, whole.bulk)
+    assert streamed.gone - set(streamed.files) == whole.gone - set(whole.files)
+    # The limit held while reading: no entry ever carried more paths than it allows.
+    assert max(len(entry.changes) for entry in seen) <= settings.max_files
+    assert any(entry.truncated and entry.n_changes > settings.max_files for entry in seen)
+
+
+@requires_git
+def test_a_commit_over_the_limit_is_counted_and_never_collected(git_repo):
+    from carta.graph.gitio import first_parent_rows, iter_log_entries
+    repo = git_repo
+    repo.write("keep.py", "k\n")
+    repo.commit("root", 0)
+    for i in range(40):
+        repo.write(f"gen/f{i:02d}.txt", "x\n")
+    repo.write("other/z.py", "z\n")
+    repo.commit("wide", 1)
+    repo.write("keep.py", "k2\n")
+    repo.commit("narrow", 2)
+    repo.commit("empty", 3)
+    rows = first_parent_rows(repo.root)
+    root, wide, narrow, empty = iter_log_entries(repo.root, rows, max_changes=5)
+    assert (wide.truncated, wide.n_changes, wide.changes, wide.blobs, wide.removed) == (
+        True, 41, (), {}, {})
+    assert (root.truncated, root.n_changes) == (False, 1)
+    assert narrow.changes == (("M", "keep.py"),) and not narrow.truncated
+    assert (empty.changes, empty.n_changes, empty.truncated) == ((), 0, False)
+    # A prefix is applied before the count, so a wide change elsewhere is not this root's bulk.
+    _r, wide, _n, _e = iter_log_entries(repo.root, rows, max_changes=5, prefix="other/")
+    assert (wide.truncated, wide.changes) == (False, (("A", "other/z.py"),))
+    exact = list(iter_log_entries(repo.root, rows, max_changes=41))[1]
+    assert not exact.truncated and exact.n_changes == 41
+
+
+@requires_git
+def test_a_build_with_nothing_new_does_not_read_the_pair_state(git_repo, monkeypatch):
+    repo = seed_history(git_repo)
+    first = build_graph(repo.root, SMALL)["cochange"]
+
+    def loaded(*args, **kwargs):
+        raise AssertionError("the pair state was loaded for a build with no new commit")
+
+    monkeypatch.setattr(PairTable, "load", loaded)
+    monkeypatch.setattr(EdgeStore, "source_meta", loaded)
+    again = build_graph(repo.root, SMALL, cochange=True)["cochange"]
+    assert again == dict(first, new_commits=0, written=0, full=False)
+    assert again["digest"] == digest(repo.root) and again["edges"] == 2
+    monkeypatch.undo()
+    # A forced build, and one with a new commit, still read and rewrite it.
+    assert build_cochange(repo.root, graph_settings(SMALL), force=True)["full"] is True
+    repo.write("src/a.py", "a = 9\n")
+    repo.commit("later", 9)
+    later = build_graph(repo.root, SMALL)["cochange"]
+    assert later["new_commits"] == 1 and later["commits"] == 6
+    assert build_graph(repo.root, SMALL)["cochange"] == dict(later, new_commits=0, written=0)
+
+
+@requires_git
+def test_a_summary_that_is_not_on_record_falls_back_to_reading_the_state(git_repo):
+    repo = seed_history(git_repo)
+    first = build_graph(repo.root, SMALL)["cochange"]
+    for damaged in ("", "{}", '{"counted": -1}', "not json"):
+        with EdgeStore(store_path(repo.root)) as store:
+            store.set_meta(cochange_mod.META_SUMMARY, damaged)
+        assert build_graph(repo.root, SMALL)["cochange"] == dict(
+            first, new_commits=0, written=0, full=False)
+        with EdgeStore(store_path(repo.root)) as store:
+            assert json.loads(store.get_meta(cochange_mod.META_SUMMARY))["edges"] == 2

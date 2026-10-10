@@ -24,8 +24,9 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, Iterator, List, Optional, Sequence, Set, Tuple
 
 # Variables that point git at another repository, object store or config.
 # They are set inside hooks (and can be set by anything that launches Carta),
@@ -48,6 +49,7 @@ _TREE_META = re.compile(rb"([0-7]{6}) (blob|tree|commit) (" + _OID_B + rb")")
 _BATCH_HEADER = re.compile(rb"(" + _OID_B + rb") ([a-z]+) ([0-9]{1,18})\n")
 _RENAME = re.compile(r"R[0-9]{1,3}")
 _GITLINK = b"160000"
+_READ_CHUNK = 1 << 16
 _MAX_IGNORE_RUNS = 64
 
 
@@ -322,21 +324,80 @@ def ignored_paths(repo: Path, paths: Sequence[str]) -> FrozenSet[str]:
 # -- history readers (the replay eval) --------------------------------------
 
 class LogEntry:
-    """One mainline commit and what it changed against its first parent."""
+    """One mainline commit and what it changed against its first parent.
 
-    __slots__ = ("sha", "parents", "changes", "blobs", "removed")
+    ``n_changes`` is how many paths the commit changed. When the reader was
+    given a limit and the commit is over it, ``truncated`` is true and the
+    entry holds the count alone: ``changes``, ``blobs`` and ``removed`` are
+    empty, because nothing past the limit was kept.
+    """
+
+    __slots__ = ("sha", "parents", "changes", "blobs", "removed", "n_changes", "truncated")
 
     def __init__(self, sha: str, parents: Tuple[str, ...],
                  changes: Tuple[Tuple[str, str], ...], blobs: Dict[str, str],
-                 removed: Optional[Dict[str, str]] = None) -> None:
+                 removed: Optional[Dict[str, str]] = None, n_changes: Optional[int] = None,
+                 truncated: bool = False) -> None:
         self.sha = sha
         self.parents = parents
         self.changes = changes          # ((status, path), ...) sorted by path; status is A, M or D
         self.blobs = blobs              # path -> blob id, for every added or modified path
         self.removed = removed or {}    # path -> the blob id it had, for every deleted path
+        self.n_changes = len(changes) if n_changes is None else n_changes
+        self.truncated = truncated
 
     def __repr__(self) -> str:
-        return f"LogEntry({self.sha[:12]}, {len(self.changes)} changes)"
+        return f"LogEntry({self.sha[:12]}, {self.n_changes} changes)"
+
+
+def _has_git_marker(path: Path) -> bool:
+    """True when ``path`` or a directory above it holds a ``.git`` entry."""
+    current = os.path.abspath(str(path))
+    while True:
+        if os.path.lexists(os.path.join(current, ".git")):
+            return True
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
+
+
+def work_tree_root(path: Path) -> Optional[Path]:
+    """The root of the work tree holding ``path``; ``None`` when it is in no repository.
+
+    Unlike ``toplevel`` this tells "not a repository" from "git failed". It is
+    ``None`` only when git cannot find a repository *and* no directory from
+    ``path`` upwards holds a ``.git`` entry. Any other failure (git missing or
+    refusing a repository that is plainly there) raises ``GitError``, so a
+    caller never mistakes a broken repository for one with no history.
+    """
+    try:
+        out = run_git(path, "rev-parse", "--show-toplevel")
+    except GitError:
+        if _has_git_marker(path):
+            raise
+        return None
+    text = _text(out[:-1] if out.endswith(b"\n") else out)
+    if not text:
+        raise GitError("git printed no work tree root")
+    return Path(text)
+
+
+def is_unborn(repo: Path) -> bool:
+    """True when ``HEAD`` names a branch that has no commit yet.
+
+    That is a new repository or an orphan branch: an empty history. A branch
+    that exists but cannot be read (a damaged ref, a missing object) is not
+    unborn, and neither is a detached ``HEAD``.
+    """
+    proc = _run(repo, ("symbolic-ref", "-q", "HEAD"))
+    if proc.returncode != 0:
+        return False
+    ref = proc.stdout[:-1] if proc.stdout.endswith(b"\n") else proc.stdout
+    if not ref.startswith(b"refs/") or any(byte < 0x20 or byte == 0x7f for byte in ref):
+        return False
+    proc = _run(repo, ("show-ref", "--verify", "--quiet", "--", _text(ref)))
+    return proc.returncode == 1         # 1: no such ref; anything else is not "no commit yet"
 
 
 def toplevel(path: Path) -> Optional[Path]:
@@ -389,49 +450,105 @@ def _raw_change(match: "re.Match[bytes]", path: str) -> Optional[Tuple[str, str,
     return ("M", path, new)             # M and T (a mode or type change keeps the path)
 
 
-def _parse_raw_log(out: bytes, commits: Sequence[str],
-                   removed: Optional[Dict[str, Dict[str, str]]] = None
-                   ) -> Dict[str, Dict[str, Tuple[str, str]]]:
-    """``diff-tree --stdin -z --raw`` as ``commit -> path -> (status, new blob)``.
+def _stream_tokens(stream) -> Iterator[bytes]:
+    """The NUL-terminated tokens of a ``-z`` stream, read a chunk at a time."""
+    tail = b""
+    while True:
+        chunk = stream.read(_READ_CHUNK)
+        if not chunk:
+            break
+        parts = (tail + chunk).split(b"\0")
+        tail = parts.pop()
+        for part in parts:
+            yield part
+    if tail:
+        raise GitError("git output ended in the middle of a record")
 
-    With ``removed`` given it is filled with ``commit -> path -> old blob`` for
-    every path a commit deleted.
+
+def _raw_events(tokens: Iterator[bytes], commits: Sequence[str]) -> Iterator[tuple]:
+    """The grammar of ``diff-tree --stdin -z --raw``, one token at a time.
+
+    Yields ``("commit", position)`` when the record of ``commits[position]``
+    starts and ``("change", status, path, old blob, new blob)`` for each path
+    it changed (submodule entries left out).
 
     The stream is ``<commit> NUL`` followed by ``<meta> NUL <path> NUL``
     records, for each commit that changed something, in the order asked. A
     path is only ever read as the one token after a meta token, so no file
-    name can pass for a commit or a record.
+    name can pass for a commit or a record. Anything else raises ``GitError``.
     """
     order = {sha: i for i, sha in enumerate(commits)}
-    found: Dict[str, Dict[str, Tuple[str, str]]] = {}
-    tokens = _records(out)
-    current: Optional[Dict[str, Tuple[str, str]]] = None
-    gone: Optional[Dict[str, str]] = None
     last = -1
-    i, n = 0, len(tokens)
-    while i < n:
-        token = tokens[i]
+    for token in tokens:
         if token[:1] == b":":
             match = _RAW_META.fullmatch(token)
-            if match is None or current is None or i + 1 >= n:
+            path_token = next(tokens, None)
+            if match is None or last < 0 or path_token is None:
                 raise GitError(f"unexpected record {token[:80]!r} in git's change log")
-            path = _path(tokens[i + 1])
+            path = _path(path_token)
             change = _raw_change(match, path)
             if change is not None:
-                current[path] = (change[0], change[2])
-                if gone is not None and change[0] == "D":
-                    gone[path] = match.group(3).decode("ascii")
-            i += 2
+                yield ("change", change[0], path, match.group(3).decode("ascii"), change[2])
             continue
         sha = token.decode("ascii", "replace")
         position = order.get(sha, -1) if _is_oid(sha) else -1
         if position <= last:
             raise GitError(f"unexpected token {token[:80]!r} in git's change log")
         last = position
-        current = found[sha] = {}
-        gone = None if removed is None else removed.setdefault(sha, {})
-        i += 1
+        yield ("commit", position)
+
+
+def _parse_raw_log(out: bytes, commits: Sequence[str]) -> Dict[str, Dict[str, Tuple[str, str]]]:
+    """A whole ``diff-tree`` answer as ``commit -> path -> (status, new blob)``.
+
+    The same grammar as the streaming reader, for a stream already in hand.
+    """
+    found: Dict[str, Dict[str, Tuple[str, str]]] = {}
+    current: Dict[str, Tuple[str, str]] = {}
+    for event in _raw_events(iter(_records(out)), commits):
+        if event[0] == "commit":
+            current = found[commits[event[1]]] = {}
+        else:
+            current[event[2]] = (event[1], event[4])
     return found
+
+
+def _diff_tree_events(repo: Path, rows: Sequence[Sequence[str]],
+                      extra: Sequence[str] = ()) -> Iterator[tuple]:
+    """``diff-tree`` over ``rows``, as the events of ``_raw_events``, streamed.
+
+    Nothing is held: memory is one record however large a commit is.
+    """
+    for row in rows:
+        if not row or not all(isinstance(item, str) and _is_oid(item) for item in row):
+            raise GitError("a commit row must hold full object names")
+    with tempfile.TemporaryFile() as asked, tempfile.TemporaryFile() as errors:
+        # One line per commit: the commit, then the parent to compare it with. A
+        # commit given alone is compared with nothing (--root): everything is added.
+        # The request goes through a file, not a pipe, so reading the answer as
+        # it comes can never block against git reading the request.
+        asked.write("".join(" ".join(row[:2]) + "\n" for row in rows).encode("ascii"))
+        asked.seek(0)
+        try:
+            proc = subprocess.Popen(
+                [*_GIT, "diff-tree", "--stdin", "-r", "-z", "--raw", "--no-abbrev",
+                 "--no-renames", "--root", *extra],
+                cwd=str(repo), env=_env(), stdin=asked, stdout=subprocess.PIPE, stderr=errors)
+        except (OSError, ValueError) as exc:
+            raise GitError(f"could not run git: {exc}") from exc
+        try:
+            for event in _raw_events(_stream_tokens(proc.stdout), [row[0] for row in rows]):
+                yield event
+            if proc.wait() != 0:
+                errors.seek(0)
+                detail = errors.read(2000).decode("utf-8", "replace").strip()
+                raise GitError(f"git diff-tree failed ({proc.returncode}): {detail}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            if proc.stdout is not None:
+                proc.stdout.close()
+            proc.wait()
 
 
 def first_parent_rows(repo: Path, rev: str = "HEAD") -> List[List[str]]:
@@ -445,36 +562,97 @@ def first_parent_rows(repo: Path, rev: str = "HEAD") -> List[List[str]]:
                              "--end-of-options", rev, "--"))
 
 
-def log_entries(repo: Path, rows: Sequence[Sequence[str]]) -> List[LogEntry]:
-    """What each commit of ``rows`` (as ``first_parent_rows`` gives them) changed.
+def iter_log_entries(repo: Path, rows: Sequence[Sequence[str]], *,
+                     max_changes: Optional[int] = None, prefix: str = ""
+                     ) -> Iterator[LogEntry]:
+    """What each commit of ``rows`` (as ``first_parent_rows`` gives them) changed, in order.
 
     Every commit is compared with its **first** parent, so a merge commit
     carries the whole change it merged and a squash commit carries one pull
     request. Renames are not detected: a move is a delete plus an add.
     Submodule entries are left out; paths are relative to the repository root
     whatever directory ``repo`` is.
+
+    With ``prefix`` only paths below it are seen at all (they are still given
+    in full). With ``max_changes`` a commit that changed more paths than that
+    is yielded ``truncated``: its paths are counted as they go by and never
+    collected, so the limit holds before the memory is spent, not after.
+    Entries are built one at a time; nothing of an earlier commit is kept.
     """
+    rows = list(rows)
     if not rows:
-        return []
-    for row in rows:
-        if not row or not all(isinstance(item, str) and _is_oid(item) for item in row):
-            raise GitError("a commit row must hold full object names")
-    # One line per commit: the commit, then the parent to compare it with. A
-    # commit given alone is compared with nothing (--root): everything is added.
-    asked = "".join(" ".join(row[:2]) + "\n" for row in rows).encode("ascii")
-    out = run_git(repo, "diff-tree", "--stdin", "-r", "-z", "--raw", "--no-abbrev",
-                  "--no-renames", "--root", input_bytes=asked)
-    removed: Dict[str, Dict[str, str]] = {}
-    found = _parse_raw_log(out, [row[0] for row in rows], removed)
-    entries: List[LogEntry] = []
-    for row in rows:
-        changed = found.get(row[0], {})
+        return
+    done = 0                            # rows[:done] have been yielded
+    changed: Dict[str, Tuple[str, str]] = {}
+    gone: Dict[str, str] = {}
+    count = 0
+    over = False
+    open_row = False
+
+    def entry(row: Sequence[str]) -> LogEntry:
         changes = tuple((changed[p][0], p) for p in sorted(changed))
         blobs = {p: changed[p][1] for p in changed if changed[p][0] != "D"}
-        gone = {p: blob for p, blob in removed.get(row[0], {}).items()
-                if changed.get(p, ("", ""))[0] == "D"}
-        entries.append(LogEntry(row[0], tuple(row[1:]), changes, blobs, gone))
-    return entries
+        return LogEntry(row[0], tuple(row[1:]), changes, blobs, dict(gone), count, over)
+
+    for event in _diff_tree_events(repo, rows):
+        if event[0] == "commit":
+            if open_row:
+                yield entry(rows[done])
+                done += 1
+            while done < event[1]:
+                yield LogEntry(rows[done][0], tuple(rows[done][1:]), (), {})
+                done += 1
+            changed, gone, count, over, open_row = {}, {}, 0, False, True
+            continue
+        _kind, status, path, old, new = event
+        if prefix and not path.startswith(prefix):
+            continue
+        count += 1
+        if over:
+            continue
+        if max_changes is not None and count > max_changes:
+            over = True
+            changed, gone = {}, {}
+            continue
+        if path in changed:
+            raise GitError("git listed one path twice in one commit")
+        changed[path] = (status, new)
+        if status == "D":
+            gone[path] = old
+    if open_row:
+        yield entry(rows[done])
+        done += 1
+    while done < len(rows):
+        yield LogEntry(rows[done][0], tuple(rows[done][1:]), (), {})
+        done += 1
+
+
+def log_entries(repo: Path, rows: Sequence[Sequence[str]]) -> List[LogEntry]:
+    """``iter_log_entries`` as a list, with every change of every commit kept.
+
+    Memory grows with the changes read; a caller that only folds the entries
+    into something smaller should iterate instead.
+    """
+    return list(iter_log_entries(repo, rows))
+
+
+def iter_added_deleted(repo: Path, row: Sequence[str], *, prefix: str = ""
+                       ) -> Iterator[Tuple[str, str, str]]:
+    """``(status, path, blob)`` for each path one commit added (``A``, its new blob)
+    or deleted (``D``, the blob it had), streamed. ``row`` is one ``first_parent_rows`` row.
+    """
+    # T is asked for too: a file that becomes a submodule entry (or the
+    # reverse) is a type change to git and a delete (or an add) here.
+    for event in _diff_tree_events(repo, [row], ("--diff-filter=ADT",)):
+        if event[0] != "change":
+            continue
+        _kind, status, path, old, new = event
+        if prefix and not path.startswith(prefix):
+            continue
+        if status == "D":
+            yield "D", path, old
+        elif status == "A":
+            yield "A", path, new
 
 
 def first_parent_log(repo: Path, rev: str = "HEAD") -> List[LogEntry]:

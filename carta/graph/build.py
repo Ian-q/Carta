@@ -115,9 +115,11 @@ def _cochange_pass(repo_root: Path, settings: GraphSettings, force: bool,
                    run: bool) -> dict:
     """The history pass of a build, as a report. It never fails the build.
 
-    A git failure leaves the stored co-change rows and their cursor exactly as
-    they were (the pass is one transaction), so the store goes on reporting
-    that it is behind; the report says ``failed`` and why.
+    A git failure, whether in listing the history or in reading a commit,
+    leaves the stored co-change rows and their cursor exactly as they were
+    (the pass is one transaction), so the store goes on reporting that it is
+    stale; the report says ``failed`` and why. Only a directory in no
+    repository and a branch with no commit are an empty history.
     """
     from carta.graph.cochange import build_cochange
     if not run:
@@ -225,9 +227,10 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
     ``settings_changed``, ``paths_changed``, ``docs_changed``,
     ``docs_unreadable`` (a doc could not be read, now or at the last build, so
     its rows may be out of date), ``cochange_behind``,
-    ``cochange_settings_changed`` and ``cochange_disabled`` (the history pass
-    has commits to read, was mined with other settings, or holds rows the
-    config no longer wants), ``unreadable`` (the file is damaged or is
+    ``cochange_settings_changed``, ``cochange_disabled`` and
+    ``cochange_git_failed`` (the history pass has commits to read, was mined
+    with other settings, holds rows the config no longer wants, or git could
+    not read the history, so nothing can vouch for the rows), ``unreadable`` (the file is damaged or is
     not a store; it is left exactly as found, and the next build replaces it)
     and ``unsafe_store`` (the store or its directory is a symbolic link, which
     is never followed, or the file is larger than ``MAX_STORE_BYTES``).

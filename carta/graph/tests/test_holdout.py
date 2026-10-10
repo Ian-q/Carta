@@ -255,6 +255,11 @@ def test_cut_errors_and_edges_of_the_input_space(repo, git_repo, tmp_path):
         run_holdout(repo.root, variants={"a b": FLAT})
     with pytest.raises(HoldoutError, match="max_files"):
         run_holdout(repo.root, max_files=1, **OPTS)
+    with pytest.raises(HoldoutError, match="max_files"):
+        run_holdout(repo.root, max_files=10 ** 9, **OPTS)
+    for rev in ("nosuchrev", "--all", "HEAD~999"):
+        with pytest.raises(HoldoutError, match="--rev .* does not name a commit"):
+            run_holdout(repo.root, rev=rev, **OPTS)
     with pytest.raises(HoldoutError, match="not inside a git repository"):
         run_holdout(tmp_path / "nowhere-at-all", **OPTS)
     # A cut on a side branch is not on the mainline being scored.
@@ -341,3 +346,69 @@ def test_main_never_writes_the_report_through_a_link(repo, tmp_path, capsys):
     capsys.readouterr()
     assert victim.read_text() == "keep me\n"
     assert not link.is_symlink() and json.loads(link.read_text())["schema"] == 1
+
+
+@requires_git
+def test_a_mistyped_rev_is_an_error_not_an_empty_report(repo, capsys):
+    assert main(["--repo", str(repo.root), "--rev", "nosuchrev", "--no-config"]) != 0
+    captured = capsys.readouterr()
+    assert "does not name a commit" in captured.err and "Population" not in captured.out
+
+
+@requires_git
+def test_a_damaged_branch_is_an_error_not_an_empty_history(repo):
+    ref = repo.root / ".git" / "refs" / "heads" / "main"
+    if not ref.is_file():
+        pytest.skip("this git does not keep the branch as a loose ref")
+    ref.write_bytes(b"1" * 40 + b"\n")
+    with pytest.raises(HoldoutError, match="does not name a commit"):
+        run_holdout(repo.root, **OPTS)
+
+
+@requires_git
+def test_a_deleted_file_is_neither_seed_nor_answer(git_repo):
+    r = git_repo
+    touch(r, 0, "a.py", "b.py", "c.py")
+    for day in (1, 2, 3):
+        touch(r, day, "a.py", "b.py")
+    cut = touch(r, 4, "c.py")
+    r.write("a.py", "edited\n")                 # the miner would count no pair for this commit
+    r.rm("b.py")
+    r.commit("edit a, delete b", 5)
+    report = run_holdout(r.root, cut=cut, **OPTS)
+    pop = report["population"]
+    assert (pop["eligible"], pop["queries"]) == (0, 0)
+    assert pop["skipped"] == {"single_file": 1, "bulk": 0, "unknown_files": 0}
+    # With a third file changed in the same commit the two survivors are scored, b is not.
+    r.git("reset", "-q", "--hard", cut)
+    r.write("a.py", "edited\n")
+    r.write("c.py", "edited\n")
+    r.rm("b.py")
+    r.commit("edit a and c, delete b", 5)
+    report = run_holdout(r.root, cut=cut, per_commit=True, **OPTS)
+    assert report["population"]["queries"] == 2 and report["per_commit"][0]["seeds"] == 2
+    assert report["methods"]["cochange"]["mrr"] == 0.0
+
+
+@requires_git
+def test_a_bulk_commit_is_never_collected_and_the_report_does_not_change(repo, monkeypatch):
+    from carta.graph import cochange as cochange_mod
+    plain = run_holdout(repo.root, cut=repo.commits["cut"], **OPTS)
+    assert plain["population"]["files_at_cut"] == 4
+    for i in range(60):
+        repo.write(f"gen/f{i}.txt", "x\n")
+    touch(repo, 20, "src/a.py", "src/b.py")
+    widths = []
+    real = cochange_mod.iter_log_entries
+
+    def spy(top, rows, **kwargs):
+        for entry in real(top, rows, **kwargs):
+            widths.append((len(entry.changes), entry.n_changes, entry.truncated))
+            yield entry
+
+    monkeypatch.setattr(cochange_mod, "iter_log_entries", spy)
+    report = run_holdout(repo.root, cut=repo.commits["cut"], **OPTS)
+    assert report["population"]["skipped"]["bulk"] == 1
+    assert report["population"]["eligible"] == plain["population"]["eligible"]
+    assert report["methods"] == plain["methods"]
+    assert (0, 62, True) in widths and max(width for width, _n, _t in widths) <= 30
