@@ -19,7 +19,10 @@ from carta.graph.limits import (
 )
 from carta.graph.model import MENTION_EXTRACTOR_VERSION
 from carta.graph.paths import glob_problem
-from carta.graph.limits import MAX_REPLAY_COMMIT_FILES  # noqa: I001
+from carta.graph.limits import (  # noqa: I001
+    MAX_IDENT_MIN_LENGTH, MAX_IMPACT_TOP, MAX_IMPACT_WEIGHT, MAX_REPLAY_COMMIT_FILES,
+    MAX_REPLAY_WINDOW, MAX_SCAN_HISTORY_LIMIT,
+)
 
 _NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _WHERE = ("all", "prose", "code")
@@ -123,6 +126,15 @@ def _number(value: Any, where: str, kind: type) -> Any:
     return kind(value)
 
 
+def _within(value: Any, where: str, kind: type, low: Any, high: Any) -> Any:
+    """A number in ``low..high``. Every number a config sets is a count, a size or a
+    weight somewhere downstream, and a repository's config is not the caller's."""
+    number = _number(value, where, kind)
+    if not low <= number <= high:
+        raise GraphConfigError(f"{where} must be between {low} and {high}, got {number}")
+    return number
+
+
 def _flag(value: Any, where: str) -> bool:
     """A real boolean. ``"no"`` and ``"false"`` are truthy strings, so they are refused."""
     if not isinstance(value, bool):
@@ -181,15 +193,11 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
     replay = _mapping(g["replay"], "graph.replay")
     weights = _mapping(impact["weights"], "graph.impact.weights")
     excluded = cfg.get("excluded_paths", DEFAULTS["excluded_paths"])
-    top = _number(impact["top"], "graph.impact.top", int)
-    if top < 1:
-        raise GraphConfigError(f"graph.impact.top must be at least 1, got {top}")
+    top = _within(impact["top"], "graph.impact.top", int, 1, MAX_IMPACT_TOP)
     # The bulk rule is what keeps one huge commit from being ranked; a value
     # the repository's own config could raise without limit would not be a rule.
-    max_files = _number(replay["max_files"], "graph.replay.max_files", int)
-    if not 1 <= max_files <= MAX_REPLAY_COMMIT_FILES:
-        raise GraphConfigError(f"graph.replay.max_files must be between 1 and "
-                               f"{MAX_REPLAY_COMMIT_FILES}, got {max_files}")
+    max_files = _within(replay["max_files"], "graph.replay.max_files", int,
+                        1, MAX_REPLAY_COMMIT_FILES)
     min_score = _number(impact["min_score"], "graph.impact.min_score", float)
     if not math.isfinite(min_score):
         raise GraphConfigError(f"graph.impact.min_score must be a finite number, got {min_score}")
@@ -198,23 +206,28 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
         doc_globs=_glob_list(g["doc_globs"], "graph.doc_globs", non_empty=True),
         excluded_paths=_glob_list(excluded or [], "excluded_paths", path_globs=False),
         ident_enabled=_flag(ident["enabled"], "graph.identifiers.enabled"),
-        ident_min_length=_number(ident["min_length"], "graph.identifiers.min_length", int),
+        ident_min_length=_within(ident["min_length"], "graph.identifiers.min_length", int,
+                                 1, MAX_IDENT_MIN_LENGTH),
         ident_stoplist=frozenset(_str_list(ident["stoplist"], "graph.identifiers.stoplist")),
         patterns=_patterns(g["patterns"]),
         impact_top=top,
         impact_min_score=min_score,
         impact_kinds=_str_list(impact["kinds"], "graph.impact.kinds"),
         impact_weights=tuple(sorted(
-            (str(k), _number(v, f"graph.impact.weights.{k}", float)) for k, v in weights.items())),
+            (str(k), _within(v, f"graph.impact.weights.{k}", float, 0.0, MAX_IMPACT_WEIGHT))
+            for k, v in weights.items())),
         scan_missing_paths=_flag(scan["missing_paths"], "graph.scan.missing_paths"),
         scan_ignore_docs=_glob_list(scan["ignore_docs"], "graph.scan.ignore_docs"),
-        scan_history_limit=_number(scan["history_limit"], "graph.scan.history_limit", int),
-        replay_hub_share=_number(replay["hub_share"], "graph.replay.hub_share", float),
+        scan_history_limit=_within(scan["history_limit"], "graph.scan.history_limit", int,
+                                   0, MAX_SCAN_HISTORY_LIMIT),
+        replay_hub_share=_within(replay["hub_share"], "graph.replay.hub_share", float, 0.0, 1.0),
         replay_max_files=max_files,
-        replay_popularity_window=_number(
-            replay["popularity_window"], "graph.replay.popularity_window", int),
-        replay_min_population=_number(
-            replay["min_population"], "graph.replay.min_population", int),
+        replay_popularity_window=_within(
+            replay["popularity_window"], "graph.replay.popularity_window", int,
+            0, MAX_REPLAY_WINDOW),
+        replay_min_population=_within(
+            replay["min_population"], "graph.replay.min_population", int,
+            0, MAX_REPLAY_WINDOW),
     )
 
 

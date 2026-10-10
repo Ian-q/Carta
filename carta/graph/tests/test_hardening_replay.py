@@ -69,3 +69,26 @@ def test_the_replay_report_writes_out_control_characters(git_repo):
     text = format_replay(report)
     assert "\x1b" not in text and "\x07" not in text
     assert "\\x1b[2J" in text and "vendor\\x1b[31m/" in text
+
+
+@pytest.mark.parametrize("section, key, bad", [
+    ("impact", "top", [limits.MAX_IMPACT_TOP + 1, 0]),
+    ("identifiers", "min_length", [0, -1, limits.MAX_IDENT_MIN_LENGTH + 1]),
+    ("scan", "history_limit", [-1, limits.MAX_SCAN_HISTORY_LIMIT + 1, 10 ** 30]),
+    ("replay", "hub_share", [-0.1, 1.5]),
+    ("replay", "popularity_window", [-1, limits.MAX_REPLAY_WINDOW + 1]),
+    ("replay", "min_population", [-1, limits.MAX_REPLAY_WINDOW + 1]),
+])
+def test_every_number_a_config_sets_has_both_ends(section, key, bad):
+    """The same gate on each sibling: a count read from a config is never unbounded."""
+    for value in bad:
+        with pytest.raises(GraphConfigError, match=f"graph.{section}.{key}"):
+            graph_settings({"graph": {section: {key: value}}})
+
+
+def test_impact_weights_are_bounded():
+    for value in (-1.0, limits.MAX_IMPACT_WEIGHT * 2):
+        with pytest.raises(GraphConfigError, match="graph.impact.weights.mention"):
+            graph_settings({"graph": {"impact": {"weights": {"mention": value}}}})
+    assert dict(graph_settings({"graph": {"impact": {"weights": {"mention": 0.0}}}})
+                .impact_weights)["mention"] == 0.0

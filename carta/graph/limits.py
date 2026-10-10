@@ -36,3 +36,11 @@ MAX_STORED_EDGE_META_LENGTH = 64 * 1024  # one edge's meta JSON
 # -- the replay -----------------------------------------------------------------
 MAX_REPLAY_COMMIT_FILES = 5000          # upper bound of graph.replay.max_files (the bulk rule)
 MAX_REPLAY_TEXT_BYTES = 64 * 1024 * 1024    # doc text held at once while one commit is ranked
+
+# -- numbers a config may set -----------------------------------------------------
+# Each is a count or a size somewhere downstream, so each has a ceiling here.
+MAX_IMPACT_TOP = 1000                   # graph.impact.top
+MAX_IMPACT_WEIGHT = 1000.0              # graph.impact.weights.*
+MAX_IDENT_MIN_LENGTH = 64               # graph.identifiers.min_length
+MAX_SCAN_HISTORY_LIMIT = 100_000        # graph.scan.history_limit (commits git is asked for)
+MAX_REPLAY_WINDOW = 1_000_000           # graph.replay.popularity_window and .min_population
