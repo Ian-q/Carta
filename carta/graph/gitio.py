@@ -324,14 +324,16 @@ def ignored_paths(repo: Path, paths: Sequence[str]) -> FrozenSet[str]:
 class LogEntry:
     """One mainline commit and what it changed against its first parent."""
 
-    __slots__ = ("sha", "parents", "changes", "blobs")
+    __slots__ = ("sha", "parents", "changes", "blobs", "removed")
 
     def __init__(self, sha: str, parents: Tuple[str, ...],
-                 changes: Tuple[Tuple[str, str], ...], blobs: Dict[str, str]) -> None:
+                 changes: Tuple[Tuple[str, str], ...], blobs: Dict[str, str],
+                 removed: Optional[Dict[str, str]] = None) -> None:
         self.sha = sha
         self.parents = parents
         self.changes = changes          # ((status, path), ...) sorted by path; status is A, M or D
         self.blobs = blobs              # path -> blob id, for every added or modified path
+        self.removed = removed or {}    # path -> the blob id it had, for every deleted path
 
     def __repr__(self) -> str:
         return f"LogEntry({self.sha[:12]}, {len(self.changes)} changes)"
@@ -387,8 +389,13 @@ def _raw_change(match: "re.Match[bytes]", path: str) -> Optional[Tuple[str, str,
     return ("M", path, new)             # M and T (a mode or type change keeps the path)
 
 
-def _parse_raw_log(out: bytes, commits: Sequence[str]) -> Dict[str, Dict[str, Tuple[str, str]]]:
+def _parse_raw_log(out: bytes, commits: Sequence[str],
+                   removed: Optional[Dict[str, Dict[str, str]]] = None
+                   ) -> Dict[str, Dict[str, Tuple[str, str]]]:
     """``diff-tree --stdin -z --raw`` as ``commit -> path -> (status, new blob)``.
+
+    With ``removed`` given it is filled with ``commit -> path -> old blob`` for
+    every path a commit deleted.
 
     The stream is ``<commit> NUL`` followed by ``<meta> NUL <path> NUL``
     records, for each commit that changed something, in the order asked. A
@@ -399,6 +406,7 @@ def _parse_raw_log(out: bytes, commits: Sequence[str]) -> Dict[str, Dict[str, Tu
     found: Dict[str, Dict[str, Tuple[str, str]]] = {}
     tokens = _records(out)
     current: Optional[Dict[str, Tuple[str, str]]] = None
+    gone: Optional[Dict[str, str]] = None
     last = -1
     i, n = 0, len(tokens)
     while i < n:
@@ -411,6 +419,8 @@ def _parse_raw_log(out: bytes, commits: Sequence[str]) -> Dict[str, Dict[str, Tu
             change = _raw_change(match, path)
             if change is not None:
                 current[path] = (change[0], change[2])
+                if gone is not None and change[0] == "D":
+                    gone[path] = match.group(3).decode("ascii")
             i += 2
             continue
         sha = token.decode("ascii", "replace")
@@ -419,12 +429,24 @@ def _parse_raw_log(out: bytes, commits: Sequence[str]) -> Dict[str, Dict[str, Tu
             raise GitError(f"unexpected token {token[:80]!r} in git's change log")
         last = position
         current = found[sha] = {}
+        gone = None if removed is None else removed.setdefault(sha, {})
         i += 1
     return found
 
 
-def first_parent_log(repo: Path, rev: str = "HEAD") -> List[LogEntry]:
-    """The first-parent history of ``rev``, oldest first.
+def first_parent_rows(repo: Path, rev: str = "HEAD") -> List[List[str]]:
+    """``[commit, parent, ...]`` for the first-parent history of ``rev``, oldest first.
+
+    Object names only, so the list is cheap even for a long history. A commit
+    with no parent listed is the root, or the boundary of a shallow clone.
+    """
+    _rev(rev)
+    return _oid_rows(run_git(repo, "rev-list", "--first-parent", "--reverse", "--parents",
+                             "--end-of-options", rev, "--"))
+
+
+def log_entries(repo: Path, rows: Sequence[Sequence[str]]) -> List[LogEntry]:
+    """What each commit of ``rows`` (as ``first_parent_rows`` gives them) changed.
 
     Every commit is compared with its **first** parent, so a merge commit
     carries the whole change it merged and a squash commit carries one pull
@@ -432,24 +454,40 @@ def first_parent_log(repo: Path, rev: str = "HEAD") -> List[LogEntry]:
     Submodule entries are left out; paths are relative to the repository root
     whatever directory ``repo`` is.
     """
-    _rev(rev)
-    rows = _oid_rows(run_git(repo, "rev-list", "--first-parent", "--reverse", "--parents",
-                             "--end-of-options", rev, "--"))
     if not rows:
         return []
+    for row in rows:
+        if not row or not all(isinstance(item, str) and _is_oid(item) for item in row):
+            raise GitError("a commit row must hold full object names")
     # One line per commit: the commit, then the parent to compare it with. A
     # commit given alone is compared with nothing (--root): everything is added.
     asked = "".join(" ".join(row[:2]) + "\n" for row in rows).encode("ascii")
     out = run_git(repo, "diff-tree", "--stdin", "-r", "-z", "--raw", "--no-abbrev",
                   "--no-renames", "--root", input_bytes=asked)
-    found = _parse_raw_log(out, [row[0] for row in rows])
+    removed: Dict[str, Dict[str, str]] = {}
+    found = _parse_raw_log(out, [row[0] for row in rows], removed)
     entries: List[LogEntry] = []
     for row in rows:
         changed = found.get(row[0], {})
         changes = tuple((changed[p][0], p) for p in sorted(changed))
         blobs = {p: changed[p][1] for p in changed if changed[p][0] != "D"}
-        entries.append(LogEntry(row[0], tuple(row[1:]), changes, blobs))
+        gone = {p: blob for p, blob in removed.get(row[0], {}).items()
+                if changed.get(p, ("", ""))[0] == "D"}
+        entries.append(LogEntry(row[0], tuple(row[1:]), changes, blobs, gone))
     return entries
+
+
+def first_parent_log(repo: Path, rev: str = "HEAD") -> List[LogEntry]:
+    """The first-parent history of ``rev``, oldest first (see ``log_entries``)."""
+    return log_entries(repo, first_parent_rows(repo, rev))
+
+
+def is_shallow(repo: Path) -> bool:
+    """True when the repository is a shallow clone (its history is cut off)."""
+    try:
+        return run_git(repo, "rev-parse", "--is-shallow-repository") == b"true\n"
+    except GitError:
+        return False
 
 
 def ls_tree(repo: Path, commit: str) -> Dict[str, str]:
