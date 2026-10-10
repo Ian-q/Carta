@@ -285,6 +285,9 @@ def _symbols_file(value: Any) -> str:
     """A repo-relative path to a symbols file, or ``''``. Never absolute, never upward."""
     if not isinstance(value, str):
         raise GraphConfigError(f"graph.symbols.file must be a string, got {value!r}")
+    if len(value) > 4096:               # before any work on it: the strip below re-slices
+        raise GraphConfigError(
+            "graph.symbols.file must be a path inside the repository, relative to its root")
     text = value.strip().replace("\\", "/")
     while text.startswith("./"):
         text = text[2:]

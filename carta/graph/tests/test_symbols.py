@@ -365,7 +365,9 @@ def test_a_failed_load_keeps_the_edges_and_leaves_the_store_stale(tmp_path, monk
     status = graph_status(root, cfg)
     assert status["stale"] and "symbols_failed" in status["stale_reasons"]
     monkeypatch.undo()
-    assert build_graph(root, cfg)["symbols"]["state"] == "ok"
+    # The same input failed once: it is not loaded again until asked to (or it changes).
+    assert build_graph(root, cfg)["symbols"]["state"] == "failed"
+    assert build_graph(root, cfg, force=True)["symbols"]["state"] == "ok"
     assert graph_status(root, cfg)["stale"] is False
 
 

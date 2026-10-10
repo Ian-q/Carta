@@ -41,7 +41,7 @@ from carta.graph.paths import PathIndex, in_path_set, is_doc_path, is_excluded_r
 from carta.graph.safeio import SkippedFile, read_regular_file
 from carta.graph.settings import GraphSettings, graph_settings
 from carta.graph.store import EdgeStore, store_path
-from carta.graph.symbols import META_STATE
+from carta.graph.symbols import META_STATE, doc_state
 
 DANGLING = "dangling_symbol"
 AMBIGUOUS = "ambiguous_symbol"
@@ -85,7 +85,9 @@ def words_in_code(repo_root: Path, index: PathIndex, settings: GraphSettings,
             return found, False
         if b"\0" in data[:8192]:
             continue
-        hits = remaining.intersection(_WORD.findall(data))
+        # One word at a time: a list of every word of a 32 MiB file is gigabytes.
+        hits = {match.group() for match in _WORD.finditer(data)
+                if match.group() in remaining}
         if hits:
             remaining -= hits
             found.update(word.decode("ascii") for word in hits)
@@ -190,11 +192,10 @@ def _ambiguous(settings: GraphSettings, store: EdgeStore) -> List[dict]:
         if matches_any_glob(doc, settings.scan_ignore_docs):
             continue
         try:
-            entries = json.loads(raw).get("ambiguous", {})
-        except ValueError:
+            entries = doc_state(raw)[2]
+        except ValueError:                  # not a state the symbol pass wrote
             continue
-        for token, value in sorted(entries.items()):
-            line, count = int(value[0]), int(value[1])
+        for token, (line, count) in sorted(entries.items()):
             findings.append({
                 "type": AMBIGUOUS, "severity": "info", "doc": doc,
                 "detail": (f"names `{token}` (line {line}), which is defined in {count} files; "

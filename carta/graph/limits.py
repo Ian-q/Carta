@@ -53,7 +53,6 @@ MAX_EXTERNAL_GRAPH_EDGES = 2_000_000   # rows of that file, accepted or not
 MAX_COCHANGE_PAIRS = 2_000_000          # pairs one table holds; past it no new pair is started
 MAX_GIT_TOKEN_BYTES = 64 * 1024         # one NUL-terminated record of a streamed git answer
 MAX_REPLAY_HISTORY_CHANGES = 5_000_000  # path changes the replay holds for one history
-MAX_EXTERNAL_GRAPH_EDGES = 2_000_000
 
 # -- the symbol arm (#131) ------------------------------------------------------
 MAX_SYMBOLS_FILE_BYTES = 64 * 1024 * 1024       # a larger symbols file is not read

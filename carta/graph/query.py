@@ -569,8 +569,10 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         total_edges = store.counts()["edges"]
         digest = store.edges_digest((MENTION_EXTRACTOR,))
         symbols_state = built.get("state") or store.get_meta("symbol.state") or "off"
-        symbols_detail = (built.get("detail") if built
-                          else store.get_meta("symbol.detail")) or ""
+        if symbols_state not in ("ok", "off", "unavailable", "failed"):
+            symbols_state = "failed"            # not a state Carta wrote: not to be relied on
+        symbols_detail = printable((built.get("detail") if built
+                                    else store.get_meta("symbol.detail")) or "")[:400]
 
     if build and gone and "mention" in use_kinds:
         edges.extend(_edges_before(repo_root, settings, gone, came))
@@ -690,7 +692,8 @@ def format_impact(result: dict) -> str:
     symbols = result.get("symbols") or {}
     if symbols.get("stale"):
         tail.append("Symbol matches may be out of date: the symbol index could not be loaded "
-                    f"({symbols.get('detail', '')}); the edges of the last good build were used")
+                    f"({printable(symbols.get('detail', ''))}); the edges of the last good "
+                    f"build were used")
     if result["unmatched_paths"]:
         nothing = "No doc names or has changed with" if labelled else "No doc mentions"
         tail.append(f"{nothing}: " + ", ".join(

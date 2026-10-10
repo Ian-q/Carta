@@ -1099,6 +1099,12 @@ def _print_cochange_capped(history: dict) -> None:
               f"could not be started, so co-change edges for the files in them are missing")
 
 
+def _shown(text) -> str:
+    """A detail line from a report: it can quote a configured path or a file name."""
+    from carta.graph.model import printable
+    return printable(text or "")
+
+
 def _print_cochange_build(history: dict) -> None:
     """One line on the history pass of `carta graph build`."""
     status = history.get("status")
@@ -1110,7 +1116,7 @@ def _print_cochange_build(history: dict) -> None:
               f"{history['bulk']:,} skipped as bulk){cut}")
         _print_cochange_capped(history)
     elif status == "failed":
-        print(f"  history: co-change edges were not updated ({history.get('detail', '')}); "
+        print(f"  history: co-change edges were not updated ({_shown(history.get('detail'))}); "
               f"what the store held was kept")
 
 
@@ -1120,15 +1126,15 @@ def _symbols_line(symbols: dict) -> str:
     if state == "off":
         return "symbols: off (no provider; set graph.symbols.provider to ctags or file)"
     if state == "unavailable":
-        return f"symbols: no symbol edges ({symbols.get('detail', '')})"
+        return f"symbols: no symbol edges ({_shown(symbols.get('detail'))})"
     counts = (f"{_plural(symbols.get('edges', 0), 'symbol edge')} from "
               f"{_plural(symbols.get('rows', 0), 'definition')}; identifiers: "
               f"{symbols.get('resolved', 0):,} resolved, {symbols.get('ambiguous', 0):,} "
               f"ambiguous, {symbols.get('unknown', 0):,} not in the index")
     if state == "failed":
-        return (f"symbols: the index could not be loaded ({symbols.get('detail', '')}); "
+        return (f"symbols: the index could not be loaded ({_shown(symbols.get('detail'))}); "
                 f"kept {counts}")
-    return f"symbols: {counts} [{symbols.get('detail', '')}]"
+    return f"symbols: {counts} [{_shown(symbols.get('detail'))}]"
 
 
 def cmd_graph(args):

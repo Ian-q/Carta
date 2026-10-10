@@ -832,7 +832,7 @@ def format_replay(report: dict) -> str:
                  f"{printable(', '.join(cfg.get('excluded_paths', []))) or '(none)'}")
     sym = report.get("symbols")
     if sym:
-        lines.append(f"Symbols: {sym['source']}; a name defined in more than "
+        lines.append(f"Symbols: {printable(sym['source'])}; a name defined in more than "
                      f"{_plural(sym['max_definitions'], 'file')} is not resolved")
         lines.append(f"  {'WARNING, leaks: ' if sym['leak'] else ''}{sym['note']}")
         if "parents_with_index" in sym:

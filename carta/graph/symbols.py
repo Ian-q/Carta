@@ -46,6 +46,7 @@ from carta.graph.limits import (
 )
 from carta.graph.model import (
     MENTION_EXTRACTOR, SYMBOL_EXTRACTOR, SYMBOL_EXTRACTOR_VERSION, Edge, canonical_meta,
+    printable,
 )
 from carta.graph.paths import PathIndex, is_doc_path, is_excluded_rel
 from carta.graph.safeio import SkippedFile, read_regular_file
@@ -67,6 +68,8 @@ META_ROWS = "symbol.rows"
 META_SETTINGS = "symbol.settings_sha"
 META_VERSION = "symbol.extractor_version"
 META_IDENTS = "symbol.idents_sha"           # the identifiers that were resolved
+META_FAILED = "symbol.failed_input"         # what a failed load was given; "" unless failed
+STATES = ("ok", "off", "unavailable", "failed")
 
 CTAGS_NAMES = ("ctags", "universal-ctags", "uctags", "ctags-universal")
 CTAGS_ENV = "CARTA_CTAGS"
@@ -139,9 +142,10 @@ def _clean(text: str) -> bool:
 def _file_field(value: object) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    text = value
-    while text.startswith("./"):
-        text = text[2:]
+    start = 0
+    while value.startswith("./", start):     # by position: re-slicing each time is quadratic
+        start += 2
+    text = value[start:]
     if (not text or len(text) > 1024 or text.startswith("/") or not _clean(text)
             or any(part in ("", ".", "..") for part in text.split("/"))):
         return None
@@ -594,16 +598,36 @@ class Ctags:
 
 
 def _probe(binary: str, *args: str) -> Optional[str]:
+    """What ``binary`` prints for ``args``, or ``None``. Never outlives its time limit.
+
+    ``subprocess.run`` kills only the process it started and then waits for
+    the pipe to close, which a child of a wrapper script can hold open for
+    ever. So the probe runs in its own process group, the whole group is
+    killed, and the wait after that is itself bounded.
+    """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [binary, "--options=NONE", *args], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=limits.CTAGS_PROBE_TIMEOUT_SECONDS, check=False)
-    except (OSError, ValueError, subprocess.SubprocessError):
+            start_new_session=os.name == "posix")
+    except (OSError, ValueError):
         return None
-    if proc.returncode != 0 or len(proc.stdout) > 1024 * 1024:
+    try:
+        out, _err = proc.communicate(timeout=limits.CTAGS_PROBE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            if proc.stdout is not None:
+                proc.stdout.close()
         return None
-    return proc.stdout.decode("utf-8", "replace")
+    except (OSError, ValueError):
+        _kill_tree(proc)
+        return None
+    if proc.returncode != 0 or len(out) > 1024 * 1024:
+        return None
+    return out.decode("utf-8", "replace")
 
 
 def _inside(path: str, root: Path) -> bool:
@@ -746,12 +770,14 @@ def run_ctags(repo_root: Path, ctags: Ctags, files: Sequence[str]) -> ParsedSymb
         except SymbolsFailed as exc:
             failure = str(exc)
         finally:
-            timer.cancel()
             if failure:
                 _kill_tree(proc)
             if proc.stdout is not None:
                 proc.stdout.close()
+            # The timer stays armed until the process is gone: one that closes
+            # its output and lingers would otherwise be waited on for ever.
             code = proc.wait()
+            timer.cancel()
     if timed_out.is_set():
         raise SymbolsFailed(f"ctags did not finish in {CTAGS_TIMEOUT_SECONDS} s")
     if failure:
@@ -825,21 +851,80 @@ def _doc_edges(store: EdgeStore) -> Dict[str, List[Edge]]:
     return by_doc
 
 
+def _say(text: object) -> str:
+    """A detail line fit to store and print: it can quote a configured path or a file name."""
+    return printable(str(text))[:400]
+
+
+def _number(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2 ** 31:
+        raise ValueError("not a count")
+    return value
+
+
+def doc_state(raw: str) -> Tuple[int, int, Dict[str, Tuple[int, int]]]:
+    """``(resolved, unknown, ambiguous)`` from one doc's stored state.
+
+    Raises ``ValueError`` for anything but what ``build_symbol_edges`` writes
+    (``ambiguous`` maps a token to ``[line, definitions]``): the store is a
+    file in the repository, and its JSON is not ours until it has our shape.
+    """
+    try:
+        meta = json.loads(raw)
+    except RecursionError:
+        raise ValueError("nested past the parser") from None
+    if not isinstance(meta, dict) or not isinstance(meta.get("ambiguous", {}), dict):
+        raise ValueError("not a doc state")
+    ambiguous = {}
+    for token, value in meta.get("ambiguous", {}).items():
+        if (not isinstance(value, list) or len(value) != 2 or not token.isprintable()
+                or len(token) > 4 * MAX_SYMBOL_NAME_LENGTH):
+            raise ValueError("not an ambiguous entry")
+        ambiguous[token] = (_number(value[0]), _number(value[1]))
+    return _number(meta.get("resolved", 0)), _number(meta.get("unknown", 0)), ambiguous
+
+
+def _rows_number(store: EdgeStore) -> Optional[int]:
+    rows = store.get_meta(META_ROWS) or "0"
+    return int(rows) if rows.isascii() and rows.isdigit() and len(rows) <= 10 else None
+
+
+def _state_intact(store: EdgeStore) -> bool:
+    """True when every stored value of this arm is one this module wrote.
+
+    A caller deciding whether the store is fresh must decide that it is not
+    when this is False: the pass then runs again and writes its own.
+    """
+    if (store.get_meta(META_STATE) or "off") not in STATES or _rows_number(store) is None:
+        return False
+    try:
+        for raw in store.source_meta(SYMBOL_EXTRACTOR).values():
+            doc_state(raw)
+    except ValueError:
+        return False
+    return True
+
+
 def _stored(store: EdgeStore, report: dict) -> dict:
-    """Fill the totals of a report from what the store holds now."""
+    """Fill the totals of a report from what the store holds now.
+
+    A stored value that is not one this module wrote is left out of the
+    totals; it is never a reason to raise.
+    """
     metas = store.source_meta(SYMBOL_EXTRACTOR)
     report["docs"] = len(metas)
     report["edges"] = sum(1 for _ in store.iter_edges(extractors=(SYMBOL_EXTRACTOR,)))
     for raw in metas.values():
         try:
-            meta = json.loads(raw)
+            resolved, unknown, ambiguous = doc_state(raw)
         except ValueError:
             continue
-        report["resolved"] += int(meta.get("resolved", 0))
-        report["unknown"] += int(meta.get("unknown", 0))
-        report["ambiguous"] += len(meta.get("ambiguous", {}))
-    report["rows"] = int(store.get_meta(META_ROWS) or 0)
+        report["resolved"] += resolved
+        report["unknown"] += unknown
+        report["ambiguous"] += len(ambiguous)
+    report["rows"] = _rows_number(store) or 0
     report["digest"] = store.edges_digest((SYMBOL_EXTRACTOR,)) if report["docs"] else ""
+    report["detail"] = _say(report["detail"])
     return report
 
 
@@ -847,8 +932,9 @@ def _clear(store: EdgeStore, state: str, detail: str) -> None:
     with store.transaction():
         if store.source_meta(SYMBOL_EXTRACTOR):
             store.clear_extractor(SYMBOL_EXTRACTOR)
-        for key, value in ((META_STATE, state), (META_DETAIL, detail), (META_INPUT, ""),
-                           (META_INDEX, ""), (META_ROWS, "0"), (META_IDENTS, "")):
+        for key, value in ((META_STATE, state), (META_DETAIL, _say(detail)), (META_INPUT, ""),
+                           (META_INDEX, ""), (META_ROWS, "0"), (META_IDENTS, ""),
+                           (META_FAILED, "")):
             if store.get_meta(key) != value:
                 store.set_meta(key, value)
 
@@ -875,6 +961,7 @@ def build_symbol_edges(repo_root: Path, settings: GraphSettings, index: PathInde
             return report
         settings_sha = settings.symbol_fingerprint()
         version = str(SYMBOL_EXTRACTOR_VERSION)
+        failed_key = ""
         try:
             input_sha, load = symbols_input(repo_root, settings, index)
             by_doc = _doc_edges(store)
@@ -883,20 +970,32 @@ def build_symbol_edges(repo_root: Path, settings: GraphSettings, index: PathInde
                     and store.get_meta(META_INPUT) == input_sha
                     and store.get_meta(META_SETTINGS) == settings_sha
                     and store.get_meta(META_VERSION) == version
-                    and store.get_meta(META_IDENTS) == idents_sha):
+                    and store.get_meta(META_IDENTS) == idents_sha
+                    and _state_intact(store)):
                 report.update(state="ok", unchanged=True,
                               detail=store.get_meta(META_DETAIL) or "")
+                return _stored(store, report)
+            # A load that failed is not tried again until something it reads
+            # changes: every `carta impact` builds first, and a ctags run that
+            # times out would otherwise cost its whole time limit on each call.
+            failed_key = _sha(f"{input_sha}\0{settings_sha}\0{version}".encode("utf-8"))
+            if (not force and store.get_meta(META_STATE) == "failed"
+                    and store.get_meta(META_FAILED) == failed_key):
+                report.update(state="failed", unchanged=True,
+                              detail=(store.get_meta(META_DETAIL) or "")
+                              + "; not tried again, `carta graph build --force` retries")
                 return _stored(store, report)
             loaded = load()
         except SymbolsUnavailable as exc:
             _clear(store, "unavailable", str(exc))
-            report.update(state="unavailable", detail=str(exc))
+            report.update(state="unavailable", detail=_say(exc))
             return report
         except SymbolsFailed as exc:
             # Nothing is deleted: a load that failed says nothing about the code.
             with store.transaction():
                 store.set_meta(META_STATE, "failed")
-                store.set_meta(META_DETAIL, str(exc))
+                store.set_meta(META_DETAIL, _say(exc))
+                store.set_meta(META_FAILED, failed_key)
             report.update(state="failed", detail=str(exc))
             return _stored(store, report)
 
@@ -920,7 +1019,8 @@ def build_symbol_edges(repo_root: Path, settings: GraphSettings, index: PathInde
             for doc in sorted(set(known) - set(by_doc)):
                 store.remove_source(SYMBOL_EXTRACTOR, doc)
                 written += 1
-            for key, value in ((META_STATE, "ok"), (META_DETAIL, loaded.detail),
+            for key, value in ((META_STATE, "ok"), (META_DETAIL, _say(loaded.detail)),
+                               (META_FAILED, ""),
                                (META_PROVIDER, settings.symbols_provider),
                                (META_INPUT, input_sha), (META_INDEX, table.sha),
                                (META_ROWS, str(len(table))), (META_SETTINGS, settings_sha),
@@ -942,16 +1042,20 @@ def symbol_status(repo_root: Path, settings: GraphSettings, index: PathIndex,
     report = _blank_report(settings)
     stored_state = store.get_meta(META_STATE) or "off"
     reasons: List[str] = []
+    if not _state_intact(store):
+        # Not this module's state: reported as changed, so that a build rewrites it.
+        stored_state = stored_state if stored_state in STATES else "off"
+        reasons.append("symbols_changed")
     if settings.symbols_provider == "none":
-        if store.source_meta(SYMBOL_EXTRACTOR):
+        if store.source_meta(SYMBOL_EXTRACTOR) and not reasons:
             reasons.append("symbols_changed")
         return _stored(store, report), reasons
     report["detail"] = store.get_meta(META_DETAIL) or ""
     try:
         input_sha, _load = symbols_input(repo_root, settings, index)
     except SymbolsUnavailable as exc:
-        report.update(state="unavailable", detail=str(exc))
-        if stored_state != "unavailable":
+        report.update(state="unavailable", detail=_say(exc))
+        if stored_state != "unavailable" and "symbols_changed" not in reasons:
             reasons.append("symbols_changed")
         return _stored(store, report), reasons
     except SymbolsFailed as exc:
@@ -960,6 +1064,8 @@ def symbol_status(repo_root: Path, settings: GraphSettings, index: PathIndex,
     report["state"] = stored_state
     if stored_state == "failed":
         reasons.append("symbols_failed")
+    elif "symbols_changed" in reasons:
+        pass
     elif (stored_state != "ok" or store.get_meta(META_INPUT) != input_sha
           or store.get_meta(META_SETTINGS) != settings.symbol_fingerprint()
           or store.get_meta(META_VERSION) != str(SYMBOL_EXTRACTOR_VERSION)
