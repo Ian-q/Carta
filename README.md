@@ -552,8 +552,16 @@ How it counts, and what it will not do:
 - It is incremental: only commits after the last one seen are read. A rebase, a branch switch
   or an amended commit is noticed and the history is mined again. One pass over 438 commits
   takes under a second.
-- A shallow clone, a repository with no commits and a directory that is not a repository give
-  no edges and no error.
+- A repository with no commits and a directory that is not a repository give no edges and no
+  error. A shallow clone is mined as far as its history goes and the report says
+  `shallow: true`; depth 1 gives no edges. A history git cannot read (a damaged ref, a missing
+  object) is a failure, never an empty history: the stored edges are kept and `carta graph
+  status` reports `cochange_git_failed`.
+- A commit over the limit is counted without its paths ever being collected, and a build with
+  no new commit does not read the stored counts, so neither a huge commit nor a long history
+  makes `carta impact` slow or large.
+- A file name is counted only if it is plain printable text: names with control characters,
+  line separators or bidirectional overrides are never stored or printed.
 - It claims no causation, and it needs history in proportion to the size of the tree.
 
 ```yaml
@@ -600,9 +608,16 @@ directory". `--graph NAME=PATH` scores an external file-to-file graph (JSON or
 `src<TAB>dst[<TAB>weight]` lines) on the identical queries. Carta cannot check when such a graph
 was built, so build it from the tree at the cut.
 
+The holdout does not score a path a commit deletes: the miner counts no co-change for a
+deletion, so the eval does not ask for one.
+
 The defaults came from these runs: confidence beat lift on every population, a support floor of 2
 lost recall on every population, and adding the two kinds' raw scores was no better than mentions
-alone, which is why they are fused after normalising each kind. Numbers, populations and what is
+alone, which is why they are fused after normalising each kind. **That makes every number above
+in-sample**: the defaults were chosen on the same populations the results are quoted from, and
+no repository or period was held back. In particular the union's recall@5 edge over co-change
+alone is the best of several fusion settings tried on that one population, with a lower bound of
++0.009; treat it as "not worse" until it is confirmed on later history or a third repository. Numbers, populations and what is
 still open are in
 [the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#co-change-edges-130).
 

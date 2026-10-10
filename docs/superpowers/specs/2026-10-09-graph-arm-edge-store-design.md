@@ -1375,8 +1375,9 @@ code.
 **Modules.** `carta/graph/cochange.py` (`PairTable`, `build_cochange`, `cochange_status`,
 `countable_path`), `carta/graph/eval/cochange_arm.py` (the replay provider),
 `carta/graph/eval/holdout.py` (the temporal holdout). `gitio.py` gained `first_parent_rows`,
-`log_entries` (the two halves of `first_parent_log`), `is_shallow`, and `LogEntry.removed` (the
-blob a deleted path had).
+`iter_log_entries` / `log_entries` (the two halves of `first_parent_log`; the first streams and
+takes a per-commit limit), `iter_added_deleted`, `work_tree_root`, `is_unborn`, `is_shallow`, and
+`LogEntry.removed` (the blob a deleted path had), `.n_changes` and `.truncated`.
 
 ### The miner
 
@@ -1408,34 +1409,55 @@ No schema change. State lives where A3 put it: one `sources` row per file under
 (`[support, decayed weight, first, last, position]`) is written once, in the row of the smaller
 of its two paths, so pairs below the floor survive between builds without a second table. Meta
 keys: `cochange.last_commit` (the cursor), `cochange.seq` (mainline commits seen),
-`cochange.settings_sha`, `cochange.extractor_version`, `cochange.totals`.
+`cochange.settings_sha`, `cochange.extractor_version`, `cochange.totals`, and
+`cochange.summary` (what the last build reported: counts, edge count, digest).
 
 `build_cochange` lists the first-parent line of `HEAD` (object names only), and continues from
 the cursor **only if** the stored settings and version match and the cursor is still at the same
 position on that line. A rebase, a branch switch, an amended commit or a deepened shallow clone
-fails that test and the history is mined again from the start. Otherwise only the commits after
-the cursor are read (`diff-tree --stdin`, in batches of 2,000) and only the files they touch are
-rewritten. `edges_digest(("cochange",))` covers the edges and the state rows, and the tests
+fails that test and the history is mined again from the start. When the cursor is `HEAD` itself
+the build returns what `cochange.summary` recorded and **does not read the pair state at all**.
+Otherwise only the commits after the cursor are read (`diff-tree --stdin`, asked in batches of
+2,000 and read as a stream, one commit in memory at a time) and only the files they touch are
+rewritten.
+
+The bulk limit is applied **while git's answer is read**. A commit over `max_files` is counted
+record by record and none of its paths is kept, so a sweep over 20,000 files costs no more
+memory than a one-line fix. The two things a bulk commit still does (it drops the files it
+deletes and carries a pure move) are then read from git again for that one commit, in passes
+that keep only the deleted paths the table has counts for and, per blob of those, a count of the
+paths deleted and added with it. Memory is bounded by the table, not by the commit. The tests
+assert the table is identical to one fed every change of every commit, on random histories with
+sweeps, mass moves, deletions and a one-to-two copy. `edges_digest(("cochange",))` covers the edges and the state rows, and the tests
 assert it is equal for an incremental build and a forced full one after every step of a history
 with deletions, a move, a sweep and a file that returns; and, on random histories, that stopping
 and resuming at any commit gives the same table.
 
-The whole pass is one transaction. A git failure part-way leaves the previous rows and cursor,
+The whole pass is one transaction. A git failure leaves the previous rows and cursor,
 `carta graph build` reports `cochange.status: "failed"` and carries on with the mention edges,
-and `graph status` goes on saying `cochange_behind`. Stored state is validated field by field
+and `graph status` goes on saying the store is stale: `cochange_behind` when a commit could not
+be read, `cochange_git_failed` when the history could not even be listed. **A history git cannot
+read is never taken for an empty one.** Only two things are an empty history: a directory with
+no repository at or above it (git finds none *and* there is no `.git` entry on the way up), and
+a branch with no commit yet (`HEAD` names a ref that does not exist). A damaged ref, a missing
+object, a repository git refuses, or git itself failing all raise, and nothing is cleared. Stored state is validated field by field
 when it is loaded; anything that is not exactly the written shape is discarded and the history
 mined again.
 
 `carta graph build` runs the pass by default (`graph.cochange.enabled`, and `--no-cochange` to
 skip it for one run without touching what is stored). `carta scan` skips it. A repository with
-no commit, a directory that is not a repository, and a shallow clone all give **no edges and no
-error**; a shallow build reports `shallow: true`. When the Carta root is a subdirectory of the
+no commit and a directory that is not a repository give **no edges and no error**. A shallow
+clone is mined as far as its history goes and the report says `shallow: true`: its boundary
+commit looks like a root and is not counted, so depth 1 and 2 give no edges and a deeper clone
+gives edges from the commits it has (the counts are then lower than the full history's). When the Carta root is a subdirectory of the
 git root, paths outside it are dropped before anything is counted. Measured here: 438 mainline
 commits mined from nothing in 0.86 s including the mention pass (5,419 edges over 333 files),
-0.30 s when there is nothing new.
+0.30 s when there is nothing new. On a synthetic store of 124,750 pairs a build with nothing
+new took 2.5 s before the summary row existed and takes 0.04 s with it.
 
 `graph status` gains `cochange` (`enabled`, `commits`, `head`, `stale`, `reason`) and the stale
-reasons `cochange_behind`, `cochange_settings_changed`, `cochange_disabled`.
+reasons `cochange_behind`, `cochange_settings_changed`, `cochange_disabled`,
+`cochange_git_failed`.
 
 ### Decisions on the issue's "To explore" list
 
@@ -1445,6 +1467,15 @@ mainline, on two histories: this repository (403 mainline commits; 63 and 122 sc
 files (883 mainline commits; 98 and 114 scored commits, 649 and 507 queries). Intervals are
 paired 95% bootstraps over commits. Only aggregate numbers of the second history are given.
 
+**These are in-sample numbers.** Every default in this table, and the fusion mode and weight in
+the next section, was chosen by looking at these same four holdout populations and the replay
+tables that the results are then quoted from. No repository and no period of history was held
+back. The measurements are accurate; as estimates of what the chosen defaults will do elsewhere
+they are optimistic by an unknown amount. The deltas in this table were measured before the
+holdout stopped scoring deleted paths (see *The temporal holdout*); that rule changes no query
+on this repository and 2 of 649 and 22 of 507 on the second history, and the headline rows
+below are re-measured with it.
+
 | Question | Decision | Evidence |
 |---|---|---|
 | Confidence or lift | **Confidence.** | Confidence beats lift on all four populations: +0.523 [+0.456, +0.592] and +0.372 [+0.307, +0.438] here, +0.125 [+0.057, +0.188] and +0.111 [+0.070, +0.158] on the second history. Lift divides by how often the target changes, which puts rare coincidences first; the files that really do move with a change are often the busy ones. Confidence is also the right direction for the question asked ("I changed this; what moves with it?") and it is local, which is what makes the build incremental. Lift stays available (`measure: lift`); every row is then rewritten on each build. |
@@ -1453,8 +1484,8 @@ paired 95% bootstraps over commits. Only aggregate numbers of the second history
 | Support floor | `min_support` **1**, with `min_score` 0.1 doing the pruning. | A floor of 2 loses on all four: −0.060 [−0.082, −0.041] and −0.159 here, −0.109 [−0.141, −0.080] and −0.066 on the second history. A single co-change is weak evidence but it is often all a rarely changed file has. The confidence floor is the adaptive version of the same idea: for a file with 11 or more commits a single co-change falls below 0.1 by itself. It also bounds the edge table: a file's confidences sum to at most `max_files − 1`, so no file has more than `(max_files − 1) / min_score` = 290 edges. `min_score` 0 instead of 0.1 moves MRR by at most 0.004 and adds 10 to 30% edges. |
 | Time decay | `half_life` **100** commits. | Helps here (+0.013 [+0.002, +0.025] and +0.093 [+0.074, +0.113]) and makes no detectable difference on the second history (+0.007 [−0.004, +0.016], −0.007 [−0.018, +0.006]). 50 and 200 were tried and neither is consistently better than 100. Kept on because it never measurably hurt; it is not established as a general gain. |
 | Renames | Follow a **pure move** only (same blob, one to one). | Git's similarity detection (`-M`) is a heuristic whose answer depends on thresholds; blob identity is exact and needs nothing but what the log already prints. In this repository's history it covers 17 of the 24 renames `-M` reports. A move that also edits the file loses its history. **Measured effect: none** (0.000 on three populations, −0.003 on one), so this is kept for the case a holdout barely samples, a query about a file just after it moved, and `follow_renames: false` turns it off. |
-| Shallow clones, little history | No edges, no error. | Tested at depth 1 and 2, and after `fetch --unshallow`. |
-| Cost, pruning | One `rev-list` per build, `diff-tree` for new commits only, per-file rewrites. The pair state is loaded whole when there are new commits. | See *Left open* for the bound that is not there. |
+| Shallow clones, little history | No error; mined as far as the history goes, flagged `shallow: true`. | Depth 1 and 2 give no edges (the boundary commit is not counted); depth 4 of the test history gives its edges; after `fetch --unshallow` the history is mined again from the start. All tested. |
+| Cost, pruning | One `rev-list` per build, a streamed `diff-tree` for new commits only, per-file rewrites. Nothing is loaded when there is no new commit; the pair state is loaded whole when there is one. | See *Left open* for the bound that is not there. |
 | Merge-commit repositories | Nothing to do: first-parent comparison makes the merge the transaction. | Tested. |
 
 Tried and not adopted: shrinking confidence toward zero for files with few commits
@@ -1555,7 +1586,9 @@ carta graph holdout [--repo PATH] [--rev REV] [--cut REV | --cut-share F]
 Edges are built from the mainline up to a cut (default: the first 80% of commits) and frozen.
 For every later commit with at least two files that existed at the cut, each such file takes a
 turn as the **seed**; a method is given the seed alone and ranks the commit's other files. A
-file born after the cut is neither a seed nor an answer. The unit is the commit (a commit's row
+file born after the cut is neither a seed nor an answer, and neither is a path the commit
+**deletes**: the miner counts no co-change for a deletion, so the eval does not ask for one. The
+unit is the commit (a commit's row
 is the mean over its seeds, and intervals are bootstraps over commits), so one large commit does
 not outvote many small ones. Skips are counted by reason: `single_file`, `bulk`, `unknown_files`.
 
@@ -1590,12 +1623,14 @@ cochange vs directory     dMRR +0.359 [+0.298, +0.420]   better 56 / worse 4 / t
 Cut at 50% (201 commits before, 122 scored, 556 queries): co-change 0.689, popularity 0.184,
 directory 0.314; +0.505 [+0.446, +0.563] and +0.374 [+0.320, +0.431].
 
-On the second history, cut at 80% (706 commits before, 98 scored, 649 queries, 4,147 files at
-the cut): co-change 0.446, popularity 0.218, directory 0.350; +0.227 [+0.160, +0.296] and
-+0.096 [+0.029, +0.157]. Cut at 50% (441 before, 114 scored, 507 queries): co-change 0.242,
-popularity 0.075, **directory 0.367**; +0.167 [+0.119, +0.217] against popularity and
-**−0.124 [−0.175, −0.075] against directory**. With 441 commits spread over about 3,000 files
-the table answers only 73% of the queries, and "the other files in this directory" is the better
+On the second history, cut at 80% (706 commits before, 98 scored, 647 queries, 4,147 files at
+the cut): co-change 0.445, popularity 0.218, directory 0.346; +0.227 [+0.160, +0.295] and
++0.099 [+0.033, +0.161]. Cut at 50% (441 before, 109 scored, 485 queries): co-change 0.248,
+popularity 0.076, **directory 0.357**; +0.172 [+0.122, +0.222] against popularity and
+**−0.109 [−0.162, −0.060] against directory**. (Before deleted paths were left out these read
+98 and 649, 0.446 / 0.218 / 0.350, and 114 and 507, 0.242 / 0.075 / 0.367; this repository's
+rows did not move.) With 441 commits spread over about 3,000 files
+the table answers only 75% of the queries, and "the other files in this directory" is the better
 guess. Co-change needs history in proportion to the size of the tree.
 
 ### Results on the replay
@@ -1664,19 +1699,32 @@ baseline lies above zero in both variants (co-change against popularity +0.244
 first conclusive pass for the graph arm. `graph[mention]` fails as before. The union against
 co-change alone: MRR +0.027 [−0.007, +0.064] (not separated), recall@5 **+0.039
 [+0.009, +0.073]**; against mention alone +0.24 on MRR and +0.183 [+0.140, +0.227] on recall@5.
+That recall@5 result is **post-selection**: it is the best of four fusion modes and two weights
+tried on this same population, its lower bound is +0.009, and the reciprocal-rank fusion that
+was not chosen sits at +0.004 [−0.038, +0.046] on MRR against co-change alone. Read it as "not
+worse", not as an established gain.
 So on the one population big enough to decide, the union beats both kinds on recall and beats
 mention and ties co-change on MRR. That, and the mention arm losing to the union on every table
-of both histories, is the case for reading both kinds by default. The price is the alarm rate:
+of both histories, is the case for reading both kinds by default. It is a case made in-sample:
+before the default kinds are treated as settled it should be confirmed on a later slice of
+history or on a third repository, neither of which has been done. The price is the alarm rate:
 the union returns something for 90% of source-only commits, co-change alone for 53 to 59%.
 
 ### Security notes
 
 Written to the standard of *Security hardening*: no regular expression is built; the bulk test
-and the external-graph bounds come before the work they protect; the store is only reached
+is made while git's answer is read, before a path of an over-limit commit is kept, and the
+external-graph bounds come before the work they protect; the store is only reached
 through `EdgeStore`; reports are written by `write_text_replacing`; git is read through the
-existing NUL-delimited readers (`log_entries` refuses a row that is not full object names, a
-cut revision goes through `rev_parse`, which refuses a leading `-`); file names that are not
-plain printable UTF-8 are never counted, stored or printed; a failure never advances the cursor;
+existing NUL-delimited grammar, now one token at a time (`iter_log_entries` refuses a row that
+is not full object names, a path listed twice in one commit and any token out of place; `--rev`
+and a cut revision go through `rev_parse`, which refuses a leading `-`, and a revision that
+names no commit is an error, not an empty report); a file name is counted, stored and printed
+only if every character of it is printable (`str.isprintable`, the plain space included), which
+leaves out C0 and C1 controls, line and paragraph separators, bidirectional overrides and other
+format characters, no-break spaces, unassigned code points and bytes that were not UTF-8; a
+failure never advances the cursor, and a history that cannot be listed is a failure, not an
+empty history;
 stored state is validated before it is trusted; and a git error message is made printable and
 cut to 300 characters before it reaches a report. The external graph file is named by the
 caller on the command line and is read where it points, link or not; it is refused if it is not
@@ -1687,10 +1735,22 @@ a regular file, so a FIFO cannot block the run.
 - **Pair state is not bounded when `min_support` is 1.** The edge table is (290 edges per file),
   but every pair ever seen between two live files keeps a state entry, at most 435 new ones per
   commit. Here that is 3,668 pairs; on a very long history with wide commits it could reach
-  millions and would be loaded whole on each build that has new commits. Raising `min_support`
-  to 2 turns the pending window on and bounds it; a windowed history or a partial load would do
-  it without costing recall. Not built.
-- **Decay and the cap were tuned on two repositories**, one of them this one. `half_life` is a
+  millions and would be loaded whole on each build that has new commits (a build with none reads
+  nothing). Measured on a synthetic store of 124,750 pairs: 2.6 s for a build with one new
+  one-file commit. Raising `min_support` to 2 turns the pending window on and bounds it; a
+  windowed history or a partial load would do it without costing recall. A partial load needs
+  each pair to be reachable from both of its files (it is stored once, under the smaller path),
+  which is a change of the stored format. Not built.
+- **Every default was selected in-sample**, on the four holdout populations and two replay
+  histories reported here; see the note above the decisions table. No held-out repository or
+  period exists yet.
+- **`str.isprintable` follows the Unicode tables of the running Python.** A code point assigned
+  in a newer Unicode version is countable on a newer interpreter and not on an older one, so
+  two interpreters can disagree about a file whose name uses one.
+- **The replay still holds its whole range in memory** (`first_parent_log`), bulk commits
+  included; only the build and the holdout stream. It is an eval over a range the caller names.
+- **Decay and the cap were tuned on two repositories**, one of them this one, and scored on the
+  same ones. `half_life` is a
   gain here and a wash on the other; `max_files` 30 against 60 points opposite ways.
 - **The evidence text shows raw counts while the weight is decayed**, so "13 of 49 commits" can
   rank below "8 of 49" when the 8 are recent.
