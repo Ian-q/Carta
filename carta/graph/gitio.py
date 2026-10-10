@@ -28,6 +28,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, FrozenSet, Iterator, List, Optional, Sequence, Set, Tuple
 
+from carta.graph.limits import MAX_GIT_TOKEN_BYTES
+
 # Variables that point git at another repository, object store or config.
 # They are set inside hooks (and can be set by anything that launches Carta),
 # and any one of them would silently redirect every call below.
@@ -451,14 +453,24 @@ def _raw_change(match: "re.Match[bytes]", path: str) -> Optional[Tuple[str, str,
 
 
 def _stream_tokens(stream) -> Iterator[bytes]:
-    """The NUL-terminated tokens of a ``-z`` stream, read a chunk at a time."""
+    """The NUL-terminated tokens of a ``-z`` stream, read a chunk at a time.
+
+    A token longer than ``MAX_GIT_TOKEN_BYTES`` raises ``GitError`` while it
+    is being read, not after: git puts no limit on the length of a name in a
+    tree, a name of one repeated byte packs to almost nothing, and without
+    the limit it would be held whole (and copied again for every chunk).
+    """
     tail = b""
     while True:
         chunk = stream.read(_READ_CHUNK)
         if not chunk:
             break
-        parts = (tail + chunk).split(b"\0")
+        parts = chunk.split(b"\0")
+        parts[0] = tail + parts[0]
         tail = parts.pop()
+        if len(tail) > MAX_GIT_TOKEN_BYTES or any(len(p) > MAX_GIT_TOKEN_BYTES for p in parts):
+            raise GitError(f"git printed a record longer than {MAX_GIT_TOKEN_BYTES} bytes "
+                           f"(a path of that length is not read)")
         for part in parts:
             yield part
     if tail:
@@ -627,13 +639,25 @@ def iter_log_entries(repo: Path, rows: Sequence[Sequence[str]], *,
         done += 1
 
 
-def log_entries(repo: Path, rows: Sequence[Sequence[str]]) -> List[LogEntry]:
+def log_entries(repo: Path, rows: Sequence[Sequence[str]],
+                max_total: Optional[int] = None) -> List[LogEntry]:
     """``iter_log_entries`` as a list, with every change of every commit kept.
 
     Memory grows with the changes read; a caller that only folds the entries
-    into something smaller should iterate instead.
+    into something smaller should iterate instead. With ``max_total`` the
+    list is given up (``GitError``) as soon as it holds more path changes
+    than that: a history can change far more paths than it takes bytes to
+    store (a renamed directory is one new tree and every path beneath it).
     """
-    return list(iter_log_entries(repo, rows))
+    entries: List[LogEntry] = []
+    held = 0
+    for entry in iter_log_entries(repo, rows):
+        held += len(entry.changes)
+        if max_total is not None and held > max_total:
+            raise GitError(f"the history changes more than {max_total:,} paths in all; "
+                           f"that is more than is held in memory at once")
+        entries.append(entry)
+    return entries
 
 
 def iter_added_deleted(repo: Path, row: Sequence[str], *, prefix: str = ""
@@ -655,9 +679,10 @@ def iter_added_deleted(repo: Path, row: Sequence[str], *, prefix: str = ""
             yield "A", path, new
 
 
-def first_parent_log(repo: Path, rev: str = "HEAD") -> List[LogEntry]:
+def first_parent_log(repo: Path, rev: str = "HEAD",
+                     max_total: Optional[int] = None) -> List[LogEntry]:
     """The first-parent history of ``rev``, oldest first (see ``log_entries``)."""
-    return log_entries(repo, first_parent_rows(repo, rev))
+    return log_entries(repo, first_parent_rows(repo, rev), max_total)
 
 
 def is_shallow(repo: Path) -> bool:

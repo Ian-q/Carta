@@ -212,7 +212,7 @@ def test_external_graph_bounds_are_checked_before_parsing(tmp_path, monkeypatch)
     path = tmp_path / "g.tsv"
     path.write_text("a.py\tb.py\nb.py\tc.py\nc.py\td.py\n")
     monkeypatch.setattr(holdout_mod, "MAX_EXTERNAL_GRAPH_EDGES", 2)
-    with pytest.raises(HoldoutError, match="more than 2 edges"):
+    with pytest.raises(HoldoutError, match="more than 2 rows"):
         load_external_graph(path)
     monkeypatch.setattr(holdout_mod, "MAX_EXTERNAL_GRAPH_BYTES", 10)
     with pytest.raises(HoldoutError, match="larger than"):

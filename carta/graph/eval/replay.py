@@ -61,7 +61,7 @@ from carta.graph.paths import PathIndex, in_path_set, is_doc_glob_match, is_excl
 from carta.graph.query import COMBINE_MODES, ImpactIndex, rank_impact
 from carta.graph.safeio import SkippedFile, read_regular_file, write_text_replacing
 from carta.graph.settings import DEFAULT_SETTINGS, GraphSettings, graph_settings
-from carta.graph.limits import MAX_REPLAY_TEXT_BYTES
+from carta.graph.limits import MAX_REPLAY_HISTORY_CHANGES, MAX_REPLAY_TEXT_BYTES
 
 REPLAY_SCHEMA = 1
 DEFAULT_KS = (1, 3, 5, 10)
@@ -327,7 +327,7 @@ def _window(repo: Path, range_spec: Optional[str], last: int
             wanted = rev_list_first_parent(repo, range_spec)
             if not wanted:
                 return [], set(), "", range_spec
-            log = first_parent_log(repo, wanted[-1])
+            log = first_parent_log(repo, wanted[-1], MAX_REPLAY_HISTORY_CHANGES)
             on_line = {entry.sha for entry in log}
             off = [sha for sha in wanted if sha not in on_line]
             if off:
@@ -336,7 +336,7 @@ def _window(repo: Path, range_spec: Optional[str], last: int
                     f"are not on the first-parent line of {wanted[-1][:12]}; the replay walks "
                     f"one line of history, so give a range along it (A..B)")
             return log, set(wanted), wanted[-1], range_spec
-        log = first_parent_log(repo, "HEAD")
+        log = first_parent_log(repo, "HEAD", MAX_REPLAY_HISTORY_CHANGES)
     except GitError as exc:
         raise ReplayError(str(exc)) from exc
     if not log:

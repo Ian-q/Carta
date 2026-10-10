@@ -1354,7 +1354,7 @@ not read. The replay on this repository's history was re-run before and after
   was told to. `carta graph build --force` re-extracts everything. Refusing a store that git
   tracks would close the clone case and is not done yet.
 - The replay still holds the whole first-parent change log in memory (see the co-change notes
-  for the cap added with the streaming reader), and every eligible commit keeps each method's
+  for the cap added with the streaming reader, C6), and every eligible commit keeps each method's
   full ranking. Both grow with the history, not with one hostile object.
 - The MCP tool's catch-all returns `str(exception)` for an error nobody anticipated, as the
   other Carta tools do; such a message can name an absolute path.
@@ -1730,14 +1730,27 @@ cut to 300 characters before it reaches a report. The external graph file is nam
 caller on the command line and is read where it points, link or not; it is refused if it is not
 a regular file, so a FIFO cannot block the run.
 
+**Final sweep (after the first review).** Each of these had a bound in the wrong place or none,
+and each has a test in `test_hardening_cochange.py` that fails on the code before it.
+
+| # | Finding | Change |
+|---|---|---|
+| C1 | The streamed reader split `tail + chunk` on NUL with no limit on the tail. Git puts no limit on the length of a name in a tree and a name of one repeated byte packs about 1000 to 1, so a tree object of 64 KiB held a 64 MiB path in memory, copied again for every chunk read (48 s, 4 GiB measured); `MAX_COCHANGE_PATH_LENGTH` was only applied afterwards. | `MAX_GIT_TOKEN_BYTES` (64 KiB), checked in `_stream_tokens` as each chunk arrives; a longer record is a `GitError`, so the pass fails, the cursor does not move and the store stays stale. The chunk is split on its own and only the first part is joined to the tail. |
+| C2 | Nothing bounded the pair table across commits: every commit may pair up to `max_files` new files (124,750 pairs at the ceiling of 500, which the repository's own config can set), and an expired pending pair is reset in place, never removed. The table is held whole and written to the store. | `MAX_COCHANGE_PAIRS` (2,000,000). At the cap no new pair is started (the test is made before the pair exists) and `capped` counts them in `cochange.totals`; pairs already held go on counting, and a deletion makes room. A stored table over the cap is not loaded. Past the cap the result is bounded but depends on what was held, so an incremental and a full build may differ there. The miner's docstring no longer says the window bounds the table. |
+| C3 | Stored pair state could raise what the "mine again instead of trusting" path does not catch: `OverflowError` (a weight that is an integer of hundreds of digits), `RecursionError` (state nested past the parser), `ValueError` from `int()` on a count `str.isdigit` accepts (a superscript digit, or thousands of digits). Each was a traceback out of `carta graph build`, `graph status` and `carta impact`. The stored cursor was reported as it was found. | `_float` and `_obj` turn the first two into the `ValueError` the caller already handles; the count is read by `_seq_number` (ASCII digits, at most 18); the cursor is reported only when it is a commit id. |
+| C4 | `_history_edges` used a pair's stored `first` commit as a set member: a list there was a `TypeError`, deep nesting a `RecursionError`. | A `first` that is not a string is not a commit of the range; the row is kept. |
+| C5 | The holdout's `--graph` loader stripped every leading `./` before it checked a path's length (quadratic: one 512 KB line took 3.5 s), let `float()` raise `OverflowError` on a long integer weight, split the whole text into a list of lines, and counted only accepted edges against `MAX_EXTERNAL_GRAPH_EDGES`, so a file of rejected rows was unbounded work. | Length first, one `./` stripped; `OverflowError` is a rejected row; lines are read one at a time; every row, accepted or not, counts against the limit. |
+| C6 | The replay holds the whole first-parent change log, and a history can change far more paths than it takes bytes to store (a renamed directory is one new tree and every path beneath it). | `log_entries(max_total=)`: the list is given up, with a `ReplayError`, once it holds more than `MAX_REPLAY_HISTORY_CHANGES` (5,000,000) path changes, counted while streaming. The replay is still not a streaming walk. |
+
 ### Left open
 
-- **Pair state is not bounded when `min_support` is 1.** The edge table is (290 edges per file),
+- **Pair state is bounded only by `MAX_COCHANGE_PAIRS`** (C2 above), whatever `min_support` is.
+  The edge table is bounded (290 edges per file),
   but every pair ever seen between two live files keeps a state entry, at most 435 new ones per
-  commit. Here that is 3,668 pairs; on a very long history with wide commits it could reach
-  millions and would be loaded whole on each build that has new commits (a build with none reads
+  commit. Here that is 3,668 pairs; on a very long history with wide commits it reaches the cap
+  and is loaded whole on each build that has new commits (a build with none reads
   nothing). Measured on a synthetic store of 124,750 pairs: 2.6 s for a build with one new
-  one-file commit. Raising `min_support` to 2 turns the pending window on and bounds it; a
+  one-file commit. The pending window does not bound it: an expired pair is reset, not removed. A
   windowed history or a partial load would do it without costing recall. A partial load needs
   each pair to be reachable from both of its files (it is stored once, under the smaller path),
   which is a change of the stored format. Not built.
@@ -1748,7 +1761,11 @@ a regular file, so a FIFO cannot block the run.
   in a newer Unicode version is countable on a newer interpreter and not on an older one, so
   two interpreters can disagree about a file whose name uses one.
 - **The replay still holds its whole range in memory** (`first_parent_log`), bulk commits
-  included; only the build and the holdout stream. It is an eval over a range the caller names.
+  included, up to `MAX_REPLAY_HISTORY_CHANGES` path changes (C6); only the build and the holdout
+  stream. It is an eval over a range the caller names.
+- **A JSON `--graph` file is parsed whole** before any row is counted; its only bound is the
+  64 MiB on the file, and `json.loads` holds many times that. The file is named on the command
+  line, so this is the caller's own input.
 - **Decay and the cap were tuned on two repositories**, one of them this one, and scored on the
   same ones. `half_life` is a
   gain here and a wash on the other; `max_files` 30 against 60 points opposite ways.

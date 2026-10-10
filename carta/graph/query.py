@@ -438,9 +438,9 @@ def _history_edges(edges: Iterable[Edge], own_commits: frozenset) -> List[Edge]:
     for edge in edges:
         try:
             first = json.loads(edge.meta).get("first")
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, RecursionError):
             first = None
-        if first not in own_commits:
+        if not isinstance(first, str) or first not in own_commits:
             kept.append(edge)
     return kept
 

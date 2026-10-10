@@ -28,7 +28,7 @@ from carta.graph.gitio import (
     GitError, LogEntry, first_parent_rows, is_shallow, is_unborn, iter_added_deleted,
     iter_log_entries, work_tree_root,
 )
-from carta.graph.limits import MAX_COCHANGE_PATH_LENGTH
+from carta.graph.limits import MAX_COCHANGE_PAIRS, MAX_COCHANGE_PATH_LENGTH
 from carta.graph.model import Edge, canonical_meta
 from carta.graph.paths import in_path_set, is_doc_path
 from carta.graph.settings import CochangeSettings, GraphSettings
@@ -112,8 +112,11 @@ class PairTable:
       another with the same content (the same blob, matched one to one, the
       empty blob excepted), the counts follow the file. A move that also
       edits the file is a delete and an add.
-    * A pair still below ``min_support`` is forgotten once ``pending_window``
-      commits pass without it recurring, which bounds the table.
+    * A pair still below ``min_support`` starts over once ``pending_window``
+      commits pass without it recurring (and is not written out after that).
+    * The table holds at most ``MAX_COCHANGE_PAIRS`` pairs. Past that no new
+      pair is started (``capped`` counts them); pairs it has go on counting.
+      Nothing else bounds it: a history can pair new files in every commit.
     * With ``half_life`` set, a co-change counts half after that many commits
       (positions on the mainline, not dates: clocks in history are not to be
       trusted, and positions make the result reproducible).
@@ -128,6 +131,8 @@ class PairTable:
         self.total_w = 0.0          # the same, decayed, as of ``total_seq``
         self.total_seq = 0
         self.bulk = 0               # commits skipped as bulk
+        self.n_pairs = 0            # pairs held (each is in ``adj`` twice)
+        self.capped = 0             # pairs never started because the table was full
         self.dirty: Set[str] = set()    # files whose stored rows may have changed
         self.gone: Set[str] = set()     # files that no longer have rows
 
@@ -180,6 +185,7 @@ class PairTable:
         self.gone.add(path)
         self.dirty.discard(path)
         for other in self.adj.pop(path, {}):
+            self.n_pairs -= 1
             links = self.adj[other]
             del links[path]
             if not links:
@@ -233,6 +239,10 @@ class PairTable:
             for b in live[i + 1:]:
                 pair = self.adj.get(a, {}).get(b)
                 if pair is None:
+                    if self.n_pairs >= MAX_COCHANGE_PAIRS:      # before the pair exists
+                        self.capped += 1
+                        continue
+                    self.n_pairs += 1
                     pair = _Pair(first=sha)
                     self.adj.setdefault(a, {})[b] = pair
                     self.adj.setdefault(b, {})[a] = pair
@@ -325,8 +335,7 @@ class PairTable:
         return edges
 
     def counts(self) -> dict:
-        pairs = sum(len(links) for links in self.adj.values()) // 2
-        return {"files": len(self.files), "pairs": pairs}
+        return {"files": len(self.files), "pairs": self.n_pairs}
 
     # -- persistence ----------------------------------------------------------
 
@@ -351,8 +360,11 @@ class PairTable:
                                "pairs": pairs})
 
     def totals(self) -> str:
-        return canonical_meta({"total": self.total, "total_w": self.total_w,
-                               "total_seq": self.total_seq, "bulk": self.bulk})
+        data = {"total": self.total, "total_w": self.total_w,
+                "total_seq": self.total_seq, "bulk": self.bulk}
+        if self.capped:                 # absent for every table that was never full
+            data["capped"] = self.capped
+        return canonical_meta(data)
 
     @classmethod
     def load(cls, settings: CochangeSettings, seq: int, totals: str,
@@ -369,6 +381,7 @@ class PairTable:
         table.total_w = _float(head["total_w"])
         table.total_seq = _int(head["total_seq"])
         table.bulk = _int(head["bulk"])
+        table.capped = _int(head.get("capped", 0))
         parsed = {path: _obj(text) for path, text in files.items()}
         for path in parsed:
             if not countable_path(path):
@@ -386,6 +399,9 @@ class PairTable:
                 support, w, first, last, pair_seq = row
                 if not (_is_commit_id(first) and _is_commit_id(last)):
                     raise ValueError("a stored pair has no commit ids")
+                table.n_pairs += 1
+                if table.n_pairs > MAX_COCHANGE_PAIRS:
+                    raise ValueError("more stored pairs than a table holds")
                 pair = _Pair(_int(support), _float(w), first, last, _int(pair_seq))
                 table.adj.setdefault(path, {})[other] = pair
                 table.adj.setdefault(other, {})[path] = pair
@@ -398,7 +414,10 @@ def _is_commit_id(value: object) -> bool:
 
 
 def _obj(text: str) -> dict:
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except RecursionError:              # nesting no row of ours has
+        raise ValueError("expected a JSON object") from None
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     return data
@@ -413,7 +432,10 @@ def _int(value: object) -> int:
 def _float(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"expected a number, got {value!r}")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:               # an integer of hundreds of digits
+        raise ValueError(f"expected a finite number, got a {type(value).__name__}") from None
     if number != number or number < 0.0 or number == float("inf"):
         raise ValueError(f"expected a finite non-negative number, got {value!r}")
     return number
@@ -563,16 +585,26 @@ def _stored_seq(store: EdgeStore, fingerprint: str,
     if store.get_meta(META_VERSION) != str(COCHANGE_EXTRACTOR_VERSION):
         return None
     cursor = store.get_meta(META_CURSOR) or ""
-    seq_text = store.get_meta(META_SEQ) or ""
-    if not seq_text.isdigit():
+    seq = _seq_number(store.get_meta(META_SEQ) or "")
+    if seq is None:
         return None
-    seq = int(seq_text)
     if seq == 0:
         if cursor:
             return None
     elif seq > len(rows) or rows[seq - 1][0] != cursor:
         return None
     return seq
+
+
+def _seq_number(text: str) -> Optional[int]:
+    """The stored commit count, or ``None`` when it is not one this code wrote.
+
+    ``str.isdigit`` alone accepts digits ``int`` refuses (a superscript two)
+    and lengths it refuses (thousands of digits).
+    """
+    if text.isascii() and text.isdigit() and len(text) <= 18:
+        return int(text)
+    return None
 
 
 def _stored_table(store: EdgeStore, settings: CochangeSettings, seq: int) -> Optional[PairTable]:
@@ -710,10 +742,9 @@ def cochange_status(repo_root: Path, settings: GraphSettings, store: EdgeStore) 
     cs = settings.cochange
     enabled = bool(settings.enabled and cs.enabled)
     cursor = store.get_meta(META_CURSOR) or ""
-    seq_text = store.get_meta(META_SEQ) or ""
     held = bool(cursor or store.source_meta(COCHANGE_EXTRACTOR))
-    status = {"enabled": enabled, "commits": int(seq_text) if seq_text.isdigit() else 0,
-              "head": cursor, "stale": False, "reason": ""}
+    status = {"enabled": enabled, "commits": _seq_number(store.get_meta(META_SEQ) or "") or 0,
+              "head": cursor if _is_commit_id(cursor) else "", "stale": False, "reason": ""}
     if not enabled:
         if held:
             status.update(stale=True, reason="cochange_disabled")

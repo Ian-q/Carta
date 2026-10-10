@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import io
 import json
 import math
 import os
@@ -46,7 +47,8 @@ from carta.graph.gitio import (
     GitError, first_parent_rows, is_unborn, ls_tree, rev_parse, toplevel,
 )
 from carta.graph.limits import (
-    MAX_COCHANGE_COMMIT_FILES, MAX_EXTERNAL_GRAPH_BYTES, MAX_EXTERNAL_GRAPH_EDGES,
+    MAX_COCHANGE_COMMIT_FILES, MAX_COCHANGE_PATH_LENGTH, MAX_EXTERNAL_GRAPH_BYTES,
+    MAX_EXTERNAL_GRAPH_EDGES,
 )
 from carta.graph.safeio import write_text_replacing
 from carta.graph.settings import DEFAULT_SETTINGS, CochangeSettings, GraphSettings
@@ -68,10 +70,11 @@ class HoldoutError(ValueError):
 # -- external graphs ---------------------------------------------------------------
 
 def _clean_path(value: object) -> Optional[str]:
-    if not isinstance(value, str):
+    # Length first: everything below is work on the string.
+    if not isinstance(value, str) or len(value) > MAX_COCHANGE_PATH_LENGTH + 2:
         return None
     path = value.strip().replace("\\", "/")
-    while path.startswith("./"):
+    if path.startswith("./"):
         path = path[2:]
     if not path or path.startswith("/") or not countable_path(path):
         return None
@@ -85,7 +88,7 @@ def _weight(value: object) -> Optional[float]:
         return None
     try:
         number = float(value)          # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) and number > 0.0 else None
 
@@ -117,8 +120,8 @@ def _triples_from_json(data: object):
 
 
 def _triples_from_text(text: str):
-    for line in text.split("\n"):
-        line = line.rstrip("\r")
+    for line in io.StringIO(text, newline="\n"):       # one line at a time, never a list
+        line = line.rstrip("\r\n")
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         fields = line.split("\t")
@@ -171,13 +174,15 @@ def load_external_graph(path: Path, *, directed: bool = False) -> Tuple[Adjacenc
     graph: Adjacency = {}
     edges = rejected = 0
     for raw_src, raw_dst, raw_weight in triples:
+        # Every row counts against the limit, valid or not: a file of rows
+        # that are all rejected is as much work as one that is all edges.
+        if edges + rejected >= MAX_EXTERNAL_GRAPH_EDGES:
+            raise HoldoutError(f"{path} holds more than {MAX_EXTERNAL_GRAPH_EDGES} rows")
         src, dst, weight = _clean_path(raw_src), _clean_path(raw_dst), _weight(raw_weight)
         if src is None or dst is None or weight is None or src == dst:
             rejected += 1
             continue
         edges += 1
-        if edges > MAX_EXTERNAL_GRAPH_EDGES:
-            raise HoldoutError(f"{path} holds more than {MAX_EXTERNAL_GRAPH_EDGES} edges")
         for a, b in ((src, dst),) if directed else ((src, dst), (dst, src)):
             links = graph.setdefault(a, {})
             if weight > links.get(b, 0.0):
