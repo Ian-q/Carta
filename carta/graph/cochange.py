@@ -114,9 +114,13 @@ class PairTable:
       edits the file is a delete and an add.
     * A pair still below ``min_support`` starts over once ``pending_window``
       commits pass without it recurring (and is not written out after that).
-    * The table holds at most ``MAX_COCHANGE_PAIRS`` pairs. Past that no new
-      pair is started (``capped`` counts them); pairs it has go on counting.
-      Nothing else bounds it: a history can pair new files in every commit.
+    * The table holds at most ``MAX_COCHANGE_PAIRS`` pairs. When it is full,
+      pairs the pending window has already expired are removed first (they
+      would start over at their next co-change anyway, so nothing is lost);
+      only if it is still full is a new pair not started. ``capped`` counts
+      those, and the build report and ``graph status`` carry it: a full table
+      is never silent. Pairs it has go on counting. Nothing else bounds the
+      table: a history can pair new files in every commit.
     * With ``half_life`` set, a co-change counts half after that many commits
       (positions on the mainline, not dates: clocks in history are not to be
       trusted, and positions make the result reproducible).
@@ -133,6 +137,7 @@ class PairTable:
         self.bulk = 0               # commits skipped as bulk
         self.n_pairs = 0            # pairs held (each is in ``adj`` twice)
         self.capped = 0             # pairs never started because the table was full
+        self._evicted_at: Optional[int] = None      # ``seq`` of the last sweep for expired pairs
         self.dirty: Set[str] = set()    # files whose stored rows may have changed
         self.gone: Set[str] = set()     # files that no longer have rows
 
@@ -240,6 +245,8 @@ class PairTable:
                 pair = self.adj.get(a, {}).get(b)
                 if pair is None:
                     if self.n_pairs >= MAX_COCHANGE_PAIRS:      # before the pair exists
+                        self._evict_expired(seq)
+                    if self.n_pairs >= MAX_COCHANGE_PAIRS:
                         self.capped += 1
                         continue
                     self.n_pairs += 1
@@ -252,6 +259,31 @@ class PairTable:
                 pair.support += 1
                 pair.last = sha
                 pair.seq = seq
+
+    def _evict_expired(self, seq: int) -> None:
+        """Remove every pair the pending window has expired, to make room in a full table.
+
+        Such a pair is below the floor (so it is no edge) and would be reset
+        at its next co-change, so removing it changes no result. One sweep
+        reads the whole table, so sweeps are spaced an eighth of the window
+        apart, and there is none when a sweep cannot find anything (no
+        window, or a floor of 1).
+        """
+        floor, window = self.settings.min_support, self.settings.pending_window
+        if not window or floor <= 1:
+            return
+        if self._evicted_at is not None and seq - self._evicted_at < max(1, window // 8):
+            return
+        self._evicted_at = seq
+        for a in list(self.adj):
+            links = self.adj[a]
+            for b in [b for b, pair in links.items()
+                      if pair.support < floor and seq - pair.seq > window]:
+                del links[b]
+                if a < b:
+                    self.n_pairs -= 1
+            if not links:
+                del self.adj[a]
 
     def observe_bulk(self, sha: str, deleted: Iterable[str],
                      renames: Iterable[Tuple[str, str]] = (), *, has_parent: bool = True) -> None:
@@ -560,7 +592,8 @@ def _history(repo_root: Path) -> Tuple[Optional[Path], str, List[List[str]]]:
 
 def _empty_report(status: str, enabled: bool) -> dict:
     return {"enabled": enabled, "status": status, "commits": 0, "new_commits": 0,
-            "counted": 0, "bulk": 0, "files": 0, "pairs": 0, "edges": 0, "written": 0,
+            "counted": 0, "bulk": 0, "files": 0, "pairs": 0, "edges": 0, "capped": 0,
+            "written": 0,
             "full": False, "shallow": False, "head": "", "digest": ""}
 
 
@@ -618,8 +651,11 @@ def _stored_table(store: EdgeStore, settings: CochangeSettings, seq: int) -> Opt
 
 def _summary(table: PairTable, edges: int, digest: str) -> str:
     sizes = table.counts()
-    return canonical_meta({"counted": table.total, "bulk": table.bulk, "files": sizes["files"],
-                           "pairs": sizes["pairs"], "edges": edges, "digest": digest})
+    data = {"counted": table.total, "bulk": table.bulk, "files": sizes["files"],
+            "pairs": sizes["pairs"], "edges": edges, "digest": digest}
+    if table.capped:                    # absent unless the table was ever full
+        data["capped"] = table.capped
+    return canonical_meta(data)
 
 
 def _stored_summary(store: EdgeStore) -> Optional[dict]:
@@ -628,6 +664,7 @@ def _stored_summary(store: EdgeStore) -> Optional[dict]:
         data = _obj(store.get_meta(META_SUMMARY) or "")
         for key in ("counted", "bulk", "files", "pairs", "edges"):
             _int(data[key])
+        data["capped"] = _int(data.get("capped", 0))
         if not isinstance(data["digest"], str):
             return None
     except (ValueError, KeyError, TypeError):
@@ -684,7 +721,8 @@ def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = Fa
                 return {"enabled": True, "status": status, "commits": seq, "new_commits": 0,
                         "counted": summary["counted"], "bulk": summary["bulk"],
                         "files": summary["files"], "pairs": summary["pairs"],
-                        "edges": summary["edges"], "written": 0, "full": False,
+                        "edges": summary["edges"], "capped": summary["capped"],
+                        "written": 0, "full": False,
                         "shallow": bool(top is not None and rows and is_shallow(top)),
                         "head": head, "digest": summary["digest"]}
         table = None if seq is None else _stored_table(store, cs, seq)
@@ -732,7 +770,7 @@ def build_cochange(repo_root: Path, settings: GraphSettings, *, force: bool = Fa
     return {"enabled": True, "status": status, "commits": table.seq,
             "new_commits": new_commits, "counted": table.total, "bulk": table.bulk,
             "files": sizes["files"], "pairs": sizes["pairs"], "edges": n_edges,
-            "written": written, "full": full,
+            "capped": table.capped, "written": written, "full": full,
             "shallow": bool(top is not None and rows and is_shallow(top)),
             "head": head, "digest": digest}
 
@@ -743,8 +781,10 @@ def cochange_status(repo_root: Path, settings: GraphSettings, store: EdgeStore) 
     enabled = bool(settings.enabled and cs.enabled)
     cursor = store.get_meta(META_CURSOR) or ""
     held = bool(cursor or store.source_meta(COCHANGE_EXTRACTOR))
+    summary = _stored_summary(store)
     status = {"enabled": enabled, "commits": _seq_number(store.get_meta(META_SEQ) or "") or 0,
-              "head": cursor if _is_commit_id(cursor) else "", "stale": False, "reason": ""}
+              "head": cursor if _is_commit_id(cursor) else "", "stale": False, "reason": "",
+              "capped": summary["capped"] if summary else 0}
     if not enabled:
         if held:
             status.update(stale=True, reason="cochange_disabled")

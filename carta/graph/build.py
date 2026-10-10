@@ -241,7 +241,8 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
               "extractor_version": None, "docs": 0, "edges": 0, "by_kind": {},
               "by_dst_type": {}, "digest": "", "stale": True, "stale_reasons": ["no_store"],
               "cochange": {"enabled": bool(settings.enabled and settings.cochange.enabled),
-                           "commits": 0, "head": "", "stale": False, "reason": ""}}
+                           "commits": 0, "head": "", "stale": False, "reason": "",
+                           "capped": 0}}
     try:
         store = EdgeStore.open_readonly(store_path(repo_root))
     except StoreVersionError:

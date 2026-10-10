@@ -14,6 +14,7 @@ from carta.graph.build import build_graph, graph_status
 from carta.graph.cochange import PairTable
 from carta.graph.eval.holdout import HoldoutError, load_external_graph
 from carta.graph.eval.replay import ReplayError, run_replay
+from carta.graph import gitio as gitio_mod
 from carta.graph.gitio import (
     GitError, _stream_tokens, first_parent_log, first_parent_rows, iter_log_entries,
 )
@@ -43,6 +44,13 @@ def test_a_record_with_no_end_is_given_up_while_it_is_read(monkeypatch):
     with pytest.raises(GitError, match="longer than"):
         next(_stream_tokens(stream))
     assert stream.calls <= 2                    # not after the other 50 MB went by
+    # the limit is on what is held, so it is met before a record is joined to what came before
+
+    class Chunks:
+        def __init__(self): self.left = [b"a" * 600, b"a" * 600 + b"\0"]
+        def read(self, n): return self.left.pop(0) if self.left else b""
+    with pytest.raises(GitError, match="longer than"):
+        list(_stream_tokens(Chunks()))
     assert list(_stream_tokens(io.BytesIO(b"a" * 1000 + b"\0b\0"))) == [b"a" * 1000, b"b"]
     with pytest.raises(GitError):
         list(_stream_tokens(io.BytesIO(b"a" * 1001 + b"\0")))
@@ -98,6 +106,65 @@ def test_the_table_stops_starting_pairs_at_its_cap(monkeypatch):
     assert table.counts()["pairs"] == _pairs_in(table) == 7
     table.observe(SHA(14), [("M", "new_a"), ("M", "new_b")])
     assert table.counts()["pairs"] == 8
+
+
+def test_a_full_table_drops_expired_pairs_before_it_refuses_a_live_one(monkeypatch):
+    """Pairs the window has expired are dead weight: they must not be what fills the table."""
+    monkeypatch.setattr("carta.graph.cochange.MAX_COCHANGE_PAIRS", 6)
+    floor2 = CochangeSettings(max_files=30, min_support=2, min_score=0.0, half_life=0,
+                              pending_window=3)
+    table = PairTable(floor2)
+    table.observe(SHA(1), [("M", "root")], has_parent=False)
+    table.observe(SHA(2), [("M", p) for p in ("d1", "d2", "d3", "d4")])    # 6 pairs, seen once
+    assert (table.counts()["pairs"], table.capped) == (6, 0)
+    for i in range(3, 8):                                   # the window passes
+        table.observe(SHA(i), [("M", "solo")])
+    table.observe(SHA(8), [("M", "live_a"), ("M", "live_b")])
+    table.observe(SHA(9), [("M", "live_a"), ("M", "live_b")])
+    assert table.capped == 0                                # room was made, nothing refused
+    assert table.score("live_a", "live_b")[0] == 2
+    assert table.counts()["pairs"] == _pairs_in(table) == 1
+    # and a table full of pairs that are not expired does refuse, and says so
+    table.observe(SHA(10), [("M", p) for p in ("e1", "e2", "e3", "e4")])
+    assert (table.counts()["pairs"], table.capped) == (6, 1)
+
+
+def test_expiring_pairs_early_changes_no_result(monkeypatch):
+    floor2 = CochangeSettings(max_files=6, min_support=2, min_score=0.0, half_life=0,
+                              pending_window=5)
+    rng = random.Random(11)
+    names = [f"p{i}" for i in range(9)]
+    history = [[("M", n) for n in rng.sample(names, rng.randint(1, 4))] for _ in range(300)]
+
+    def run(cap):
+        monkeypatch.setattr("carta.graph.cochange.MAX_COCHANGE_PAIRS", cap)
+        table = PairTable(floor2)
+        for i, changes in enumerate(history, 1):
+            table.observe(SHA(i), changes, has_parent=i > 1)
+            if cap < 10 ** 6:
+                table._evict_expired(table.seq)             # as a full table would, every time
+                table._evicted_at = None
+        return {name: table.neighbours(name) for name in names}, table.capped
+
+    assert run(10 ** 9) == run(10 ** 5)
+
+
+@requires_git
+def test_a_full_table_is_reported_by_the_build_and_by_status(git_repo, monkeypatch, capsys):
+    from carta.cli import _print_cochange_build
+    repo = _history(git_repo)
+    repo.write("src/b.py", "b = 1\n")
+    repo.write("src/c.py", "c = 1\n")
+    repo.write("docs/a.md", "about a, b and c\n")
+    repo.commit("more files", 5)
+    monkeypatch.setattr("carta.graph.cochange.MAX_COCHANGE_PAIRS", 1)
+    report = build_graph(repo.root, CFG)["cochange"]
+    assert report["status"] == "ok" and report["pairs"] == 1 and report["capped"] == 3
+    again = build_graph(repo.root, CFG)["cochange"]         # the build that reads no state
+    assert (again["new_commits"], again["capped"]) == (0, 3)
+    assert graph_status(repo.root, CFG)["cochange"]["capped"] == 3
+    _print_cochange_build(report)
+    assert "pair table is full; 3 pairs" in capsys.readouterr().out
 
 
 def test_a_full_table_survives_a_reload_and_an_overfull_one_is_not_loaded(monkeypatch):
@@ -234,6 +301,15 @@ def test_the_replay_gives_up_a_history_it_cannot_hold(git_repo, monkeypatch):
     assert len(first_parent_log(repo.root)) == 4
     with pytest.raises(GitError, match="more than 3 paths"):
         first_parent_log(repo.root, "HEAD", 3)
+    # one commit over the limit is never collected: it is cut off while it is read
+    seen = []
+    real = gitio_mod.iter_log_entries
+    monkeypatch.setattr(gitio_mod, "iter_log_entries",
+                        lambda *a, **k: seen.append(k.get("max_changes")) or real(*a, **k))
+    with pytest.raises(GitError, match="more than 1 paths"):
+        first_parent_log(repo.root, "HEAD", 1)              # the root commit alone changes 1; next 2
+    assert seen == [1]
+    monkeypatch.undo()
     monkeypatch.setattr("carta.graph.eval.replay.MAX_REPLAY_HISTORY_CHANGES", 3)
     with pytest.raises(ReplayError, match="more than 3 paths"):
         run_replay(repo.root, use_disk_cache=False, resamples=20)

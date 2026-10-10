@@ -671,12 +671,13 @@ def test_hostile_file_names_are_read_exactly_and_never_stored(git_repo):
 def test_status_reports_the_history_cursor(git_repo):
     repo = seed_history(git_repo)
     assert graph_status(repo.root, SMALL)["cochange"] == {
-        "enabled": True, "commits": 0, "head": "", "stale": False, "reason": ""}
+        "enabled": True, "commits": 0, "head": "", "stale": False, "reason": "",
+        "capped": 0}
     build_graph(repo.root, SMALL)
     head = repo.git("rev-parse", "HEAD").strip()
     status = graph_status(repo.root, SMALL)
     assert status["cochange"] == {"enabled": True, "commits": 5, "head": head, "stale": False,
-                                  "reason": ""}
+                                  "reason": "", "capped": 0}
     assert status["stale"] is False and status["by_kind"]["cochange"] == 2
     repo.write("src/a.py", "a = 9\n")
     repo.commit("later", 9)

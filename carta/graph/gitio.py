@@ -466,11 +466,14 @@ def _stream_tokens(stream) -> Iterator[bytes]:
         if not chunk:
             break
         parts = chunk.split(b"\0")
-        parts[0] = tail + parts[0]
-        tail = parts.pop()
-        if len(tail) > MAX_GIT_TOKEN_BYTES or any(len(p) > MAX_GIT_TOKEN_BYTES for p in parts):
+        # Measured before anything is joined: what is held is never more than
+        # one record within the limit, plus the chunk just read.
+        if (len(tail) + len(parts[0]) > MAX_GIT_TOKEN_BYTES
+                or any(len(part) > MAX_GIT_TOKEN_BYTES for part in parts[1:])):
             raise GitError(f"git printed a record longer than {MAX_GIT_TOKEN_BYTES} bytes "
                            f"(a path of that length is not read)")
+        parts[0] = tail + parts[0]
+        tail = parts.pop()
         for part in parts:
             yield part
     if tail:
@@ -651,9 +654,12 @@ def log_entries(repo: Path, rows: Sequence[Sequence[str]],
     """
     entries: List[LogEntry] = []
     held = 0
-    for entry in iter_log_entries(repo, rows):
+    # The same number bounds one commit while it is read (it comes back
+    # ``truncated``, its paths never collected), so the count below is never
+    # made of something already larger than the limit.
+    for entry in iter_log_entries(repo, rows, max_changes=max_total):
         held += len(entry.changes)
-        if max_total is not None and held > max_total:
+        if max_total is not None and (entry.truncated or held > max_total):
             raise GitError(f"the history changes more than {max_total:,} paths in all; "
                            f"that is more than is held in memory at once")
         entries.append(entry)

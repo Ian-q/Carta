@@ -1092,6 +1092,13 @@ def _plural(n: int, noun: str) -> str:
     return f"{n:,} {noun}" + ("" if n == 1 else "s")
 
 
+def _print_cochange_capped(history: dict) -> None:
+    """Say so when the pair table was full: the co-change edges are then partial."""
+    if history.get("capped"):
+        print(f"  history: the pair table is full; {_plural(history['capped'], 'pair')} "
+              f"could not be started, so co-change edges for the files in them are missing")
+
+
 def _print_cochange_build(history: dict) -> None:
     """One line on the history pass of `carta graph build`."""
     status = history.get("status")
@@ -1101,6 +1108,7 @@ def _print_cochange_build(history: dict) -> None:
         print(f"  history: {_plural(history['edges'], 'co-change edge')} from "
               f"{_plural(history['counted'], 'commit')} ({history['new_commits']:,} new, "
               f"{history['bulk']:,} skipped as bulk){cut}")
+        _print_cochange_capped(history)
     elif status == "failed":
         print(f"  history: co-change edges were not updated ({history.get('detail', '')}); "
               f"what the store held was kept")
@@ -1185,6 +1193,7 @@ def cmd_graph(args):
     if history.get("enabled"):
         print(f"  history: co-change edges from {_plural(history['commits'], 'mainline commit')}"
               + (f", up to {history['head'][:12]}" if history.get("head") else ""))
+        _print_cochange_capped(history)
 
 
 def cmd_impact(args):
