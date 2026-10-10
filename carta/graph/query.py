@@ -533,9 +533,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         came = []
 
     try:
+        built: dict = {}
         if build:
             # History is only read when a history kind is asked for.
-            build_graph(repo_root, cfg, cochange=any(k in HISTORY_KINDS for k in use_kinds))
+            built = build_graph(
+                repo_root, cfg,
+                cochange=any(k in HISTORY_KINDS for k in use_kinds)).get("symbols", {})
         store = EdgeStore.open_readonly(store_path(repo_root))
     # The store's own messages name it by absolute path; this result also goes
     # to an MCP client, which is told where it is in the repository and no more.
@@ -565,6 +568,9 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         n_docs = len(store.source_hashes(MENTION_EXTRACTOR))
         total_edges = store.counts()["edges"]
         digest = store.edges_digest((MENTION_EXTRACTOR,))
+        symbols_state = built.get("state") or store.get_meta("symbol.state") or "off"
+        symbols_detail = (built.get("detail") if built
+                          else store.get_meta("symbol.detail")) or ""
 
     if build and gone and "mention" in use_kinds:
         edges.extend(_edges_before(repo_root, settings, gone, came))
@@ -579,7 +585,7 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         results.append({"rank": item["rank"], "doc": item["doc"],
                         "score": round(item["score"], 6), "in_diff": item["doc"] in in_diff,
                         "matches": matches})
-    return {
+    out = {
         "schema": IMPACT_SCHEMA,
         "query": {"paths": query, "diff": range_spec, "kinds": use_kinds, "top": use_top,
                   "min_score": use_min},
@@ -589,6 +595,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         "unmatched_paths": [q for q in query if not index.is_matched(q, use_kinds)],
         "skipped_paths": skipped,
     }
+    if "symbol" in use_kinds:
+        # The symbol edges of a failed load are kept, so they are read here
+        # too; the answer has to say that they may no longer be true.
+        out["symbols"] = {"provider": settings.symbols_provider, "state": symbols_state,
+                          "stale": symbols_state == "failed", "detail": symbols_detail}
+    return out
 
 
 # -- human output ----------------------------------------------------------
@@ -675,6 +687,10 @@ def format_impact(result: dict) -> str:
                 more = len(evidence) - EVIDENCE_LINES_SHOWN
                 lines.append(f"        ... {_count(more, 'more line')}")
     tail: List[str] = []
+    symbols = result.get("symbols") or {}
+    if symbols.get("stale"):
+        tail.append("Symbol matches may be out of date: the symbol index could not be loaded "
+                    f"({symbols.get('detail', '')}); the edges of the last good build were used")
     if result["unmatched_paths"]:
         nothing = "No doc names or has changed with" if labelled else "No doc mentions"
         tail.append(f"{nothing}: " + ", ".join(

@@ -380,14 +380,6 @@ def test_a_symlinked_symbols_file_is_never_followed(tmp_path):
     assert "symbolic link" in report["symbols"]["detail"]
 
 
-def test_a_binary_or_empty_symbols_file_gives_no_rows(tmp_path):
-    root = make_repo(tmp_path, {"docs/frames.md": DOC})
-    (root / "index" / "symbols.jsonl").write_bytes(b"\x00\x01\x02" * 100)
-    report = build_graph(root, cfg_for())
-    assert report["symbols"]["state"] == "ok" and report["symbols"]["rows"] == 0
-    assert symbol_edges(root) == []
-
-
 # -- the ctags provider, without a ctags binary ------------------------------------
 
 _FAKE_CTAGS = r'''#!{python}
@@ -523,3 +515,159 @@ def test_impact_without_a_provider_reads_mentions_only(tmp_path):
     root = make_repo(tmp_path, {"docs/frames.md": DOC})
     result = run_impact(root, {}, paths=["src/pkg/table.py"])
     assert result["query"]["kinds"] == ["mention"] and result["results"] == []
+
+
+# -- review of #131: what the first version got wrong -------------------------------
+
+def _row(name: str, file: str, kind: str = "function", **more) -> str:
+    return json.dumps({"name": name, "kind": kind, "file": file, "line": 1, **more}) + "\n"
+
+
+def test_a_code_file_added_or_deleted_is_noticed_without_touching_the_index(tmp_path):
+    root = make_repo(tmp_path, {"docs/a.md": "`render_table()` and `later_thing()`.\n"})
+    (root / "index" / "symbols.jsonl").write_text(
+        _row("render_table", "src/pkg/table.py") + _row("later_thing", "src/later.py"))
+    cfg = cfg_for()
+    build_graph(root, cfg)
+    assert [e.dst for e in symbol_edges(root)] == ["src/pkg/table.py"]
+    assert graph_status(root, cfg)["stale"] is False
+
+    os.unlink(root / "src" / "pkg" / "table.py")
+    assert "symbols_changed" in graph_status(root, cfg)["stale_reasons"]
+    report = build_graph(root, cfg)
+    assert report["symbols"]["unchanged"] is False and symbol_edges(root) == []
+    assert graph_status(root, cfg)["stale"] is False
+
+    (root / "src" / "later.py").write_text("def later_thing():\n    pass\n")
+    assert "symbols_changed" in graph_status(root, cfg)["stale_reasons"]
+    build_graph(root, cfg)
+    assert [(e.key, e.dst) for e in symbol_edges(root)] == [("later_thing", "src/later.py")]
+    assert run_impact(root, cfg, paths=["src/later.py"])["matched_docs"] == 1
+    assert build_graph(root, cfg)["symbols"]["unchanged"] is True
+
+
+def test_a_key_in_a_data_file_is_not_a_definition():
+    data = (_row("repo_root", "report.json", "string", language="JSON")
+            + _row("qdrant_url", "conf/app.yaml", "anchor", language="Yaml")
+            + _row("render_table", "src/t.py", language="Python")
+            + _row("plain_row", "src/u.py"))
+    parsed = parse_symbols(data.encode())
+    assert [r.name for r in parsed.rows] == ["render_table", "plain_row"]
+    assert parsed.skipped == 0          # rightly not rows, like a ctags pseudo-tag
+    # ...and ctags is asked for the language of every tag it prints.
+    assert "--fields=+nl" in symbols.ctags_command("ctags", "list")
+
+
+def test_a_byte_order_mark_or_a_comment_does_not_hide_the_format():
+    rows = _row("one_fn", "a.py") + _row("two_fn", "b.py")
+    bom = b"\xef\xbb\xbf"
+    got = parse_symbols(bom + rows.encode())
+    assert (got.format, len(got.rows), got.skipped) == ("jsonl", 2, 0)
+    got = parse_symbols(b"# made by a tool\n\n" + rows.encode())
+    assert (got.format, len(got.rows), got.skipped) == ("jsonl", 2, 0)
+    got = parse_symbols(bom + b"one_fn\tfunction\ta.py\t1\ntwo_fn\tfunction\tb.py\t2\n")
+    assert (got.format, len(got.rows), got.skipped) == ("tsv", 2, 0)
+
+
+@pytest.mark.parametrize("garbage", [
+    b"\x00\x01\x02" * 100,
+    (_row("one_fn", "src/wire.c") * 3).encode("utf-16"),
+    b"this is not\nan index at all\n",
+], ids=["binary", "utf-16", "prose"])
+def test_a_file_with_lines_and_no_row_is_a_failed_load(tmp_path, garbage):
+    root = make_repo(tmp_path, {"docs/frames.md": DOC})
+    cfg = cfg_for()
+    build_graph(root, cfg)
+    kept = symbol_edges(root)
+    assert kept
+    (root / "index" / "symbols.jsonl").write_bytes(garbage)
+    report = build_graph(root, cfg)
+    assert report["symbols"]["state"] == "failed" and "no row" in report["symbols"]["detail"]
+    assert symbol_edges(root) == kept
+    assert "symbols_failed" in graph_status(root, cfg)["stale_reasons"]
+
+
+def test_an_empty_symbols_file_is_an_empty_index(tmp_path):
+    root = make_repo(tmp_path, {"docs/frames.md": DOC})
+    (root / "index" / "symbols.jsonl").write_bytes(b"\n# nothing yet\n")
+    report = build_graph(root, cfg_for())
+    assert report["symbols"]["state"] == "ok" and report["symbols"]["rows"] == 0
+    assert symbol_edges(root) == []
+
+
+def test_a_missing_member_falls_back_to_a_class_whatever_its_shape():
+    table = SymbolTable([SymbolRow("Parser", "class", "p.py", 1, ""),
+                         SymbolRow("os", "variable", "shim.py", 1, ""),
+                         SymbolRow("Shape", "class", "a.py", 1, ""),
+                         SymbolRow("Shape", "class", "b.py", 1, "")])
+    got = resolve_token(table, "Parser.gone_method", Mentioned(), 2)
+    assert (got.status, got.via, [r.file for r in got.rows]) == ("resolved", "owner", ["p.py"])
+    assert resolve_token(table, "x.y.Parser.zap", Mentioned(), 2).status == "resolved"
+    # A plain word that is not a type vouches for nothing ...
+    assert resolve_token(table, "os.gone_call", Mentioned(), 2).status == "unknown"
+    # ... and neither does a plain type name with two homes.
+    assert resolve_token(table, "Shape.gone_method", Mentioned(), 2).status == "unknown"
+
+
+def test_a_standard_library_call_never_resolves_to_a_local_namesake():
+    table = SymbolTable([SymbolRow("check_output", "function", "util/proc.py", 1, ""),
+                         SymbolRow("replace_source", "method", "src/db.py", 4, "EdgeStore")])
+    assert resolve_token(table, "subprocess.check_output", Mentioned(), 2).status == "unknown"
+    assert resolve_token(table, "os.path.check_output", Mentioned(), 2).status == "unknown"
+    got = resolve_token(table, "store.replace_source", Mentioned(), 2)
+    assert (got.status, got.via) == ("resolved", "leaf")
+    assert resolve_token(table, "check_output", Mentioned(), 2).status == "resolved"
+    # A local file or scope of that name still wins over the list.
+    local = SymbolTable([SymbolRow("check_output", "function", "subprocess/run.py", 1, "")])
+    assert resolve_token(local, "subprocess.check_output", Mentioned(), 2).status == "resolved"
+
+
+_WRAPPER_CTAGS = r'''#!{python}
+import subprocess, sys, time
+args = sys.argv[1:]
+if "--list-features" in args:
+    sys.stdout.write("json   supports json format output\n"); sys.exit(0)
+if "--version" in args:
+    sys.stdout.write("Universal Ctags 0.0.0(fake)\n"); sys.exit(0)
+# A wrapper: the real work is a child that keeps this stdout open.
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+time.sleep(120)
+'''
+
+
+@posix_only
+def test_the_ctags_time_limit_holds_for_a_wrapper_that_starts_a_child(tmp_path, monkeypatch):
+    import time
+    tool = tmp_path / "tools" / "ctags"
+    tool.parent.mkdir()
+    tool.write_text(_WRAPPER_CTAGS.format(python=sys.executable))
+    tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("CARTA_CTAGS", str(tool))
+    monkeypatch.setattr(symbols, "CTAGS_TIMEOUT_SECONDS", 1)
+    root = make_repo(tmp_path / "repo", {"docs/frames.md": DOC}, symbols_file="")
+    found = symbols.find_universal_ctags(root)
+    started = time.monotonic()
+    with pytest.raises(SymbolsFailed) as err:
+        symbols.run_ctags(root, found, sorted(CODE))
+    # Without the fix this returns only when the child does, two minutes on.
+    assert "did not finish" in str(err.value) and time.monotonic() - started < 60
+
+
+def test_impact_says_so_when_the_symbol_edges_it_read_may_be_out_of_date(tmp_path, monkeypatch):
+    root = make_repo(tmp_path, {"docs/frames.md": DOC})
+    cfg = cfg_for()
+    fresh = run_impact(root, cfg, paths=["src/pkg/table.py"])
+    assert fresh["symbols"] == {"provider": "file", "state": "ok", "stale": False,
+                                "detail": "index/symbols.jsonl (jsonl)"}
+    assert "out of date" not in format_impact(fresh)
+    with open(root / "index" / "symbols.jsonl", "ab") as handle:
+        handle.write(b"\n")
+    monkeypatch.setattr(symbols, "MAX_SYMBOL_ROWS", 2)
+    for build in (True, False):
+        result = run_impact(root, cfg, paths=["src/pkg/table.py"], build=build)
+        assert [r["doc"] for r in result["results"]] == ["docs/frames.md"]
+        assert result["symbols"]["state"] == "failed" and result["symbols"]["stale"] is True
+        text = format_impact(result)
+        assert "out of date" in text and "could not be loaded" in text
+    # An arm that reads no symbol edges has nothing to say about them.
+    assert "symbols" not in run_impact(root, cfg, paths=["src/pkg/table.py"], kinds=["mention"])

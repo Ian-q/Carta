@@ -723,7 +723,10 @@ def carta_impact(
         gives the queried "path", the "target" the doc names, how it matched
         (exact | dir | glob | under), "df" (how many docs name that target) and
         "evidence" [{"line", "text"}], the doc lines to re-read. "unmatched_paths"
-        are the changed paths no doc names. Or {"error", "detail"}.
+        are the changed paths no doc names. When symbol edges were read there is
+        also "symbols" {"provider", "state", "stale", "detail"}: "stale" true means
+        the symbol index could not be loaded and the symbol matches come from the
+        last good build, so they may be out of date. Or {"error", "detail"}.
 
         A match's "kind" says which of two things it means. "mention": the doc
         names the path (re-read the evidence lines). "cochange" (match
