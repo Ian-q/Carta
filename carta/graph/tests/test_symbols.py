@@ -187,9 +187,10 @@ def test_a_foreign_qualifier_on_a_plain_word_does_not_resolve():
     # `subprocess.run` is somebody else's `run`: the qualifier matches nothing here
     # and the leaf has no shape of its own to vouch for it.
     assert resolve_token(table, "subprocess.run", Mentioned(), 2).status == "unknown"
-    # `store.replace_source` is an instance, not a scope, but the leaf is distinctive.
-    got = resolve_token(table, "store.replace_source", Mentioned(), 2)
+    # `self.replace_source` is the project's own member, and the leaf is distinctive.
+    got = resolve_token(table, "self.replace_source", Mentioned(), 2)
     assert (got.status, got.via) == ("resolved", "leaf")
+    assert resolve_token(table, "self.run", Mentioned(), 2).status == "unknown"
     assert resolve_token(table, "run", Mentioned(), 2).status == "resolved"
 
 
@@ -609,15 +610,20 @@ def test_a_missing_member_falls_back_to_a_class_whatever_its_shape():
     assert resolve_token(table, "Shape.gone_method", Mentioned(), 2).status == "unknown"
 
 
-def test_a_standard_library_call_never_resolves_to_a_local_namesake():
+def test_a_foreign_qualifier_never_resolves_to_a_local_namesake():
     table = SymbolTable([SymbolRow("check_output", "function", "util/proc.py", 1, ""),
                          SymbolRow("replace_source", "method", "src/db.py", 4, "EdgeStore")])
     assert resolve_token(table, "subprocess.check_output", Mentioned(), 2).status == "unknown"
     assert resolve_token(table, "os.path.check_output", Mentioned(), 2).status == "unknown"
-    got = resolve_token(table, "store.replace_source", Mentioned(), 2)
+    # An instance of something: nothing says whose, so the leaf alone is not enough.
+    assert resolve_token(table, "page.check_output", Mentioned(), 2).status == "unknown"
+    assert resolve_token(table, "store.replace_source", Mentioned(), 2).status == "unknown"
+    # The scope is a match, and so is "this object".
+    assert resolve_token(table, "EdgeStore.replace_source", Mentioned(), 2).status == "resolved"
+    got = resolve_token(table, "this.replace_source", Mentioned(), 2)
     assert (got.status, got.via) == ("resolved", "leaf")
     assert resolve_token(table, "check_output", Mentioned(), 2).status == "resolved"
-    # A local file or scope of that name still wins over the list.
+    # A local file or directory of that name is a match too.
     local = SymbolTable([SymbolRow("check_output", "function", "subprocess/run.py", 1, "")])
     assert resolve_token(local, "subprocess.check_output", Mentioned(), 2).status == "resolved"
 

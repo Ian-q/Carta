@@ -93,31 +93,8 @@ DATA_LANGUAGES = frozenset((
 OWNER_KINDS = frozenset(("class", "struct", "interface", "enum", "trait", "union", "typedef",
                          "type", "protocol", "record", "module"))
 
-# The public top-level modules of the Python standard library, pinned here so
-# that the result does not depend on the interpreter Carta runs under. A
-# qualifier from this list that matches nothing in the repository is somebody
-# else's: ``subprocess.check_output`` is not the local ``check_output``.
-FOREIGN_QUALIFIERS = frozenset("""
-    abc aifc argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb
-    binascii binhex bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs
-    codeop collections colorsys compileall concurrent configparser contextlib contextvars copy
-    copyreg crypt csv ctypes curses dataclasses datetime dbm decimal difflib dis distutils
-    doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch
-    fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip
-    hashlib heapq hmac html http idlelib imaplib imghdr imp importlib inspect io ipaddress
-    itertools json keyword lib2to3 linecache locale logging lzma mailbox mailcap marshal math
-    mimetypes mmap modulefinder msilib msvcrt multiprocessing netrc nis nntplib nt ntpath
-    nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle pickletools
-    pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd
-    py_compile pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource
-    rlcompleter runpy sched secrets select selectors shelve shlex shutil signal site smtpd
-    smtplib sndhdr socket socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat
-    statistics string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny
-    tarfile telnetlib tempfile termios textwrap threading time timeit tkinter token
-    tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata
-    unittest urllib uu uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib
-    xml xmlrpc zipapp zipfile zipimport zlib zoneinfo
-""".split())
+# Qualifiers that say "this object": the member behind one is the project's own.
+SELF_QUALIFIERS = frozenset(("self", "this", "cls"))
 
 _BOM = b"\xef\xbb\xbf"
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -414,14 +391,14 @@ def resolve_token(table: SymbolTable, token: str, mentioned: Mentioned, max_defi
       same doc mentions. What is left resolves when it is at most
       ``max_definitions`` files (each edge then weighs ``1 / files``), and is
       ``ambiguous`` otherwise.
-    * A qualified token whose qualifier matches nothing here is taken on its
-      name alone only if the name is distinctive (an inner underscore or a
-      case hump), has one defining file, and no part of the qualifier is a
-      standard-library module (``FOREIGN_QUALIFIERS``): ``store.replace_source``
-      yes, ``other.run`` no, ``subprocess.check_output`` no. This tests the
-      shape of the name and one pinned list, nothing more: a third-party
-      ``lib.some_name`` whose leaf the repository also defines once still
-      resolves here. Such edges carry ``via: leaf``.
+    * A qualified token whose qualifier matches nothing here is unknown:
+      ``subprocess.check_output`` is not the local ``check_output``, and
+      nothing in ``page.get_text`` says whose ``page`` it is. (Taking a
+      distinctive leaf on its own was tried and hand-checked: 4 right of 11
+      on this repository.) The one exception is a qualifier that says "this
+      object" (``SELF_QUALIFIERS``): ``self.replace_source`` resolves when the
+      name is distinctive (an inner underscore or a case hump) and has one
+      defining file. Such edges carry ``via: leaf``.
     * A member that is not in the index falls back to its owner when the
       owner is distinctive in the same sense (``FrameParser.gone``), or is a
       type (``OWNER_KINDS``) with exactly one defining file (``Parser.gone``
@@ -464,7 +441,7 @@ def resolve_token(table: SymbolTable, token: str, mentioned: Mentioned, max_defi
             rows, crowded = matching, False
         elif via != "owner":
             if (candidates != 1 or crowded or not _has_shape(leaf)
-                    or any(q in FOREIGN_QUALIFIERS for q in quals)):
+                    or any(q not in SELF_QUALIFIERS for q in quals)):
                 return _UNKNOWN
             via = "leaf"
     if len({r.file for r in rows}) > 1:
