@@ -108,7 +108,8 @@ def read_doc(repo_root: Path, rel: str) -> Tuple[Optional[bytes], str]:
 def _disabled_report() -> dict:
     return {"enabled": False, "docs": 0, "extracted": 0, "unchanged": 0, "written": 0,
             "removed": 0, "skipped": 0, "unreadable": 0, "edges": 0, "full": False,
-            "digest": "", "by_kind": {}, "cochange": {"enabled": False, "status": "disabled"}}
+            "digest": "", "by_kind": {}, "cochange": {"enabled": False, "status": "disabled"},
+            "symbols": {"provider": "none", "state": "off"}}
 
 
 def _cochange_pass(repo_root: Path, settings: GraphSettings, force: bool,
@@ -212,11 +213,29 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False,
     if history.get("status") in ("ok", "no_history", "disabled"):
         with EdgeStore(store_path(repo_root)) as store:
             counts = store.counts()
-    return {"enabled": True, "docs": len(present) - unreadable, "extracted": extracted,
-            "unchanged": unchanged, "written": written, "removed": len(gone),
-            "skipped": skipped, "unreadable": unreadable, "edges": counts["edges"],
-            "full": bool(full),
-            "digest": digest, "by_kind": counts["by_kind"], "cochange": history}
+    report = {"enabled": True, "docs": len(present) - unreadable, "extracted": extracted,
+              "unchanged": unchanged, "written": written, "removed": len(gone),
+              "skipped": skipped, "unreadable": unreadable, "edges": counts["edges"],
+              "full": bool(full),
+              "digest": digest, "by_kind": counts["by_kind"], "cochange": history}
+    return _with_symbols(report, repo_root, settings, index, force)
+
+
+def _with_symbols(report: dict, repo_root: Path, settings: GraphSettings, index: PathIndex,
+                  force: bool) -> dict:
+    """Run the symbol pass (#131) after the mention pass and fold it into the report.
+
+    ``digest`` stays the mention arm's own; the symbol arm reports its digest
+    under ``symbols``. Imported here because ``carta.graph.symbols`` reads this
+    module's store.
+    """
+    from carta.graph.symbols import build_symbol_edges
+    report["symbols"] = build_symbol_edges(repo_root, settings, index, force=force)
+    if report["symbols"]["state"] != "off" or report["symbols"]["written"]:
+        with EdgeStore(store_path(repo_root)) as store:
+            counts = store.counts()
+        report["edges"], report["by_kind"] = counts["edges"], counts["by_kind"]
+    return report
 
 
 def graph_status(repo_root: Path, cfg: dict) -> dict:
@@ -230,7 +249,9 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
     ``cochange_settings_changed``, ``cochange_disabled`` and
     ``cochange_git_failed`` (the history pass has commits to read, was mined
     with other settings, holds rows the config no longer wants, or git could
-    not read the history, so nothing can vouch for the rows), ``unreadable`` (the file is damaged or is
+    not read the history, so nothing can vouch for the rows), ``symbols_changed``
+    and ``symbols_failed`` (the symbol arm, see ``symbols.symbol_status``),
+    ``unreadable`` (the file is damaged or is
     not a store; it is left exactly as found, and the next build replaces it)
     and ``unsafe_store`` (the store or its directory is a symbolic link, which
     is never followed, or the file is larger than ``MAX_STORE_BYTES``).
@@ -240,9 +261,11 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
     status = {"enabled": settings.enabled, "exists": False, "schema_version": None,
               "extractor_version": None, "docs": 0, "edges": 0, "by_kind": {},
               "by_dst_type": {}, "digest": "", "stale": True, "stale_reasons": ["no_store"],
+              "by_dst_type": {}, "digest": "", "stale": True, "stale_reasons": ["no_store"],
               "cochange": {"enabled": bool(settings.enabled and settings.cochange.enabled),
                            "commits": 0, "head": "", "stale": False, "reason": "",
-                           "capped": 0}}
+                           "capped": 0},
+              "symbols": {"provider": settings.symbols_provider, "state": "off"}}
     try:
         store = EdgeStore.open_readonly(store_path(repo_root))
     except StoreVersionError:
@@ -283,6 +306,9 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
         history = cochange_status(repo_root, settings, store)
         if history["stale"]:
             reasons.append(history["reason"])
+        from carta.graph.symbols import symbol_status
+        status["symbols"], symbol_reasons = symbol_status(repo_root, settings, index, store)
+        reasons.extend(symbol_reasons)
         counts = store.counts()
         status.update(
             cochange=history,

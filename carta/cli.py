@@ -1114,6 +1114,23 @@ def _print_cochange_build(history: dict) -> None:
               f"what the store held was kept")
 
 
+def _symbols_line(symbols: dict) -> str:
+    """One line on the symbol arm (#131) for `carta graph build` and `status`."""
+    state = symbols.get("state", "off")
+    if state == "off":
+        return "symbols: off (no provider; set graph.symbols.provider to ctags or file)"
+    if state == "unavailable":
+        return f"symbols: no symbol edges ({symbols.get('detail', '')})"
+    counts = (f"{_plural(symbols.get('edges', 0), 'symbol edge')} from "
+              f"{symbols.get('rows', 0):,} definitions; identifiers: "
+              f"{symbols.get('resolved', 0):,} resolved, {symbols.get('ambiguous', 0):,} "
+              f"ambiguous, {symbols.get('unknown', 0):,} not in the index")
+    if state == "failed":
+        return (f"symbols: the index could not be loaded ({symbols.get('detail', '')}); "
+                f"kept {counts}")
+    return f"symbols: {counts} [{symbols.get('detail', '')}]"
+
+
 def cmd_graph(args):
     import json
     from carta.config import ConfigError
@@ -1162,6 +1179,8 @@ def cmd_graph(args):
             print(f"  {_plural(report['unreadable'], 'doc')} could not be read; what the "
                   f"store held for them was kept, and it stays stale until they can be")
         _print_cochange_build(report.get("cochange") or {})
+        if report.get("symbols", {}).get("state", "off") != "off":
+            print(f"  {_symbols_line(report['symbols'])}")
         return
     if not report["exists"]:
         print("No edge store yet. Run `carta graph build`.")
@@ -1194,6 +1213,7 @@ def cmd_graph(args):
         print(f"  history: co-change edges from {_plural(history['commits'], 'mainline commit')}"
               + (f", up to {history['head'][:12]}" if history.get("head") else ""))
         _print_cochange_capped(history)
+    print(f"  {_symbols_line(report.get('symbols', {}))}")
 
 
 def cmd_impact(args):

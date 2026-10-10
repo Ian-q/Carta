@@ -53,3 +53,20 @@ MAX_EXTERNAL_GRAPH_EDGES = 2_000_000   # rows of that file, accepted or not
 MAX_COCHANGE_PAIRS = 2_000_000          # pairs one table holds; past it no new pair is started
 MAX_GIT_TOKEN_BYTES = 64 * 1024         # one NUL-terminated record of a streamed git answer
 MAX_REPLAY_HISTORY_CHANGES = 5_000_000  # path changes the replay holds for one history
+MAX_EXTERNAL_GRAPH_EDGES = 2_000_000
+
+# -- the symbol arm (#131) ------------------------------------------------------
+MAX_SYMBOLS_FILE_BYTES = 64 * 1024 * 1024       # a larger symbols file is not read
+MAX_SYMBOL_LINE_BYTES = 16 * 1024               # a longer index line is skipped unparsed
+MAX_SYMBOL_ROWS = 2_000_000                     # more rows than this is a failed load
+MAX_SYMBOL_NAME_LENGTH = 200                    # a longer name (or scope) is not a row
+MAX_DEFINITIONS_PER_NAME = 64                   # kept per name; more only means "ambiguous"
+MAX_SYMBOL_DEFINITIONS_SETTING = 16             # ceiling of graph.symbols.max_definitions
+MAX_CTAGS_FILES = 200_000                       # files handed to one ctags run
+MAX_CTAGS_FILE_BYTES = 2 * 1024 * 1024          # a larger source file is not indexed
+MAX_CTAGS_OUTPUT_BYTES = 512 * 1024 * 1024      # ctags is stopped beyond this much output
+CTAGS_TIMEOUT_SECONDS = 600                     # ...and after this long
+CTAGS_PROBE_TIMEOUT_SECONDS = 10                # the capability probe
+MAX_CODE_SCAN_FILE_BYTES = 32 * 1024 * 1024     # a larger file is data, not code (word scan)
+MAX_CODE_SCAN_BYTES = 1024 * 1024 * 1024        # total read by one word scan
+MAX_SYMBOL_HISTORY_CHECKS = 1000                # git lookups one scan may spend on danglers

@@ -16,9 +16,9 @@ from typing import Any, Mapping
 from carta.config import DEFAULTS, ConfigError
 from carta.graph.limits import (
     MAX_COCHANGE_COMMIT_FILES, MAX_CONFIG_GLOBS, MAX_GLOB_LENGTH, MAX_PATTERN_REGEX_LENGTH,
-    MAX_PATTERNS,
+    MAX_PATTERNS, MAX_SYMBOL_DEFINITIONS_SETTING,
 )
-from carta.graph.model import MENTION_EXTRACTOR_VERSION
+from carta.graph.model import MENTION_EXTRACTOR_VERSION, SYMBOL_EXTRACTOR_VERSION
 from carta.graph.paths import glob_problem
 from carta.graph.limits import (  # noqa: I001
     MAX_IDENT_MIN_LENGTH, MAX_IMPACT_TOP, MAX_IMPACT_WEIGHT, MAX_REPLAY_COMMIT_FILES,
@@ -27,6 +27,7 @@ from carta.graph.limits import (  # noqa: I001
 
 _NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _WHERE = ("all", "prose", "code")
+SYMBOL_PROVIDERS = ("none", "ctags", "file")
 
 
 class GraphConfigError(ConfigError):
@@ -94,6 +95,29 @@ class GraphSettings:
     replay_min_population: int
     cochange: CochangeSettings = CochangeSettings()
     impact_combine: str = "norm"
+    # The symbol arm (#131). Defaulted so the mention arm's callers need not name them.
+    symbols_provider: str = "none"
+    symbols_file: str = ""
+    symbols_max_definitions: int = 1
+    scan_dangling_symbols: bool = False
+    scan_ambiguous_symbols: bool = False
+
+    def symbol_fingerprint(self) -> str:
+        """sha256 over the inputs that change what the symbol arm emits.
+
+        Kept apart from ``fingerprint``: turning symbols on or off must not
+        re-extract a single mention.
+        """
+        payload = {
+            "provider": self.symbols_provider,
+            "file": self.symbols_file,
+            "max_definitions": self.symbols_max_definitions,
+            "excluded_paths": list(self.excluded_paths),
+            "doc_globs": list(self.doc_globs),
+            "extractor_version": SYMBOL_EXTRACTOR_VERSION,
+        }
+        text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def fingerprint(self) -> str:
         """sha256 over exactly the inputs that change what the extractor emits."""
@@ -257,6 +281,23 @@ def _cochange(value: Any) -> CochangeSettings:
     )
 
 
+def _symbols_file(value: Any) -> str:
+    """A repo-relative path to a symbols file, or ``''``. Never absolute, never upward."""
+    if not isinstance(value, str):
+        raise GraphConfigError(f"graph.symbols.file must be a string, got {value!r}")
+    text = value.strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    if not text:
+        return ""
+    if (len(text) > 1024 or text.startswith("/") or (len(text) > 1 and text[1] == ":")
+            or any(part in ("", ".", "..") for part in text.split("/"))
+            or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in text)):
+        raise GraphConfigError(
+            "graph.symbols.file must be a path inside the repository, relative to its root")
+    return text
+
+
 def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
     """Build ``GraphSettings`` from a Carta config dict (any dict; keys are optional)."""
     user = cfg.get("graph") or {}
@@ -266,6 +307,15 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
     scan = _mapping(g["scan"], "graph.scan")
     replay = _mapping(g["replay"], "graph.replay")
     weights = _mapping(impact["weights"], "graph.impact.weights")
+    symbols = _mapping(g["symbols"], "graph.symbols")
+    provider = symbols["provider"]
+    if provider not in SYMBOL_PROVIDERS:
+        raise GraphConfigError(f"graph.symbols.provider must be one of "
+                               f"{', '.join(SYMBOL_PROVIDERS)}, got {provider!r}")
+    max_defs = _number(symbols["max_definitions"], "graph.symbols.max_definitions", int)
+    if not 1 <= max_defs <= MAX_SYMBOL_DEFINITIONS_SETTING:
+        raise GraphConfigError(f"graph.symbols.max_definitions must be between 1 and "
+                               f"{MAX_SYMBOL_DEFINITIONS_SETTING}, got {max_defs}")
     excluded = cfg.get("excluded_paths", DEFAULTS["excluded_paths"])
     top = _within(impact["top"], "graph.impact.top", int, 1, MAX_IMPACT_TOP)
     # The bulk rule is what keeps one huge commit from being ranked; a value
@@ -304,6 +354,11 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
             0, MAX_REPLAY_WINDOW),
         cochange=_cochange(g["cochange"]),
         impact_combine=_combine(impact["combine"]),
+        symbols_provider=provider,
+        symbols_file=_symbols_file(symbols["file"]),
+        symbols_max_definitions=max_defs,
+        scan_dangling_symbols=_flag(scan["dangling_symbols"], "graph.scan.dangling_symbols"),
+        scan_ambiguous_symbols=_flag(scan["ambiguous_symbols"], "graph.scan.ambiguous_symbols"),
     )
 
 

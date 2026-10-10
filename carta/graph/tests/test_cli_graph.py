@@ -93,7 +93,7 @@ def test_graph_status_before_and_after_build(project, monkeypatch, capsys):
     status = json.loads(out)
     assert set(status) == {"enabled", "exists", "schema_version", "extractor_version", "docs",
                            "edges", "by_kind", "by_dst_type", "digest", "stale", "stale_reasons",
-                           "cochange"}
+                           "cochange", "symbols"}
     assert status["exists"] and not status["stale"] and status["docs"] == 3
     code, out, _ = run(monkeypatch, capsys, "graph", "status")
     assert out.splitlines()[0] == "Graph: 3 docs, 4 edges, up to date"

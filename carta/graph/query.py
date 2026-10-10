@@ -496,7 +496,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         raise ImpactError("give paths or a diff range, not both")
     if not paths and diff is None:
         raise ImpactError("give at least one path, or a diff range")
-    use_kinds = sorted(set(kinds if kinds else settings.impact_kinds))
+    # Naming a symbol provider is the opt-in: its edges are then read by
+    # default, beside whatever graph.impact.kinds lists.
+    default_kinds = list(settings.impact_kinds)
+    if settings.symbols_provider != "none":
+        default_kinds.append("symbol")
+    use_kinds = sorted(set(kinds if kinds else default_kinds))
     unknown = [k for k in use_kinds if k not in KINDS]
     if unknown:
         raise ImpactError(
@@ -595,6 +600,10 @@ def _count(n: int, noun: str) -> str:
 def _match_reason(match: dict) -> str:
     named = f"named by {_count(match['df'], 'doc')}"
     kind = match["match"]
+    if match["kind"] == "symbol":
+        # No doc names the path: it names an identifier this file defines.
+        docs = _count(match["df"], "doc")
+        return f"symbol: defines an identifier this doc names ({docs} name one it defines)"
     if kind == "exact":
         return f"exact, {named}"
     if kind == "under":
