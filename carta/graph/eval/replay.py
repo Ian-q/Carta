@@ -50,6 +50,8 @@ from carta.graph.eval.incremental import MentionState
 from carta.graph.eval.metrics import (
     RESAMPLES, aggregate, bootstrap_ci, paired_bootstrap, score_ranking,
 )
+from carta.graph.eval.symbol_replay import SymbolSource, SymbolSourceError, make_source
+from carta.graph.eval.symbol_replay import make_provider as _make_symbol_provider
 from carta.graph.gitio import (
     BlobReader, BlobTooLarge, GitError, LogEntry, first_parent_log, ls_tree,
     rev_list_first_parent, toplevel,
@@ -100,6 +102,7 @@ class ReplayContext:
     cache: ReplayCache
     incremental: bool
     counters: Dict[str, int]
+    symbols: Optional[SymbolSource] = None   # the symbol arm's index source (#131)
 
 
 class EdgeProvider:
@@ -197,6 +200,16 @@ PROVIDERS: Dict[str, Callable[[ReplayContext], EdgeProvider]] = {
 def register_provider(kind: str, factory: Callable[[ReplayContext], EdgeProvider]) -> None:
     """Make an edge kind available to ``--arm``. ``factory`` is called once per run."""
     PROVIDERS[kind] = factory
+
+
+def _symbol_provider(context: ReplayContext) -> EdgeProvider:
+    try:
+        return _make_symbol_provider(context, EdgeProvider, MentionProvider)
+    except SymbolSourceError as exc:
+        raise ReplayError(str(exc)) from None
+
+
+register_provider("symbol", _symbol_provider)
 
 
 # -- classification --------------------------------------------------------------
@@ -354,7 +367,8 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
                cache_path: Optional[Path] = None, use_disk_cache: bool = True,
                per_commit: bool = False, incremental: bool = True,
                resamples: int = RESAMPLES, stats: Optional[dict] = None,
-               config: Optional[str] = None) -> dict:
+               config: Optional[str] = None,
+               symbols: Optional[SymbolSource] = None) -> dict:
     """Replay a repository's mainline history and return the report as a dict.
 
     ``last=0`` scans the whole first-parent history. ``arms`` maps an arm name
@@ -365,6 +379,9 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
     with run counters and timings that are deliberately not part of the report.
     ``config`` says where ``settings`` came from; it is recorded in the report
     (``defaults`` when no settings are given, else ``caller`` unless named).
+    ``symbols`` is where an arm reading ``symbol`` edges gets its index
+    (``symbol_replay.make_source``); the report then has a ``symbols`` entry
+    saying which, and whether it leaks.
     """
     started = time.perf_counter()
     config = "defaults" if settings is None else (config or "caller")
@@ -400,7 +417,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
         disk = Path(cache_path) if cache_path is not None else default_cache_path(root)
     cache = ReplayCache(disk)
     cache_on_disk = cache.on_disk
-    context = ReplayContext(settings, cache, incremental, counters)
+    context = ReplayContext(settings, cache, incremental, counters, symbols)
     providers = {kind: PROVIDERS[kind](context)
                  for kind in sorted({k for kinds in arm_kinds.values() for k in kinds})}
 
@@ -569,7 +586,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
                     whole(entry)
                 else:
                     provider.observe(entry.sha, changes)
-    except GitError as exc:
+    except (GitError, SymbolSourceError) as exc:
         raise ReplayError(str(exc)) from exc
     finally:
         reader.close()
@@ -689,6 +706,8 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
             } for name in methods},
         },
     }
+    if "symbol" in providers and symbols is not None:
+        report["symbols"] = symbols.describe(settings.symbols_max_definitions)
     if per_commit:
         report["per_commit"] = [
             {"commit": sha, "n_query": n_query, "n_gold": len(gold), "gold": list(gold),
@@ -807,6 +826,11 @@ def format_replay(report: dict) -> str:
                  f"docs: {printable(', '.join(cfg['doc_globs']))}")
     lines.append("  excluded_paths: "
                  f"{printable(', '.join(cfg.get('excluded_paths', []))) or '(none)'}")
+    sym = report.get("symbols")
+    if sym:
+        lines.append(f"Symbols: {sym['source']}; a name defined in more than "
+                     f"{sym['max_definitions']} files is not resolved")
+        lines.append(f"  {'WARNING, leaks: ' if sym['leak'] else ''}{sym['note']}")
     lines.append("")
     no_hub = report["no_hub"]
     hubs = bool(no_hub["hub_docs"])
@@ -885,6 +909,18 @@ def build_parser(prog: str = "carta graph replay") -> argparse.ArgumentParser:
                         help="Also use graph.patterns from the repository's config. They are "
                              "regular expressions run over every doc line; only for a "
                              "repository you trust")
+    parser.add_argument("--symbols", default=None, metavar="SOURCE",
+                        help="The symbol index for an arm that reads `symbol` edges: `ctags` "
+                             "(universal-ctags, re-run on each commit's parent from git "
+                             "objects), `tracked:PATH` (a symbols file the repository tracks, "
+                             "read as of each parent) or `file:PATH` (one file as it is today, "
+                             "which leaks and needs --accept-symbol-leak)")
+    parser.add_argument("--accept-symbol-leak", action="store_true",
+                        help="Allow --symbols file:PATH: today's index is used for every "
+                             "commit, so later symbols are visible. The report says so")
+    parser.add_argument("--max-definitions", type=int, default=None, metavar="N",
+                        help="A name defined in more than N files is not resolved "
+                             "(default: graph.symbols.max_definitions)")
     parser.add_argument("--resamples", type=int, default=RESAMPLES, metavar="N",
                         help=f"Bootstrap resamples (default {RESAMPLES})")
     parser.add_argument("--per-commit", action="store_true",
@@ -997,9 +1033,25 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "carta graph replay")
                 ks = tuple(int(part) for part in args.k.split(",") if part.strip())
             except ValueError:
                 raise ReplayError(f"--k {args.k!r}: expected positive integers") from None
-        settings, source = _repo_settings(root, args.doc_glob, args.exclude,
-                                          use_config=not args.no_config,
-                                          trust_config=args.trust_config)
+        settings, source_label = _repo_settings(root, args.doc_glob, args.exclude,
+                                                use_config=not args.no_config,
+                                                trust_config=args.trust_config)
+        if args.max_definitions is not None:
+            from carta.graph.limits import MAX_SYMBOL_DEFINITIONS_SETTING
+            if not 1 <= args.max_definitions <= MAX_SYMBOL_DEFINITIONS_SETTING:
+                raise ReplayError(f"--max-definitions must be between 1 and "
+                                  f"{MAX_SYMBOL_DEFINITIONS_SETTING}")
+            settings = dataclasses.replace(settings,
+                                           symbols_max_definitions=args.max_definitions)
+        source = None
+        if args.symbols:
+            try:
+                source = make_source(root, args.symbols, accept_leak=args.accept_symbol_leak,
+                                     settings=settings)
+            except SymbolSourceError as exc:
+                raise ReplayError(str(exc)) from None
+        elif args.accept_symbol_leak:
+            raise ReplayError("--accept-symbol-leak only applies to --symbols file:PATH")
         cache_path = None
         if args.cache_dir:
             cache_path = Path(args.cache_dir) / default_cache_path(root).name
@@ -1009,7 +1061,8 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "carta graph replay")
             settings=settings, hub_share=args.hub_share, max_files=args.max_files,
             popularity_window=args.popularity_window, min_population=args.min_population,
             cache_path=cache_path, use_disk_cache=not args.no_cache,
-            per_commit=args.per_commit, resamples=args.resamples, stats=stats, config=source)
+            per_commit=args.per_commit, resamples=args.resamples, stats=stats, config=source_label,
+            symbols=source)
         if args.json and args.json != "-":
             out = Path(args.json)
             try:
