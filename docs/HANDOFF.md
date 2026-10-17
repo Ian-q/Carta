@@ -5,6 +5,9 @@ handoff; it is not a log. Durable *why* lives in [`ROADMAP.md`](ROADMAP.md), ope
 lessons in [`field-notes.md`](field-notes.md), per-issue status on
 [Project #4](https://github.com/users/Ian-q/projects/4).
 
+Private project names, paths and hosts are written as placeholders (`proj-a`, `~/work/…`,
+`qdrant.example.ts.net`, `192.0.2.10`); the real values are in the maintainer's auto-memory.
+
 **`main` = `8eb2b38`, pushed, suite 1479 passed / 4 skipped.** Working tree carries one
 intentional local edit (`.carta/config.yaml` — this machine's model/URL choices) plus two
 `.bak` files; leave them alone.

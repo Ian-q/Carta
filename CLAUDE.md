@@ -2,7 +2,7 @@
 
 **Carta**
 
-Carta is a semantic memory sidecar for Claude Code that gives agents automatic access to project documentation and session memory. It chains Qdrant vector storage, Ollama embeddings, and a smart context injection hook so relevant knowledge surfaces when Claude is working — without manual recall. v0.2 migrates from a fragile plugin cache architecture to a three-tier design: MCP server for Claude-initiated operations, a smart hook with Ollama-judge filtering for automatic injection, and a CLI for human-initiated setup and batch work.
+Carta is a semantic memory sidecar for Claude Code that gives agents automatic access to project documentation and session memory. It chains Qdrant vector storage, Ollama embeddings, and a smart context injection hook so relevant knowledge surfaces when Claude is working — without manual recall. It has three tiers: an MCP server for Claude-initiated operations, a proactive-recall hook that decides what to inject, and a CLI for human-initiated setup and batch work. A deterministic graph arm (`carta impact`) answers which docs describe a given file.
 
 **Core Value:** Relevant project knowledge surfaces automatically when Claude is working — without manual recall and without context noise.
 
@@ -132,7 +132,9 @@ This project uses the **Superpowers** skill flow. Invoke skills before acting (s
 - **`verification-before-completion`** — run the verification commands and confirm output before claiming anything is done.
 - **`finishing-a-development-branch`** — decide merge/PR/cleanup once work is complete.
 
-Retrieval-quality changes are validated against the proj-a eval corpus — see the eval workflow in auto-memory (`project_proj-a-eval-workflow`).
+Retrieval-quality changes are validated against a private eval corpus — the run commands and baselines are in the maintainer's auto-memory, not this repo.
+
+**This repo is public.** Never commit content from the private projects Carta is dogfooded on — no names, paths, hosts, part or supplier names, or quoted docs; use fictional examples. Aggregate numbers are fine. (The history was rewritten once, in 2026-10, to purge exactly this.)
 
 ## Tracking conventions
 

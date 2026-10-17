@@ -1,0 +1,29 @@
+name: Bug report
+description: Something in Carta did not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: carta doctor
+      description: Output of `carta doctor` from the affected project (remove anything private).
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`carta --version`, and how it was installed (pipx, pip, plugin)."
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and Python
+      placeholder: macOS 15, Python 3.12
