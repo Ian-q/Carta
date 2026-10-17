@@ -56,3 +56,7 @@ latest-log.txt
 
 # Subagent-driven-development scratch (ledgers, briefs, review packages)
 .superpowers/
+
+# Per-machine state
+.carta/update-check.json
+.claude/worktrees/

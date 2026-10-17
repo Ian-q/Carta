@@ -1,4 +1,9 @@
-![Carta](banner.png)
+![Carta](https://raw.githubusercontent.com/Ian-q/Carta/main/docs/assets/banner.png)
+
+[![Test](https://github.com/Ian-q/Carta/actions/workflows/test.yml/badge.svg)](https://github.com/Ian-q/Carta/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/carta-cc)](https://pypi.org/project/carta-cc/)
+[![Python](https://img.shields.io/pypi/pyversions/carta-cc)](https://pypi.org/project/carta-cc/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 # Carta
 
@@ -1050,4 +1055,6 @@ Issues and PRs welcome. The scanner, embed pipeline, and skill files are all des
 
 ## License
 
-MIT
+[MIT](LICENSE). Carta depends on [PyMuPDF](https://pymupdf.readthedocs.io), which is licensed separately
+under AGPL-3.0 (or a commercial licence from Artifex); if you distribute software built on Carta, its
+terms apply to that dependency.
