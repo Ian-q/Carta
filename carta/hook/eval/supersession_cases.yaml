@@ -1,0 +1,243 @@
+# Labeled corpus for the stale-scan supersession judge (manual gate: python -m carta.hook.eval.eval_supersession).
+# The project in the non-Carta cases ("Tidewatch", a sensor buoy) is fictional; each case mirrors the shape of a real
+# false or true positive met while tuning the judge.
+- id: fp-demo-project-overview
+  label: false_positive
+  source: docs/audits/2026-06-09-system-audit.md
+  section_text: '## Project Overview
+
+
+    Tidewatch is the firmware and tooling for a moored ocean-sensor buoy. The system uses:
+
+    - **ESP32-S3** sensor node for sampling, power management and the RS-485 sensor bus
+
+    - **Raspberry Pi 5** gateway for logging, the cellular uplink and over-the-air updates
+
+    - **One RS-485 bus** (MVP) @ 115200 baud: conductivity probe, temperature string, wave IMU'
+  candidate_excerpt: '### 2.1 Compute topology and buses
+
+
+    Two compute nodes plus sensor modules:
+
+
+    - **ESP32-S3 — the sensor node.** Firmware at `firmware/node/` (ESP-IDF v5.3). Owns the RS-485 bus and the power
+    switches; the only node that can cut sensor power.
+
+    - **Raspberry Pi 5 — gateway.** Python services under `gateway/`: serial link to the node, SQLite logger, cellular
+    uplink, OTA server.
+
+    - **RS-485 @ 115200 baud** to the conductivity probe, the 8-sensor temperature string and the wave IMU.'
+- id: fp-demo-firmware-build-identical
+  label: false_positive
+  source: docs/plans/2026-03-08-repo-reorganization.md
+  section_text: '### Firmware (PlatformIO — Phase 1, not yet scaffolded)
+
+
+    ```bash
+
+    cd firmware/node-app
+
+    pio run                   # build
+
+    pio run --target upload   # flash to device
+
+    pio test                  # run unit tests
+
+    ```'
+  candidate_excerpt: '### Firmware (PlatformIO — Phase 1, not yet scaffolded)
+
+
+    ```bash
+
+    cd firmware/node-app
+
+    pio run                   # build
+
+    pio run --target upload   # flash to device
+
+    pio test                  # run unit tests
+
+    ```'
+- id: fp-demo-cli-complementary
+  label: false_positive
+  source: docs/hardware/bom-tracker.md
+  section_text: "### `kicad-cli` (complementary to the KiCad GUI)\nInstalled with KiCad 9 (`/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli`).\n\
+    Use it for scripted exports in CI: gerbers, drill files, the BOM CSV and the schematic PDF in one step. Example:\n\
+    ```bash\nkicad-cli sch export bom hardware/node-v2/node.kicad_sch \\\n  --output hardware/node-v2/bom/node-bom.csv\n\
+    ```\n**Does NOT run DRC fixes** — it only reports; layout changes still happen in the GUI."
+  candidate_excerpt: '# Node v2 — BOM Tracker
+
+
+    **Living document.** Records the decision behind every BOM line, not just
+
+    the part number. When a part changes, append a row to the changelog at the
+
+    bottom rather than overwriting silently.
+
+
+    The exported BOM CSV per revision lives at
+
+    [`../../hardware/node-v2/bom/`](../../hardware/node-v2/bom/). This file is
+
+    the *decision record* that shapes that CSV.'
+- id: fp-demo-plugins-vs-layout
+  label: false_positive
+  source: docs/hardware/node-v2-layout-guide.pdf
+  section_text: '### KiCad plugins installed (2026-05-26)
+
+    - **[Freerouting](https://github.com/freerouting/freerouting)** — autorouter; export `.dsn` → run Freerouting
+    → import `.ses`
+
+    - **[KiKit](https://github.com/yaqwsx/KiKit)** — panelization (production-only; not needed until the v2 fab
+    freeze)
+
+    - **[InteractiveHtmlBom](https://github.com/openscopeproject/InteractiveHtmlBom)** — clickable assembly BOM
+    for hand placement'
+  candidate_excerpt: Node v2 — Layout Guide Page 6 8. PCB Layout Guidance The following guidance is for the layout
+    of the 4-layer node board (60 mm x 40 mm). Keep the RS-485 transceiver and its TVS diodes within 10 mm of the
+    connector. Route the 3.3 V buck switching loop on layer 1 only, with an unbroken ground pour on layer 2 beneath
+    it.
+- id: tp-demo-fsm
+  label: true_positive
+  source: docs/audits/2026-06-09-system-audit.md
+  section_text: '### State Machine (FSM)
+
+
+    The node firmware implements a **four-state FSM** (canonical reference: `docs/firmware/FSM.md`). The older `SLEEP
+    → WAKE → SEND` loop in the original proposal is historical. The firmware as built today is:
+
+
+    **Operational state** (`NodeState` in `firmware/node/main/fsm.h`):
+
+
+    `BOOT → IDLE → SAMPLING → FAULT`
+
+
+    Transitions: BOOT → IDLE after the power-on self-test; IDLE → SAMPLING on gateway link + sensor handshake; SAMPLING
+    → FAULT on `rs485_timeout` or `probe_dead`; FAULT → IDLE on reset.'
+  candidate_excerpt: The FSM (BOOT->IDLE->SAMPLING->FAULT, fsm_update() at main.c:412-440) enters SAMPLING on the
+    sensor handshake alone (the docs' 'gateway link + sensor handshake' is wrong) and leaves it only on an RS-485
+    timeout or a boot-time probe failure. There is no gateway-link timeout and no watchdog.
+- id: tp-demo-bridge
+  label: true_positive
+  source: docs/audits/2026-06-09-system-audit.md
+  section_text: '## Serial Link Architecture
+
+
+    The `link/` component implements a COBS-framed serial link over UART1 (node ↔ gateway `/dev/ttyAMA0` @ 460800
+    baud).
+
+
+    Key design notes:
+
+    - UART RX is interrupt-driven — avoids byte loss while the RS-485 poll blocks
+
+    - Inbound frames are COBS-decoded and dispatched in the link task (priority 7, below the sensor task at 5)
+
+    - Config updates from the gateway are queued via a FreeRTOS queue (`g_config_queue`) and consumed in the main
+    loop — no mutex needed on the handoff path'
+  candidate_excerpt: 'Firmware RX: UART ISR -> 1024-byte ring -> link task -> frame_parse -> link_handle_frame;
+    config reaches main() via two queues (g_sample_rate_queue / g_calib_queue — the docs'' g_config_queue no longer
+    exists). TX is an ISR-drained 2048-byte ring.'
+- id: fp-doc-audit-cc-runtime
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Runtime
+
+    - Python 3.10 or later (specified in `pyproject.toml`)
+
+    - pip / setuptools (modern Python packaging)
+
+    - Lockfile: Not detected (uses direct `pyproject.toml` dependencies)'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx upgrade carta-cc'
+    may report 'already latest' while the GitHub Release and pypi.org JSON already show the new version. Use 'pipx
+    install --force carta-cc==X.Y.Z' to pin the explicit version instead of waiting.
+- id: fp-doc-audit-cc-key-dependencies
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Key Dependencies
+
+    - qdrant-client 1.7+ - Vector database client for Qdrant integration (`carta/embed/embed.py`, `carta/embed/pipeline.py`)
+
+    - PyMUPDF 1.23+ (pymupdf) - PDF text extraction
+
+    - requests 2.31+ - HTTP client library
+
+    - PyYAML 6.0+ - YAML parsing for config and frontmatter'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx upgrade carta-cc'
+    may report 'already latest' while the GitHub Release and pypi.org JSON already show the new version. Use 'pipx
+    install --force carta-cc==X.Y.Z' to pin the explicit version instead of waiting.
+- id: fp-doc-audit-cc-platform-requirements
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Platform Requirements
+
+    - Python 3.10+ (command: `python3 --version`)
+
+    - Git (for project detection in bootstrap)
+
+    - Docker (strongly recommended for running Qdrant and Ollama containers)
+
+    - **Qdrant** - Vector database service (Docker: `docker run -p 6333:6333 qdrant/qdrant`)
+
+    - **Ollama** - Local LLM embedding service (https://ollama.ai)
+
+    - Docker environment or system with Python 3.10+
+
+    - Network access to Qdrant API (default port 6333)
+
+    - Network access to Ollama API (default port 11434)
+
+    - No cloud services required - all runs locally'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx upgrade carta-cc'
+    may report 'already latest' while the GitHub Release and pypi.org JSON already show the new version. Use 'pipx
+    install --force carta-cc==X.Y.Z' to pin the explicit version instead of waiting.
+- id: fp-doc-audit-cc-code-style
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '## Code Style
+
+    - Python 3.10+ syntax (modern type hints, walrus operator acceptable)
+
+    - Line length: not strictly enforced but tends toward ~100 chars
+
+    - Spaces: 4-space indentation (PEP 8 standard)
+
+    - Imports: organized in sections (stdlib, third-party, local)
+
+    - No explicit linter configured (no .pylintrc, ruff.toml, or black config)
+
+    - Code follows PEP 8 conventions organically
+
+    - Type hints are used but not strictly validated with mypy'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx upgrade carta-cc'
+    may report 'already latest' while the GitHub Release and pypi.org JSON already show the new version. Use 'pipx
+    install --force carta-cc==X.Y.Z' to pin the explicit version instead of waiting.
+- id: fp-doc-audit-cc-cli-carta-command-or-python-m-carta
+  label: false_positive
+  source: docs/quirks/2026-06-11-pypi-index-lag-after-release-tagging.md
+  section_text: '### CLI — `carta <command>` (or `python -m carta <command>`)
+
+
+    | Command | Purpose |
+
+    |---------|---------|
+
+    | `init` | Bootstrap Carta in a repo (config, collections, skills, hook) |
+
+    | `scan` | Structural doc scan → `.carta/scan-results.json` (no LLM) |
+
+    | `embed` | Extract/chunk/embed pending docs → Qdrant. `--visual` drains image-heavy pages (two-pass); `--repair`
+    re-embeds damaged points |
+
+    | `search` | Hybrid (BM25 + dense, RRF) semantic search |
+
+    | `focus` | Deep retrieval scoped to **one file**: page-anchored passages, an outline (omit query), and table/figure
+    pages as images. Two-step partner to `search` (locate → go deep) |
+
+    | `audit` | Embed-pipeline **data integrity** check → JSON |
+
+    | `d'
+  candidate_excerpt: Right after a release is tagged, PyPI's simple index can lag for a minute — 'pipx upgrade carta-cc'
+    may report 'already latest' while the GitHub Release and pypi.org JSON already show the new version. Use 'pipx
+    install --force carta-cc==X.Y.Z' to pin the explicit version instead of waiting.
