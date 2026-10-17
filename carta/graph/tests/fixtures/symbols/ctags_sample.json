@@ -1,0 +1,15 @@
+{"_type": "ptag", "name": "JSON_OUTPUT_VERSION", "path": "1.1", "pattern": "in development"}
+{"_type": "tag", "name": "FrameParser", "path": "./src/pkg/frame.py", "pattern": "/^class FrameParser:$/", "line": 1, "kind": "class"}
+{"_type": "tag", "name": "MAX_LEN", "path": "./src/pkg/frame.py", "pattern": "/^    MAX_LEN = 8$/", "line": 3, "kind": "variable", "scope": "FrameParser", "scopeKind": "class"}
+{"_type": "tag", "name": "parse_frame", "path": "./src/pkg/frame.py", "pattern": "/^    def parse_frame(self, data):$/", "line": 5, "kind": "member", "scope": "FrameParser", "scopeKind": "class"}
+{"_type": "tag", "name": "parse_frame", "path": "./src/pkg/frame.py", "pattern": "/^def parse_frame(data):$/", "line": 10, "kind": "function"}
+{"_type": "tag", "name": "DEFAULT_TIMEOUT", "path": "./src/pkg/frame.py", "pattern": "/^DEFAULT_TIMEOUT = 3$/", "line": 13, "kind": "variable"}
+{"_type": "tag", "name": "operating", "path": "./src/pkg/table.py", "pattern": "/^import os as operating$/", "line": 1, "kind": "namespace", "nameref": "module:os"}
+{"_type": "tag", "name": "render_table", "path": "./src/pkg/table.py", "pattern": "/^def render_table(rows):$/", "line": 3, "kind": "function"}
+{"_type": "tag", "name": "init", "path": "./src/pkg/table.py", "pattern": "/^def init():$/", "line": 6, "kind": "function"}
+{"_type": "tag", "name": "FRAME_MAX", "path": "./src/wire.c", "pattern": "/^#define FRAME_MAX /", "file": true, "line": 1, "kind": "macro"}
+{"_type": "tag", "name": "frame_header", "path": "./src/wire.c", "pattern": "/^struct frame_header { int len; };$/", "file": true, "line": 2, "kind": "struct"}
+{"_type": "tag", "name": "len", "path": "./src/wire.c", "pattern": "/^struct frame_header { int len; };$/", "file": true, "line": 2, "typeref": "typename:int", "kind": "member", "scope": "frame_header", "scopeKind": "struct"}
+{"_type": "tag", "name": "init", "path": "./src/wire.c", "pattern": "/^static int init(void) { return 0; }$/", "file": true, "line": 4, "typeref": "typename:int", "kind": "function"}
+{"_type": "tag", "name": "Title", "path": "./README.md", "pattern": "/^# Title$/", "line": 1, "kind": "chapter"}
+{"_type": "tag", "name": "Section `x`", "path": "./README.md", "pattern": "/^## Section `x`$/", "line": 3, "kind": "section", "scope": "Title", "scopeKind": "chapter"}

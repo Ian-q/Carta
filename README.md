@@ -451,19 +451,84 @@ graph:
     missing_paths: true
     ignore_docs: ["CHANGELOG*", "**/CHANGELOG*"]
     history_limit: 5000         # commits of history searched for deletions and renames
+    dangling_symbols: false     # see "Symbol edges" below
+    ambiguous_symbols: false
 ```
 
 This section is separate from `search.graph` above, which only controls `related:` expansion
 inside retrieval. The top-level `excluded_paths` decides which docs are read; an excluded doc is
 never a source of edges, but any path may still be named.
 
+**Symbol edges (optional).** Docs name functions and classes more often than files. With a
+symbol index, Carta resolves each backticked identifier to the file that defines it and stores a
+`symbol` edge (doc, defining file, the identifier, the doc line). Carta still does not parse
+code: it reads rows of `(name, kind, file, line)` that another tool wrote.
+
+```yaml
+graph:
+  symbols:
+    provider: ctags        # none (default) | ctags | file
+    file: ""               # for provider: file, a path inside the repository
+    max_definitions: 1     # a name defined in more files than this makes no edge
+```
+
+- `provider: ctags` runs [universal-ctags](https://ctags.io) over the repository's code files
+  if it is installed. It is recognised by what it can do (`--list-features` lists `json`), not
+  by its name: the `ctags` that macOS ships is a different program and is passed over. Set
+  `CARTA_CTAGS` to name a binary. The repository's own ctags option files are not read.
+- `provider: file` reads a symbols file: JSON lines
+  (`{"name": "parse_frame", "kind": "function", "file": "src/frame.py", "line": 12}`, optional
+  `"scope"` and `"language"`), tab-separated `name kind file line [scope]`, or saved
+  `ctags --output-format=json` output. Any code-graph tool can be exported to the first two.
+  The file has to be UTF-8; `#` lines are comments. A row counts only while its file is in the
+  tree, so adding or deleting a code file updates the edges without the symbols file changing.
+- No provider, no binary or no file means no symbol edges, and `carta graph status` says which.
+  It is never an error. An index that fails to load (too large, a symbolic link, lines but not
+  one readable row, ctags crashing or running past its time limit) keeps the edges already
+  stored and reports the store stale; `carta impact` then says that the symbol matches it
+  printed may be out of date (`symbols.stale` in the JSON).
+
+A name defined in more than one file is ambiguous. It still resolves when the doc qualifies it
+(`Store.put`, `table.init`) or mentions one of the defining files or a directory above it;
+otherwise it makes no edge. On this repository 96.5% of 3,564 indexed names are defined in a
+single file, and raising the limit to 2, 3 or 5 changed the replay score below by less than
+0.001, so the default keeps the stricter rule. A qualifier that matches nothing in the
+repository makes no edge either: `subprocess.check_output` is not your `check_output`, and
+nothing in `page.get_text` says whose `page` it is (`self.`, `this.` and `cls.` are the
+exception). Locals, parameters and import aliases are never definitions, and neither is a key
+in a data file (JSON, YAML, TOML, XML), a heading, or anything in a doc or under
+`excluded_paths`.
+
+Once a provider is configured, `carta impact` reads symbol edges too and labels them:
+
+```text
+ 1. docs/parser.md  score 0.878890
+      src/parser/frame.py  symbol: the doc names an identifier defined here (1 doc does)
+        L3: Call `parse_frame()` on each chunk.
+```
+
+`carta scan` has two findings for identifiers, **both off by default**
+(`graph.scan.dangling_symbols`, `graph.scan.ambiguous_symbols`). `dangling_symbol` reports a doc
+that names an identifier which has left the code. Most identifiers no index knows are simply
+not yours (a library class, a shell command), so absence is never enough: the name must occur as
+a word in no code file today, **and** git must show the code had it at a commit that changed
+that mention in the doc. An external name fails the second test and stays silent. It needs git
+and no symbol index. On this repository it produced 10 findings from 103 candidates; by hand, 8
+were symbols defined here and since removed, 2 were names the code once used and never
+defined, and 6 of the 8 sat in dated plans. That is too small a sample, and too archival, to
+switch on for everyone. `ambiguous_symbol` is informational: a name the index defines in too
+many files to resolve (33 here, `main` and `__init__` among them).
+
 What it does **not** do:
 
-- It does not parse source code. Edges come from doc text only.
+- It does not parse source code. Edges come from doc text, and symbol edges from an index
+  another tool wrote.
 - It does not read paths written in plain prose. A path must be in backticks, a markdown link, a
   fenced block or frontmatter. That is deliberate: "read/write" and "and/or" are not paths.
-- Backticked identifiers (`parse_frame()`, `MAX_RETRIES`) are stored but **not yet resolved** to
-  the files that define them, and they play no part in `carta impact` ranking today.
+- Backticked identifiers (`parse_frame()`, `MAX_RETRIES`) are stored, and resolved to the files
+  that define them only when a symbol provider is configured (above). Without one they play no
+  part in `carta impact`.
+- It does not follow calls. A symbol edge says where a name is defined, not who uses it.
 - It does not follow renames. A doc that still names the old path is a `carta scan` finding,
   because the text on the page is now wrong.
 - Its edges do not feed `carta search`.
@@ -507,6 +572,33 @@ left, which is too few to call (0.276 against 0.564 and 0.287). The docs edited 
 here (README, changelog) do not name files, and the docs that do name files are dated plans
 nobody edits again. Numbers, populations and the reading of them are in
 [the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
+
+Symbol edges can be scored the same way: `--arm both=mention+symbol@max --symbols ctags`. The replay
+may only use what a commit's parent had, so `--symbols ctags` re-runs universal-ctags on each
+parent's code, read from git objects into a scratch directory and cached per file content (the
+whole history above takes about 8 s). `--symbols tracked:PATH` reads a symbols file the
+repository tracks, as of each parent. `--symbols file:PATH` uses one file as it is today for
+every commit, which **leaks** later knowledge; it is refused unless you add
+`--accept-symbol-leak`, and the report then carries a warning. On the same 54 commits
+(`--range 792b6690`), adding symbol edges to mentions moves MRR from 0.191 to 0.201 (paired
+difference +0.010, 95% interval -0.000 to +0.021; 25 commits better, 4 worse, 25 tied) and
+recall@10 from 0.262 to 0.315; symbol edges alone score 0.147. Without the hub docs (21
+commits, too few to call) the two are level, 0.273 against 0.276. So symbol edges help a
+little at depth and do not change the verdict. That interval sits on zero and moves with the
+range: ending four commits later (58 eligible) the same clean run reads +0.018 (+0.001 to
++0.041), so "significant or not" is not something this history can settle. The leak is small
+here: today's index scores the combined arm 0.003 higher than each parent's own (paired over
+the 54 commits: 3 better, none worse, 51 tied).
+
+Those numbers score the two kinds in one pool (`@max`). An arm with no `@MODE`, and
+`carta impact` itself, fuse kinds with `graph.impact.combine` (default `norm`, see co-change
+edges below). Under `norm` the same arm scores 0.185, which cannot be told from mentions alone
+(paired -0.006, -0.020 to +0.006). All three kinds in one arm
+(`--arm all=mention+cochange+symbol`) score MRR 0.407 against 0.489 for mentions plus
+co-change (paired -0.082, -0.135 to -0.031; 5 commits better, 20 worse, 29 tied); without the
+hub docs it is 0.355 against 0.381 (21 commits, too few to call). So on this history symbol
+edges do not improve the default pair of kinds. That is reported as measured; no weight was
+tuned to change it.
 
 #### Co-change edges: what git history says moves together
 

@@ -1780,3 +1780,394 @@ and each has a test in `test_hardening_cochange.py` that fails on the code befor
 - **Frozen docs still fill the mention ranking**, which is what holds the union below co-change
   alone on this repository. Follow-up (a) of *What follows* is still the fix.
 - **Similarity-detected renames** are not followed; 7 of 24 in this history are lost.
+
+## Symbol edges (#131)
+
+Docs name functions, types and constants far more often than they name files. The mention
+extractor already stores those backticked identifiers unresolved (`kind='ident'`). This section
+resolves them to the files that define them, **from a symbol index another tool wrote**. Carta
+reads the index. It does not parse code and it owns no call graph.
+
+### Shape
+
+```
+carta/graph/
+  symbols.py        SymbolRow, parse_symbols, SymbolTable, resolve_token, resolve_doc,
+                    the two providers, build_symbol_edges, symbol_status
+  symbol_scan.py    dangling_symbol and ambiguous_symbol for carta scan
+  eval/symbol_replay.py   SymbolSource and the replay's symbol provider
+```
+
+**Provider interface.** A provider yields rows `(name, kind, file, line[, scope])`. `name` is the
+unqualified name (a row written as `ns::fn` is split into scope `ns`, name `fn`), `file` a
+repo-relative POSIX path, `line` 1-based or 0. `symbols.symbols_input(repo, settings, index)`
+returns `(input_sha, load)`: a cheap hash of what the index would be made from, and a callable
+that makes it. Two providers:
+
+| Provider | Input | Notes |
+|---|---|---|
+| `file` | `graph.symbols.file`, a path inside the repository | JSON lines (`name`, `kind`, `file`, `line`, optional `scope` and `language`), TSV (`name kind file line [scope]`; a header row is skipped), or saved `ctags --output-format=json` (its `path` is the file, its `_type: ptag` lines are skipped). UTF-8; a leading byte-order mark is dropped and `#` lines are comments in either format. Told apart by the first line that is neither blank nor a comment. This is the generic route: export any code-graph tool's index to one of the first two. |
+| `ctags` | universal-ctags, if installed | Found as `$CARTA_CTAGS`, else `ctags`, `universal-ctags`, `uctags`, `ctags-universal` on `PATH`. A candidate counts only when `--list-features` exits 0 and lists `json`; the BSD `ctags` macOS ships fails that probe. Run as `--options=NONE --links=no --sort=no --output-format=json --fields=+nl -f - -L <list>` from the repository root, in its own process group. |
+
+**Off by default** (`graph.symbols.provider: none`). An `auto` value (use ctags when it happens to
+be installed) was considered and rejected: the edges of a tree would then depend on what is on
+the machine, every test that builds a store would run a third-party binary when one is present,
+and running a C parser over every source file is something a project should ask for.
+
+**States.** `off` (no provider), `unavailable` (a provider is configured and has nothing to read:
+no binary, no `file` named, the file absent; symbol edges are cleared and the status line says
+why; not stale, not an error), `failed` (an index was expected and could not be loaded: the file
+is a symbolic link, too large or unreadable, it has lines and not one readable row (another
+encoding, another format), there are more rows than the bound, ctags exited non-zero, timed out
+or printed too much; **the stored edges are kept** and `graph status` reports `symbols_failed`
+until a load succeeds), `ok`. A file with no lines at all is an empty index, which is `ok`.
+
+**Edges.** As reserved above: `kind='symbol'`, `src` the doc, `dst` the defining file,
+`dst_type='file'`, `line` the doc line, `key` the identifier as written, `evidence` the doc
+line, `weight` `1 / files` when a name resolves to more than one file, `meta`
+`{"name", "symbol_kind", "def_line"[, "candidates", "via"]}`. They are written under
+`extractor='symbol'` with `SYMBOL_EXTRACTOR_VERSION` (2), one `sources` row per doc whose `meta`
+holds that doc's counts and its ambiguous identifiers. (The spec above put a `sources` row on
+the index file; `replace_source` requires `edge.src == path`, so the row is per doc and the
+index is recorded in `meta` keys `symbol.*` instead.) `GraphSettings.symbol_fingerprint()` is
+separate from `fingerprint()`: turning symbols on re-extracts no mention, and the mention digest
+is byte-identical with and without them (checked on this repository).
+
+**Build.** `build_graph` runs the symbol pass after the mention pass, in its own transaction;
+the index is loaded outside any transaction because ctags can take seconds. The pass is skipped
+when the input hash, the settings, the extractor version and a hash of the identifiers are all
+unchanged. For the `file` provider the input hash is the file's bytes **and the path-set
+fingerprint**: a row counts only while its file is in the tree, so a code file that is added
+or deleted changes the edges without a byte of the symbols file changing (the first version
+hashed the bytes alone and kept, or never made, such edges while reporting the store fresh).
+For `ctags` it is the content of every code file plus the ctags version: there is no mtime
+shortcut here either, at the cost of reading the code on every build (0.02 s for the 231 files
+of this repository; ctags itself takes 0.13 s). A full `carta graph build` here takes 0.8 s
+with symbols on.
+
+**Which files can be a definition site.** A file in the path set that is not a doc and is not
+under `excluded_paths`. That answers "generated and vendored code": what git ignores is not in
+the path set, and `node_modules/` and the like are excluded by default. ctags parses Markdown
+headings as symbols; docs are never handed to it, and a row naming a doc is dropped.
+
+**Which kinds.** Everything except `local`, `parameter`, `label`, `unknown`, `import`, `alias`,
+`namespace`, `using`, `externvar`, `prototype` and `anon`. ctags reports a Python
+`import x as y` as a `namespace`; a C++ namespace is lost with it, which costs little (it is
+defined in many files and would be ambiguous anyway).
+
+**Which languages.** A row whose `language` is data or prose is not a definition
+(`DATA_LANGUAGES`: JSON, YAML, TOML, ini, properties, XML, SVG, diff, and the markup languages).
+ctags reports every JSON key as a symbol of kind `string`, `object` or `array`; a parameter name
+that is also a key in one JSON file then looks "defined in exactly one file". Before this rule
+92 of the 2,514 symbol edges of this repository (3.7%) pointed at JSON files; now all 2,411
+point at Python files, the only code language here. The rule needs the language, which ctags
+gives and a hand-written symbols file may leave out; kinds alone would not do, since `object`
+is also a Kotlin and Scala kind.
+
+### Ambiguity policy
+
+`resolve_token(table, token, mentioned, max_definitions)`:
+
+1. The last part of the token is the name (`Store.put` looks up `put`).
+2. One defining file: resolved.
+3. Several: narrowed by the **qualifier** (a definition whose scope, file name or a directory is
+   the part before the name: `FrameParser.parse`, `table.init`, `wire::init`), then by **the
+   paths the same doc mentions** (a definition in a file the doc names, or under a directory it
+   names). If that leaves at most `max_definitions` files the name resolves, each edge weighing
+   `1 / files`; otherwise it is `ambiguous` and makes no edge.
+4. A qualified token whose qualifier matches nothing local is **unknown**:
+   `subprocess.check_output` is not the local `check_output`. The first version took a
+   distinctive leaf (inner underscore or case hump, one defining file) on its own. Hand-checked
+   on this repository's tree that made 11 edges, 4 right (a member of a local object) and 7
+   wrong (a method of a third-party or standard-library object, a store key), and the shape of
+   a name cannot tell the two apart. It is kept only behind a qualifier that says "this object" (`self`, `this`, `cls`;
+   `via: leaf`), which no doc here uses.
+5. A member that is not in the index falls back to its owner (`via: owner`) when the owner is
+   distinctive in the same sense (`FrameParser.gone`), or is a type (class, struct, interface,
+   enum, trait, union, typedef, protocol, record, module) with exactly one defining file
+   (`Parser.gone` to where `class Parser` is defined). A plain word that is not a type
+   (`os.gone` beside a local variable `os`) vouches for nothing.
+
+`max_definitions` defaults to **1**. The numbers, all on this repository's tree at `818a02d`
+with universal-ctags 6.2.1 (231 code files, 3,868 definitions kept, 3,564 names, 113 docs):
+
+| Defining files | 1 | 2 | 3 | 4 or more |
+|---|---|---|---|---|
+| Names | 3,439 (96.5%) | 97 | 15 | 13 |
+
+| `max_definitions` | (doc, identifier) pairs resolved | ambiguous | not in the index | edges | replay MRR, mention+symbol |
+|---|---|---|---|---|---|
+| 1 | 1,284 | 35 | 1,099 | 2,411 | 0.201 |
+| 2 | 1,304 | 15 | 1,099 | 2,457 | 0.200 |
+| 3 | 1,310 | 9 | 1,099 | 2,487 | 0.200 |
+| 5 | 1,315 | 4 | 1,099 | 2,517 | 0.201 |
+
+Population: 2,418 (doc, identifier) pairs from 1,347 distinct identifiers (4,089 occurrences).
+A limit of 5 recovers 31 pairs (1.3%) as split-weight edges and does not move the replay, so
+the default is the rule that never guesses. Of the 2,411 edges at the default, 2,364
+resolve directly, 34 through a path the doc mentions, 10 through a qualifier, 3 through the
+owner and none behind `self`. All 2,411 point at Python files. Down-weighting instead of
+dropping is what `1 / files` does for a project that raises the limit.
+
+45.5% of pairs are not in the index at all. That is the precision of the identifier shape
+filter (A18), measured at last: those are library names, product names, config keys and
+identifiers from other repositories. They make no edge, so they cost nothing.
+
+### `carta impact`
+
+`rank_impact` already scores any path-typed edge kind. With a provider configured `run_impact`
+adds `symbol` to the default kinds (naming a provider is the opt-in; `--kinds` still wins), with
+the existing weight 0.8. A match's `kind` is `symbol` in the JSON, and the text form says
+"symbol: the doc names an identifier defined here". When symbol edges are read the result has
+a `symbols` entry (`provider`, `state`, `stale`, `detail`); after a failed load the stored edges
+are still read, `stale` is true and the text form says the symbol matches may be out of date.
+With `--no-build` the state is the one the last build stored. Not done: a deleted file's symbols. The
+index no longer has them, so `carta impact --diff` on a deletion finds the docs that named the
+file, not the docs that named only its functions (see `dangling_symbol`).
+
+### Scan findings
+
+Both are **off by default** (`graph.scan.dangling_symbols`, `graph.scan.ambiguous_symbols`).
+
+**`dangling_symbol`: telling "external" from "gone".** An identifier the index does not know is
+usually not this repository's. A finding therefore needs positive evidence, as
+`missing_path_mention` does:
+
+1. the name occurs as a whole word in **no code file today** (one pass over the code with a
+   fixed word pattern; a name that is still imported, called or configured is not gone), and
+2. **git shows the code had it** at a commit that changed this mention in the doc. The commits
+   come from a pickaxe limited to the one doc (`git log -S<identifier> -- <doc>`, literal
+   pathspec); the newest and the oldest are checked with `git grep -l -z -w -F` on that
+   commit's tree, counting only files that are code by the rule above.
+
+An external name fails test 2. A doc that says "we removed `foo()`" in the commit that removed
+it fails it too, as does a mention written after the fact. Without git there is no finding. The
+check needs no symbol index: "is it still a word in the code" is a text question. An identifier
+that resolved only through its owner (`Parser.gone`) is still a candidate. Lookups are bounded
+(`MAX_SYMBOL_HISTORY_CHECKS`, 1,000 per scan; the word scan by `MAX_CODE_SCAN_BYTES`); running
+out, an unreadable code file or a git error sets `stats.symbol_check: "incomplete"`, and an
+exception sets `"failed"`, so a check that could not finish never reads as a clean result.
+
+Hand-check on this repository (at the commit this work started from; changelogs ignored):
+
+| | Count |
+|---|---|
+| (doc, identifier) pairs whose name is in no code file today | 103 |
+| of those, with history evidence (findings) | 10 |
+| findings that are a symbol defined here and later removed | 8 |
+| findings that are a name the code once used and never defined | 2 |
+| true findings in dated plans, specs or trackers (the rest are in a live guide) | 6 of 8 |
+
+93 of 103 candidates are silenced as never having been in the code. 8 of 10 is a good rate on
+a sample that is far too small, and most of the true ones are in documents nobody will fix. It
+ships off. The 2 misses are honest about what the test is: "the code no longer contains this
+word", not "a definition was deleted". The scan took 5 s here.
+
+**`ambiguous_symbol`** (severity `info`): an identifier the index defines in more files than the
+limit, with nothing to narrow it. 33 findings here, among them `main` and `__init__`. The doc
+is not wrong, so this is for a project that wants its docs to qualify names.
+
+Not done: the issue's "this moved" finding (an identifier that used to resolve to one file and
+now resolves to another). It needs the previous index, and the store is a derived cache that
+does not keep one.
+
+### Replay
+
+A replay may only use what existed at a commit's parent, and a symbol index made today is not
+that. Two answers were open: a flag that acknowledges the leak, or an index rebuilt per commit
+if that could be made cheap. Both exist, and the per-commit one is the route to use:
+
+| `--symbols` | Index used for a commit | Leak |
+|---|---|---|
+| `ctags` | universal-ctags run on the parent's code, read from git objects into a scratch directory outside the repository under generated names; results kept per `(blob, basename)`, so after the first commit only changed files are indexed | none |
+| `tracked:PATH` | the repository's own tracked symbols file, as of the parent. The report counts the parents at which it gave rows (`parents_with_index` of `parents`); none at all is an error (a typo, a directory, a file that is not an index), not a row of zeros | none |
+| `file:PATH` | one file as it is today | **yes**; refused without `--accept-symbol-leak`; the report's `symbols.leak` is true and the text prints a warning. Definitions in files the parent did not have are dropped, which removes part of the leak. |
+
+An arm that reads `symbol` with no `--symbols` is an error that lists the three. The provider
+runs its own mention state to get each doc's identifiers at the parent, so `--arm s=symbol`
+works without a mention arm. `--max-definitions N` overrides the limit for a run.
+
+Results, `carta graph replay --range 792b6690 --no-cache --no-config --arm mention=mention
+--arm symbol=symbol --arm both=mention+symbol@max --symbols ctags`, 403 commits scanned, 54
+eligible, 7.4 s:
+
+| | R@1 | R@3 | R@5 | R@10 | any@5 | MRR |
+|---|---|---|---|---|---|---|
+| graph[mention] | 0.035 | 0.182 | 0.210 | 0.262 | 0.278 | 0.191 |
+| graph[symbol] | 0.035 | 0.063 | 0.113 | 0.231 | 0.185 | 0.147 |
+| graph[both] | 0.035 | 0.201 | 0.210 | 0.315 | 0.278 | 0.201 |
+| popularity | 0.302 | 0.791 | 0.885 | 0.944 | 0.981 | 0.731 |
+| basename | 0.073 | 0.201 | 0.259 | 0.340 | 0.370 | 0.226 |
+| basename_idf | 0.077 | 0.194 | 0.228 | 0.290 | 0.296 | 0.215 |
+
+- **both against mention:** MRR +0.010, 95% interval -0.000 to +0.021; 25 commits better, 4
+  worse, 25 tied. Recall@10 0.262 to 0.315, recall@5 unchanged.
+- **Without the three hub docs** (21 commits, labelled inconclusive): mention 0.276, symbol
+  0.211, both 0.273; paired -0.003 (-0.021 to +0.010). Recall@10 0.270 to 0.365.
+- **Source-only commits** (203, unlabelled): a prediction for 87.7% against 87.2%, 3.73 docs
+  returned at 5 against 3.49. Slightly more to read, as expected of more edges.
+- **What the edges add structurally** (the tree at `818a02d`): 482 doc-to-code-file pairs from
+  symbols against 688 from mentions; 142 of the 482 are not already a mention pair; 2 code
+  files and 4 docs are reachable only through a symbol.
+- **The interval is range-sensitive.** The clean per-parent run on two later ends of the same
+  history: `--range 818a02d` (438 scanned, 57 eligible) +0.009, -0.001 to +0.019;
+  `--range 8727ef0` (442 scanned, 58 eligible) +0.018, +0.001 to +0.041. One more eligible
+  commit moves an interval edge across zero, so this history cannot say whether the gain is
+  real, in either direction.
+- **The leak, measured.** The same run with the index of the range's last commit for every
+  commit (`--symbols file:` an export of ctags at `792b6690`, `--accept-symbol-leak`): symbol
+  alone 0.164 instead of 0.147, both 0.204 instead of 0.201, and both against mention +0.013
+  (+0.002 to +0.024). Compared with each other over the same 54 commits, leaking minus clean is
+  +0.003 for the combined arm (3 commits better, 0 worse, 51 tied; a bootstrap of the paired
+  differences, 10,000 resamples, gives +0.000 to +0.008) and +0.017 for symbol alone (4 better,
+  2 worse, 48 tied; -0.003 to +0.051). So the leak is real and small here. An earlier version
+  of this section said the leak "would have turned not shown into significant"; that read too
+  much into two intervals that both sit on zero, and the clean arm crosses the same line by
+  itself on a slightly longer range. The per-parent index is the one to use because the size of
+  the leak cannot be known without it, not because it changed a verdict on this history.
+
+Reading: symbol edges are a small, mostly harmless addition on this history. They lift recall
+deeper in the ranking and leave the top of it alone, and they do not change the verdict of the
+Results section: the docs that get edited with code here do not name code. The comparison that
+would decide whether they are worth more (the no-hub table) has 21 commits and is inconclusive.
+
+### Security
+
+The symbol arm is written to the standard of the hardening section, and adds these surfaces:
+
+| Surface | Rule |
+|---|---|
+| The symbols file | Read with `safeio.read_regular_file`: a path inside the repository from config (never absolute, never upward), no symbolic link in any component, size checked before reading (`MAX_SYMBOLS_FILE_BYTES`, 64 MiB). |
+| Index rows | A line over `MAX_SYMBOL_LINE_BYTES` is skipped before it is parsed; JSON that is not an object, or nests too deeply, is a skipped line. A name must be an identifier, a file a clean relative path that is in the path set, a kind a short lowercase word, a line a small positive integer. More than `MAX_SYMBOL_ROWS` rows is a failed load, not a truncated index. At most 64 definitions are kept per name. No regular expression is ever built from index or doc text. |
+| Running ctags | `--options=NONE` (the repository's `.ctags.d` is not read), `--links=no`, an explicit file list in a private temporary directory, each name prefixed `./`; names with control characters, links, non-regular files and files over 2 MiB are not listed. A binary inside the repository being read is never run, whatever `PATH` says. Output is read line by line with a byte ceiling and a wall-clock timeout; ctags runs in its own process group and the whole group is killed at the limit, so a wrapper's child cannot keep the pipe open. A row about a file that was not listed is dropped. |
+| The replay's scratch tree | A new directory outside the repository; blob content is written under a number and, when the basename is plain (letters, digits, `._+-`, an optional leading dot), that basename; otherwise `file` plus the extension when the extension is plain. |
+| Git lookups | `commits_changing_text` passes the identifier as one `-S` argument and the doc as a literal pathspec; `files_with_word` takes only a full object name and an identifier, reads names with `-z`, and raises when a name is not under the tree it asked about. |
+| Failure | A failed load keeps the edges and is reported stale, by `graph status` and by `carta impact`; a file with lines and no row is a failed load, not an empty index; an incomplete or failed scan check is recorded as such. |
+
+**Final sweep.** Found after the section above was written; each has a test in
+`test_hardening_symbols.py`.
+
+| # | Finding | Change |
+|---|---|---|
+| Y1 | Stored symbol state was read with `int()` and `.get()` on whatever the store held: a doc state that is a list, a count that is text, an `ambiguous` entry that is not a pair, a row count `int()` refuses, or state nested past the parser raised out of `carta graph build`, `graph status`, `carta impact` and `carta scan`. | `symbols.doc_state` parses a doc's state by shape and `_state_intact` decides whether the arm's stored values are this code's. If not, status reports `symbols_changed`, the unchanged shortcut is not taken and the pass writes every doc again; totals leave the bad value out and nothing raises. A stored state name outside `ok | off | unavailable | failed` is never passed on. |
+| Y2 | A load that failed was tried again on every build, and every `carta impact` (and every MCP `carta_impact`) builds first: a repository on which ctags runs into its 600 s limit cost that on each call. | The failure is remembered by what the load read (`symbol.failed_input`: input, settings, extractor version). The same input is not loaded again; the report says so and names `carta graph build --force`, which retries, as does any change to the input. Status still reports `symbols_failed`. |
+| Y3 | `run_ctags` cancelled its timer when ctags' output ended and then waited for the process with no limit: a process that closes its output and lingers was waited on for ever. | The timer stays armed until the process has exited. The capability probe runs in its own process group as well, is killed as a group, and the wait after the kill is bounded. |
+| Y4 | `symbol.detail` (stored, and able to quote `graph.symbols.file` or a file name) and the replay's symbol source label were printed as found. | Every detail is passed through `model.printable` and cut to 400 characters where it is made, where it is stored and where the CLI and `format_impact` print it. |
+| Y5 | Work before the bound: `graph.symbols.file` had its leading `./` stripped by re-slicing before its length was looked at (the replay reads this from the replayed repository's config, up to 1 MiB: hours); a row's path was stripped the same way per line; the dangling-symbol word scan built a list of every word of each code file (up to 32 MiB each). | The config value is refused over 4,096 characters before anything else; the row path is stripped by position; the scan walks the words and keeps only the ones it was asked about. |
+
+Checked and found sound: `MAX_SYMBOL_ROWS` is tested in `_RowReader.feed` before a row is
+appended, for a file and for ctags output alike; ctags output is counted against
+`MAX_CTAGS_OUTPUT_BYTES` as it is read and the process group is killed when either limit is
+passed; ctags is given its files through a list file, each as `./path`, with `--options=NONE`
+and `--links=no`, so no file name is an option and no option file of the repository is read; a
+binary inside the repository is never run.
+
+Not bounded: the replay's ctags source keeps the rows of every `(blob, basename)` it has indexed
+for the length of the run.
+
+### With co-change edges (#130): three kinds in one store
+
+#130 and #131 were written side by side from the same commit. Stacked, they meet in four
+places. Each is covered by `carta/graph/tests/test_three_kinds.py`.
+
+- **Build.** One build runs three passes in a fixed order: mentions, history, symbols. Each
+  pass writes only its own extractor's rows, with its own version, fingerprint and digest.
+  Turning the symbol provider off removes the symbol edges only; `graph.cochange.enabled:
+  false` removes the co-change edges only; `--no-cochange` skips the history pass and still
+  brings symbol edges up to date. The report's `edges` and `by_kind` are counted after the
+  last pass that changed the store. Stacking showed one error here: a build that had just
+  turned the provider off reported the symbol edges it had deleted. It now counts again.
+- **`carta impact`.** The default kinds are `graph.impact.kinds` (`mention`, `cochange`) plus
+  `symbol` when a provider is configured, so a project with a provider reads three kinds.
+  They are fused with `graph.impact.combine`. In the text form a symbol reason carries the
+  `[named]` label, because it comes from what the doc says, not from history.
+- **Combine mode.** Before #130 several kinds were scored in one pool, which is now the mode
+  `max`. #130 changed the default to `norm`. Every mention-plus-symbol number in this section
+  was measured in one pool, so its command now says `@max`. The `max_definitions` table and
+  the range and leak comparisons above are `@max` too.
+- **Replay.** An arm may list all three kinds, with or without `@MODE`; the symbol source
+  (`--symbols`) is needed as soon as one arm reads `symbol`.
+
+Measured, `carta graph replay --range 792b6690 --no-cache --no-config --symbols ctags` with one
+arm per row, 403 commits scanned, 54 eligible, 21 without the hub docs (inconclusive):
+
+| Arm | MRR | R@5 | R@10 | MRR, no hubs |
+|---|---|---|---|---|
+| mention | 0.191 | 0.210 | 0.262 | 0.276 |
+| cochange | 0.615 | 0.637 | 0.725 | 0.404 |
+| mention+symbol@max | 0.201 | 0.210 | 0.315 | 0.273 |
+| mention+symbol@norm | 0.185 | 0.182 | 0.299 | 0.271 |
+| mention+symbol@rrf | 0.207 | 0.201 | 0.278 | 0.280 |
+| mention+cochange (norm) | 0.489 | 0.602 | 0.799 | 0.381 |
+| mention+cochange+symbol (norm) | 0.407 | 0.523 | 0.740 | 0.355 |
+| mention+cochange+symbol@rrf | 0.341 | 0.415 | 0.635 | 0.378 |
+| mention+cochange+symbol@sum | 0.244 | 0.282 | 0.422 | 0.319 |
+| mention+cochange+symbol@max | 0.254 | 0.282 | 0.431 | 0.321 |
+
+Paired MRR differences, 95% bootstrap intervals over commits:
+
+- mention+symbol@norm against mention: -0.006 (-0.020 to +0.006), 19 better, 12 worse, 23
+  tied. Under the default mode the small gain of the pooled arm is gone.
+- Three kinds against mention+cochange, both `norm`: -0.082 (-0.135 to -0.031), 5 better, 20
+  worse, 29 tied. Without hubs: -0.026 (-0.077 to +0.002), 1 better, 6 worse, 14 tied.
+- Three kinds against cochange alone: -0.209 (-0.311 to -0.104).
+- Three kinds, `norm` against `rrf`: +0.065 (+0.012 to +0.118); without hubs -0.023 (-0.074
+  to +0.005).
+
+Reading: on this history, adding symbol edges to the two default kinds lowers MRR, and the
+interval excludes zero on the table with hubs. The table without hubs has 21 commits and
+decides nothing. This is one repository whose most-edited docs name few identifiers, the same
+population every default was chosen on. Nothing was tuned in response: the symbol weight
+stays 0.8 and the provider stays off by default. A project that turns a provider on and wants
+the two-kind ranking can pass `--kinds mention,cochange`.
+
+### Amendments from the review of #131
+
+| # | Finding | Change |
+|---|---|---|
+| Q1 | With `provider: file` a code file that was deleted kept its edge, and one that was added got none, while `graph status` said fresh: the input hash covered the symbols file and not the path set the rows are filtered by. | The path-set fingerprint is part of the input hash, in the build and in status. |
+| Q2 | ctags reports JSON keys as symbols, so a parameter name that is a key in one JSON file resolved to it at full weight (92 of 2,514 edges here). | Rows in a data or prose language are not definitions; ctags is asked for `language`. |
+| Q3 | The leak comparison was read as "the leak turned not-shown into significant". The clean arm crosses the same line on a range four commits longer, and the two variants had not been compared with each other. | Paired leak-against-clean numbers and the range sensitivity are in *Replay*; the claim is withdrawn. |
+| Q4 | The ctags time limit did not hold for a wrapper binary whose child kept the pipe open. | Own process group, killed whole. |
+| Q5 | After a failed load `carta impact` used the kept edges without saying so. | `symbols` in the result, one line in the text. |
+| Q6 | `--symbols tracked:PATH` with a path no parent had scored the symbol arm as zeros. | Counted and reported; zero is an error. |
+| Q7 | The replay wrote a dotfile under the name `file`, so ctags did not know its language (the review counted 5 of 2,135 edges on this tree). | A leading dot is kept, and an unsafe name keeps its extension. |
+| Q8 | A byte-order mark or a leading `#` line made JSON lines read as TSV: zero rows, state `ok`. | Both handled before the format is told; lines with no row at all is a failed load. |
+| Q9 | The owner fallback did not resolve its own example (`Parser.gone`): it required a distinctive owner name. | A type with one defining file is an owner whatever its name. |
+| Q10 | `subprocess.check_output` resolved to a local `check_output`: the leaf rule tested only the shape of the name. | Hand-labelled (4 of 11 right) and removed, except behind `self`, `this`, `cls`. |
+
+### Left open
+
+- The symbol pass re-reads every code file on each build to decide whether ctags must run. It
+  is cheap here; a very large tree may want the `file` provider and an index made in CI.
+- `graph status` with the `ctags` provider runs the capability probe and hashes the code. It
+  still writes nothing.
+- ctags decides languages by file name. The per-commit replay keeps a file's basename, or at
+  least its extension, when that is made of plain characters; a file whose language ctags tells
+  from a name with other characters in it (not from its extension) is still read as plain text
+  there. A test compares the live and the replayed edges of one tree with a dotfile, a name
+  with a space and a name with a leading dash.
+- A row's `kind` is whatever the tool calls it. The ignored-kind and owner-kind lists are tuned
+  to ctags names, and the data-language rule needs a `language` field: a TSV symbols file, or
+  JSON lines without it, keeps its data-file rows.
+- A config key that a doc backticks no longer resolves to the JSON or YAML file that holds it.
+  That is sometimes a true reference; it was dropped because it could not be told from a
+  parameter name that happens to be a key somewhere.
+- Third-party and standard-library calls (`requests.get`, `page.get_text`) are unknown, as they
+  should be. So is `store.replace_source` where `store` is an instance of a local class: 4 true
+  edges were given up on this repository to lose 7 false ones. Resolving those needs types,
+  which an index of definitions does not have.
+- The ctags time limit is tested with a stand-in wrapper and a one-second limit; that test
+  waits on the wall clock. On Windows there is no process group and only the process Carta
+  started is killed.
+- `carta impact --no-build` reports the symbols state the last build stored. It does not check
+  whether the index has changed since (`graph status` does).
+- The word scan treats every non-doc text file as code, so a name that survives only in a
+  comment or a data file is "still there". That errs towards silence.
+- Tested against universal-ctags 6.2.1 on macOS only.
+- With a provider configured, `carta impact` reads three kinds by default, and on this
+  repository's history that ranks worse than mentions plus co-change (see *With co-change
+  edges*). Whether `symbol` should join the default kinds, and at what weight, needs a
+  history where symbol edges carry more than they do here; it was not tuned on this one.
+- The range-sensitivity, leak and `max_definitions` comparisons were measured in one pool
+  (`@max`) and were not re-run under `norm`.

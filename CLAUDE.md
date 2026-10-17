@@ -267,7 +267,8 @@ embed-integrity scan · `eval/` retrieval eval · `vision/` PDF routing/OCR/ColP
 `mcp/` MCP server · `hook/` recall judge (`hooks/` = shell entry) · `memory/` note
 capture · `install/` bootstrap/preflight/auto-fix · `update/` self-update · `ui/`
 status rendering · `graph/` the deterministic arm: mention extractor, SQLite edge store,
-`carta impact` ranking, the `missing_path_mention` scan finding, and `graph/eval/` the
+`carta impact` ranking, the `missing_path_mention` scan finding, optional symbol edges from an
+external index (`graph/symbols.py`: universal-ctags or a symbols file; off by default), and `graph/eval/` the
 PR-replay eval (stdlib + PyYAML only; must never import the vector stack or `carta.scanner`).
 
 ### Which command? (full table in README / AGENTS.md)

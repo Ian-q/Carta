@@ -314,7 +314,8 @@ def test_graph_status_reports_stale_reasons(tree):
 
 def test_graph_status_keys(tree):
     keys = {"enabled", "exists", "schema_version", "extractor_version", "docs", "edges",
-            "by_kind", "by_dst_type", "digest", "stale", "stale_reasons", "cochange"}
+            "by_kind", "by_dst_type", "digest", "stale", "stale_reasons", "cochange",
+            "symbols"}
     assert set(graph_status(tree, CFG)) == keys
     build_graph(tree, CFG)
     assert set(graph_status(tree, CFG)) == keys

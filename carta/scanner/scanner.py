@@ -994,6 +994,17 @@ def run_scan(
         missing_check = "failed"
     issues.extend(missing_mentions)
 
+    # Graph arm: identifiers a doc names that left the code, or that are
+    # defined in too many places to resolve (#131). Both off by default; same
+    # lazy import and the same rule that a check which failed says so.
+    symbol_stats = {"symbol_check": "off", "dangling_symbols": 0, "ambiguous_symbols": 0}
+    try:
+        from carta.graph import symbol_scan
+        symbol_issues, symbol_stats = symbol_scan.symbol_findings(repo_root, cfg)
+        issues.extend(symbol_issues)
+    except Exception:
+        symbol_stats["symbol_check"] = "failed"
+
     # Related auto-suggest (semantic; degrades gracefully when Qdrant/Ollama unavailable)
     if progress:
         progress.scan_step("computing related: suggestions")
@@ -1023,6 +1034,9 @@ def run_scan(
             "homeless": sum(1 for i in issues if i["type"] == "homeless_doc"),
             "missing_path_mentions": len(missing_mentions),
             "missing_path_check": missing_check,
+            "dangling_symbols": symbol_stats.get("dangling_symbols", 0),
+            "ambiguous_symbols": symbol_stats.get("ambiguous_symbols", 0),
+            "symbol_check": symbol_stats.get("symbol_check", "off"),
             "by_status": {
                 s: sum(1 for fm in frontmatters.values() if fm and fm.get("status") == s)
                 for s in ("active", "prototype", "archived")

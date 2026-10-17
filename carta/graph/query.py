@@ -496,7 +496,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         raise ImpactError("give paths or a diff range, not both")
     if not paths and diff is None:
         raise ImpactError("give at least one path, or a diff range")
-    use_kinds = sorted(set(kinds if kinds else settings.impact_kinds))
+    # Naming a symbol provider is the opt-in: its edges are then read by
+    # default, beside whatever graph.impact.kinds lists.
+    default_kinds = list(settings.impact_kinds)
+    if settings.symbols_provider != "none":
+        default_kinds.append("symbol")
+    use_kinds = sorted(set(kinds if kinds else default_kinds))
     unknown = [k for k in use_kinds if k not in KINDS]
     if unknown:
         raise ImpactError(
@@ -528,9 +533,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         came = []
 
     try:
+        built: dict = {}
         if build:
             # History is only read when a history kind is asked for.
-            build_graph(repo_root, cfg, cochange=any(k in HISTORY_KINDS for k in use_kinds))
+            built = build_graph(
+                repo_root, cfg,
+                cochange=any(k in HISTORY_KINDS for k in use_kinds)).get("symbols", {})
         store = EdgeStore.open_readonly(store_path(repo_root))
     # The store's own messages name it by absolute path; this result also goes
     # to an MCP client, which is told where it is in the repository and no more.
@@ -560,6 +568,11 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         n_docs = len(store.source_hashes(MENTION_EXTRACTOR))
         total_edges = store.counts()["edges"]
         digest = store.edges_digest((MENTION_EXTRACTOR,))
+        symbols_state = built.get("state") or store.get_meta("symbol.state") or "off"
+        if symbols_state not in ("ok", "off", "unavailable", "failed"):
+            symbols_state = "failed"            # not a state Carta wrote: not to be relied on
+        symbols_detail = printable((built.get("detail") if built
+                                    else store.get_meta("symbol.detail")) or "")[:400]
 
     if build and gone and "mention" in use_kinds:
         edges.extend(_edges_before(repo_root, settings, gone, came))
@@ -574,7 +587,7 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         results.append({"rank": item["rank"], "doc": item["doc"],
                         "score": round(item["score"], 6), "in_diff": item["doc"] in in_diff,
                         "matches": matches})
-    return {
+    out = {
         "schema": IMPACT_SCHEMA,
         "query": {"paths": query, "diff": range_spec, "kinds": use_kinds, "top": use_top,
                   "min_score": use_min},
@@ -584,6 +597,12 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         "unmatched_paths": [q for q in query if not index.is_matched(q, use_kinds)],
         "skipped_paths": skipped,
     }
+    if "symbol" in use_kinds:
+        # The symbol edges of a failed load are kept, so they are read here
+        # too; the answer has to say that they may no longer be true.
+        out["symbols"] = {"provider": settings.symbols_provider, "state": symbols_state,
+                          "stale": symbols_state == "failed", "detail": symbols_detail}
+    return out
 
 
 # -- human output ----------------------------------------------------------
@@ -595,6 +614,11 @@ def _count(n: int, noun: str) -> str:
 def _match_reason(match: dict) -> str:
     named = f"named by {_count(match['df'], 'doc')}"
     kind = match["match"]
+    if match["kind"] == "symbol":
+        # No doc names the path: it names an identifier this file defines.
+        docs = _count(match["df"], "doc")
+        return (f"symbol: the doc names an identifier defined here "
+                f"({docs} {'does' if match['df'] == 1 else 'do'})")
     if kind == "exact":
         return f"exact, {named}"
     if kind == "under":
@@ -665,6 +689,11 @@ def format_impact(result: dict) -> str:
                 more = len(evidence) - EVIDENCE_LINES_SHOWN
                 lines.append(f"        ... {_count(more, 'more line')}")
     tail: List[str] = []
+    symbols = result.get("symbols") or {}
+    if symbols.get("stale"):
+        tail.append("Symbol matches may be out of date: the symbol index could not be loaded "
+                    f"({printable(symbols.get('detail', ''))}); the edges of the last good "
+                    f"build were used")
     if result["unmatched_paths"]:
         nothing = "No doc names or has changed with" if labelled else "No doc mentions"
         tail.append(f"{nothing}: " + ", ".join(

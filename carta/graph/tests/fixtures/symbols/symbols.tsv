@@ -1,0 +1,13 @@
+# name	kind	file	line	scope
+FrameParser	class	src/pkg/frame.py	1
+MAX_LEN	variable	src/pkg/frame.py	3	FrameParser
+parse_frame	member	src/pkg/frame.py	5	FrameParser
+parse_frame	function	src/pkg/frame.py	10
+DEFAULT_TIMEOUT	variable	src/pkg/frame.py	13
+operating	namespace	src/pkg/table.py	1
+render_table	function	src/pkg/table.py	3
+init	function	src/pkg/table.py	6
+FRAME_MAX	macro	src/wire.c	1
+frame_header	struct	src/wire.c	2
+len	member	src/wire.c	2	frame_header
+init	function	src/wire.c	4

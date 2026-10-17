@@ -15,6 +15,11 @@ SCHEMA_VERSION = 1
 MENTION_EXTRACTOR_VERSION = 3
 MENTION_EXTRACTOR = "mention"
 
+# The symbol arm (#131): bump when it would emit different edges for the same
+# identifiers and the same symbol index.
+SYMBOL_EXTRACTOR_VERSION = 2
+SYMBOL_EXTRACTOR = "symbol"
+
 KINDS = ("mention", "ident", "pattern", "cochange", "symbol", "related")
 DST_TYPES = ("file", "doc", "dir", "glob", "missing", "token", "pattern")
 SRC_TYPES = ("doc", "file")

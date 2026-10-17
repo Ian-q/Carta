@@ -253,6 +253,15 @@ DEFAULTS = {
             "missing_paths": True,
             "ignore_docs": ["CHANGELOG*", "**/CHANGELOG*"],
             "history_limit": 5000,  # commits of history searched for deletions and renames
+            "dangling_symbols": False,   # an identifier a doc names that left the code
+            "ambiguous_symbols": False,  # an identifier defined in too many files to resolve
+        },
+        # Symbol edges (#131): identifiers resolved through an index another
+        # tool wrote. Off until a provider is named; Carta never parses code.
+        "symbols": {
+            "provider": "none",     # none | ctags (universal-ctags, if installed) | file
+            "file": "",             # repo-relative JSON-lines / TSV / ctags-JSON symbols file
+            "max_definitions": 1,   # a name defined in more files than this is ambiguous
         },
         "replay": {
             "hub_share": 0.2,       # a doc in gold for more than this share of eligible commits

@@ -705,6 +705,8 @@ def carta_impact(
     and may now be out of date. This is a deterministic reverse lookup over the
     paths docs name in backticks, links and code blocks: no embeddings, no model,
     and it works when Qdrant and Ollama are down. Rarely named paths count for more.
+    When the project has a symbol index configured, a doc that names a function or
+    class defined in the file is found too (match "kind": "symbol").
 
     Give exactly one of:
         paths: repo-relative paths that changed; a trailing "/" asks about
@@ -721,14 +723,18 @@ def carta_impact(
         gives the queried "path", the "target" the doc names, how it matched
         (exact | dir | glob | under), "df" (how many docs name that target) and
         "evidence" [{"line", "text"}], the doc lines to re-read. "unmatched_paths"
-        are the changed paths no doc names. Or {"error", "detail"}.
+        are the changed paths no doc names. When symbol edges were read there is
+        also "symbols" {"provider", "state", "stale", "detail"}: "stale" true means
+        the symbol index could not be loaded and the symbol matches come from the
+        last good build, so they may be out of date. Or {"error", "detail"}.
 
-        A match's "kind" says which of two things it means. "mention": the doc
-        names the path (re-read the evidence lines). "cochange" (match
-        "cochange"): the doc and the path changed in the same commits, and the
-        evidence text is the count ("changed together in 9 of 14 commits"); that
-        is git history, a correlation, and the doc may not name the path at all.
-        Pass kinds=["mention"] or kinds=["cochange"] to read one of them alone.
+        A match's "kind" says what it means. "mention": the doc names the path
+        (re-read the evidence lines). "symbol": the doc names an identifier the
+        path defines (same). "cochange" (match "cochange"): the doc and the path
+        changed in the same commits, and the evidence text is the count
+        ("changed together in 9 of 14 commits"); that is git history, a
+        correlation, and the doc may not name the path at all. Pass
+        kinds=["mention"], ["symbol"] or ["cochange"] to read one of them alone.
     """
     return _impact(paths=paths, diff=diff, top_k=top_k, kinds=kinds, include_docs=include_docs)
 
