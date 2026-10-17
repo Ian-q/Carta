@@ -200,6 +200,7 @@ last_reviewed: 2026-03-20
 | `/doc-search` | Natural language search over the embedded knowledge base |
 | `carta focus` / `carta_focus` | Deep retrieval scoped to one file: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `/doc-search` (locate → go deep) |
 | `carta remember` / `carta_remember` | Save a curated project note (quirk / bug-note / helpful-note) as a repo markdown file and embed it. `--about <file>` records which file the note is about |
+| `carta impact` / `carta_impact` | Reverse lookup: given the files you changed (or a git range), the docs that name them, ranked, with the lines to re-read. No model, no Qdrant, no Ollama |
 
 ---
 
@@ -213,6 +214,8 @@ last_reviewed: 2026-03-20
 | Check embedded-data integrity (orphaned sidecars, damaged/duplicate points) | `carta audit` | JSON report |
 | Diagnose the environment (Qdrant/Ollama/models) | `carta doctor` (+ `--fix`) | stdout |
 | Measure retrieval quality | `carta eval` | scores |
+| Find the docs that describe the files you changed | `carta impact <path>...` · `carta impact --diff` | ranked docs + evidence lines (`--json`) |
+| Find docs that name a file which was deleted or renamed | `carta scan` (`missing_path_mention` findings) | `.carta/scan-results.json` |
 | Reconcile CLAUDE.md against the docs (detect superseded sections, draft corrections) | `carta claude-md check` (report JSON) · `carta claude-md record` (stamp sync sidecar) · `/claude-md-sync` skill | JSON findings |
 
 ---
@@ -345,6 +348,165 @@ It was measured **neutral** on a corpus where a strong reranker already floats i
 most likely to help corpora with a rich, well-linked `related:` graph and relevant docs that rank
 deep. The companion `related:` resolver (id/path normalization) and the `carta scan`
 `noncanonical_related` check ship regardless and feed link-graph cleanup.
+
+### The graph arm: which docs describe this file?
+
+Search answers "which passage is about this?". The graph arm answers the reverse question, the
+one you have while editing code: **"I am changing these files; which docs describe them?"**
+
+It works from what docs already say. A doc that writes `src/parser/frame.py` in backticks, links
+to it, or shows it in a code block has declared a relation to that file. Carta extracts each such
+mention as an **edge** (doc, target, line, and the line's text as evidence) and stores the edges
+in one SQLite file, `.carta/graph/edges.db`. **No model is involved**: no embeddings, no Qdrant,
+no Ollama. The same repository always gives the same edges, and the store is a cache you can
+delete and rebuild.
+
+```bash
+carta graph build      # incremental by content hash; --force re-extracts everything
+carta graph status     # counts, digest, and whether the store is stale (never builds)
+```
+
+```text
+$ carta graph build
+Graph: 3 docs, 10 edges (3 re-extracted, 0 unchanged)
+```
+
+Then ask about paths, or about a git range (`carta impact` brings the store up to date first, so
+`graph build` is optional):
+
+```bash
+carta impact src/parser/checksum.py src/store/db.py   # these paths
+carta impact src/parser/                              # everything under a directory
+carta impact --diff                                   # <default-branch>...HEAD
+carta impact --diff main..HEAD --json                 # any range, machine-readable
+```
+
+```text
+$ carta impact --diff
+2 docs mention 4 changed paths (3 docs, 10 edges)
+Range: main...HEAD
+
+ 1. docs/design/parser.md  score 5.119789
+      src/parser/old_frame.py  exact, named by 1 doc
+        L3: The framing rules live in `src/parser/old_frame.py`; see `parse_frame()`.
+        L5: See [the frame source](../../src/parser/old_frame.py) for the state table.
+      src/parser/checksum.py  exact, named by 1 doc
+        L4: The checksum is `src/parser/checksum.py`, and the old path was `src/parser/legacy.py`.
+      src/parser/legacy.py  exact, named by 1 doc
+        L4: The checksum is `src/parser/checksum.py`, and the old path was `src/parser/legacy.py`.
+ 2. docs/overview.md  [already in this diff]  score 1.654053
+      src/parser/checksum.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+      src/parser/frame.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+      src/parser/legacy.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+      src/parser/old_frame.py  via src/parser/ (dir), named by 1 doc
+        L3: Everything under `src/parser/` and `src/store/` is covered by the parser design.
+
+Skipped: docs/overview.md (doc)
+```
+
+(The range here renames `old_frame.py` to `frame.py`, deletes `legacy.py` and edits
+`checksum.py` and `docs/overview.md`.)
+
+Each result carries the lines that made the edge, so you can go straight to the sentence that may
+now be wrong. **Rarer targets count for more**: a file named by 2 docs is more telling than one
+named by 60. For any one changed path, a doc that names the exact file scores above one that
+names its directory (a directory mention is worth half per level above the file). A directory or
+glob mention is counted once per target, growing only as `1 + ln(n)` with the `n` changed files
+it covers, so on a large change a doc naming the directory can still pass a doc naming one of
+the files. **Deleted and renamed paths are found too**: when a range deletes a path (or you ask
+about a path that is no longer on disk), the docs are read against the path set as it was
+before the deletion, so a doc that named the file by a partial path, a bare filename, a glob or
+a link still comes back. That is the case where the doc most needs an edit. With `--diff`,
+docs the range already edits are marked `[already in this diff]`, and docs changed in the range
+are left out of the query unless you pass `--include-docs`. Changed paths that no doc names are
+listed at the end (`No doc mentions: ...`). Other flags: `--top N`, `--min-score X`, `--kinds`,
+`--no-build` (reads the store as it is and never writes; `carta graph status` likewise, and both
+report a damaged store instead of replacing it). The same query is available to agents as the `carta_impact` MCP tool, which returns
+the `--json` object.
+
+**`carta scan` uses the same edges** to report a doc that names a path which no longer exists
+(`missing_path_mention`). It fires only when Carta can show the path was real: git history
+deleted or renamed it (the finding then names the new path), or it is a markdown link pointing
+into the repository. A path that never existed, a URL, a placeholder such as `path/to/file.py`,
+a path git ignores (a build output or local config that was tracked once), anything inside a
+fenced block, and anything in a changelog produce no finding.
+
+```yaml
+graph:
+  enabled: true
+  doc_globs: ["**/*.md"]        # which files are docs (the sources of edges)
+  identifiers:
+    enabled: true               # store backticked identifiers such as `parse_frame()`
+    min_length: 3
+    stoplist: []
+  patterns: []                  # project regexes: [{name, regex, where: all|prose|code}]
+  impact:
+    top: 10
+    min_score: 0.0
+    kinds: ["mention"]
+  scan:
+    missing_paths: true
+    ignore_docs: ["CHANGELOG*", "**/CHANGELOG*"]
+    history_limit: 5000         # commits of history searched for deletions and renames
+```
+
+This section is separate from `search.graph` above, which only controls `related:` expansion
+inside retrieval. The top-level `excluded_paths` decides which docs are read; an excluded doc is
+never a source of edges, but any path may still be named.
+
+What it does **not** do:
+
+- It does not parse source code. Edges come from doc text only.
+- It does not read paths written in plain prose. A path must be in backticks, a markdown link, a
+  fenced block or frontmatter. That is deliberate: "read/write" and "and/or" are not paths.
+- Backticked identifiers (`parse_frame()`, `MAX_RETRIES`) are stored but **not yet resolved** to
+  the files that define them, and they play no part in `carta impact` ranking today.
+- It does not follow renames. A doc that still names the old path is a `carta scan` finding,
+  because the text on the page is now wrong.
+- Its edges do not feed `carta search`.
+
+**Is it any good on your repository?** `carta graph replay` answers that from git history with no
+labelling: for every mainline commit that touched both code and docs, the code it touched is the
+query and the docs it edited are the answer. It reports recall@k, precision@k, MRR and any-hit
+rate against three baselines scored on the same commits (most-edited docs, basename grep, and
+basename grep with the same rarity weighting). Read the **population line first**: it says how
+many commits were scanned, how many were eligible and why the rest were skipped, and a result on
+too few commits is labelled inconclusive rather than a pass or a fail. The report also repeats
+every table without "hub" docs such as a changelog. **When there are hubs, judge by that second
+table**: a method that always answers "the changelog" scores well on the first one without
+reading anything, so the first table mostly measures who predicts the hubs, and the verdict line
+is printed under the second only.
+
+```bash
+carta graph replay                          # the whole mainline history of this repository
+carta graph replay --last 300 --json out.json
+carta graph replay --repo ../other-repo --exclude docs/archive/    # needs no Carta config there
+carta graph replay --no-config              # ignore .carta/config.yaml, use the built-in defaults
+```
+
+The repository being replayed is treated as untrusted: its config is never read through a
+symbolic link, and its `graph.patterns` (regular expressions) are ignored unless you pass
+`--trust-config`. The same holds for the graph arm as a whole: a doc that is a symbolic link, is
+not a regular file or is larger than 2 MiB is never read, the edge store refuses to open through
+a link, and file names are taken from git byte for byte.
+
+Trees and file contents come from git objects only (never the working tree or the edge store),
+so it can be pointed at any repository, and a doc is judged on what it said at the commit's
+*parent*, not on what the commit itself added. The one thing it takes from the working tree is
+its settings: `graph:` and `excluded_paths` from `.carta/config.yaml` when that file exists.
+Those decide which paths are docs and therefore which commits count, so the report states where
+its settings came from and lists the exclusions (`Settings:` line, `settings` in the JSON).
+
+On this repository's own history (`--range origin/main --no-config`, 403 commits scanned, 54
+eligible) the mention arm does **not** beat the baselines: MRR 0.191 against 0.731 for
+most-edited docs and 0.226 for basename grep. Without the three hub docs only 21 commits are
+left, which is too few to call (0.276 against 0.564 and 0.287). The docs edited alongside code
+here (README, changelog) do not name files, and the docs that do name files are dated plans
+nobody edits again. Numbers, populations and the reading of them are in
+[the spec](docs/superpowers/specs/2026-10-09-graph-arm-edge-store-design.md#results).
 
 ### Capturing notes (quirks, bug notes, helpful notes)
 

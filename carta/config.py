@@ -229,6 +229,37 @@ DEFAULTS = {
             "auto_promote": False,
         },
     },
+    # The graph arm (carta/graph/): deterministic doc->source edges and the
+    # `carta impact` reverse lookup. Unrelated to search.graph above, which only
+    # controls related: expansion inside retrieval. No model, Qdrant or Ollama
+    # is involved in anything configured here.
+    "graph": {
+        "enabled": True,
+        "doc_globs": ["**/*.md"],   # which files are docs (edge sources, and the eval's gold)
+        "identifiers": {
+            "enabled": True,
+            "min_length": 3,
+            "stoplist": [],         # extra tokens never stored as identifiers
+        },
+        "patterns": [],             # [{name, regex, where: all|prose|code}]
+        "impact": {
+            "top": 10,
+            "min_score": 0.0,
+            "kinds": ["mention"],
+            "weights": {"mention": 1.0, "symbol": 0.8, "cochange": 0.5},
+        },
+        "scan": {
+            "missing_paths": True,
+            "ignore_docs": ["CHANGELOG*", "**/CHANGELOG*"],
+            "history_limit": 5000,  # commits of history searched for deletions and renames
+        },
+        "replay": {
+            "hub_share": 0.2,       # a doc in gold for more than this share of eligible commits
+            "max_files": 100,       # commits touching more paths are skipped as bulk
+            "popularity_window": 200,
+            "min_population": 30,   # below this the replay report says "inconclusive"
+        },
+    },
     "modules": {
         "doc_audit": True,
         "doc_embed": True,
@@ -258,7 +289,7 @@ def load_config(path: Path) -> dict:
     for field in REQUIRED_FIELDS:
         if not isinstance(raw[field], str) or not raw[field].strip():
             raise ConfigError(f"Field '{field}' must be a non-empty string")
-    for key in ("embed", "modules", "search"):
+    for key in ("embed", "modules", "search", "graph"):
         if key in raw and not isinstance(raw[key], dict):
             raise ConfigError(f"Field '{key}' must be a mapping, got {type(raw[key]).__name__}")
     merged = _deep_merge(DEFAULTS, raw)

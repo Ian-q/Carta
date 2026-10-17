@@ -403,3 +403,12 @@ def test_detect_project_name_survives_hung_git(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bootstrap.subprocess, "run", hung_git)
     assert bootstrap._detect_project_name(tmp_path / "myproj") == "myproj"
+
+
+def test_update_gitignore_ignores_the_graph_edge_store(tmp_path):
+    """The edge store under .carta/graph/ is a derived cache, rebuilt by
+    `carta graph build`; it must never be committed."""
+    (tmp_path / ".gitignore").write_text("node_modules/\n")
+    from carta.install.bootstrap import _update_gitignore
+    _update_gitignore(tmp_path)
+    assert ".carta/graph/" in (tmp_path / ".gitignore").read_text().splitlines()

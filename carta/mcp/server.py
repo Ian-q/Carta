@@ -669,6 +669,63 @@ def carta_remember(
     return _remember(text, note_type=note_type, title=title, tags=tags, about=about)
 
 
+def _impact(paths: list[str] | None = None, diff: str | None = None, top_k: int = 10,
+            kinds: list[str] | None = None, include_docs: bool = False) -> dict:
+    """Plain-function core for carta_impact (kept undecorated for testability)."""
+    try:
+        cfg = _load_cfg()
+        repo_root = _repo_root_from_cfg()
+    except (ConfigError, FileNotFoundError) as e:
+        return {"error": "service_unavailable", "detail": str(e)}
+    try:
+        # Imported here: the graph arm is stdlib-only and must not add to the
+        # server's import cost, nor depend on Qdrant or Ollama being up.
+        from carta.graph import query as graph_query
+        return graph_query.run_impact(
+            repo_root, cfg, paths=list(paths or []), diff=diff, top=top_k,
+            kinds=list(kinds) if kinds else None, include_docs=include_docs, cwd=repo_root)
+    except (ValueError, ConfigError) as e:      # ImpactError is a ValueError
+        return {"error": "invalid_request", "detail": str(e)}
+    except Exception as e:
+        _logger.warning("carta_impact error: %s", e)
+        return {"error": "service_unavailable", "detail": str(e)}
+
+
+@mcp_server.tool()
+def carta_impact(
+    paths: list[str] | None = None,
+    diff: str | None = None,
+    top_k: int = 10,
+    kinds: list[str] | None = None,
+    include_docs: bool = False,
+) -> dict:
+    """Find the docs that describe the given source files, with the lines that name them.
+
+    Use before or after changing source files, to find the docs that mention them
+    and may now be out of date. This is a deterministic reverse lookup over the
+    paths docs name in backticks, links and code blocks: no embeddings, no model,
+    and it works when Qdrant and Ollama are down. Rarely named paths count for more.
+
+    Give exactly one of:
+        paths: repo-relative paths that changed; a trailing "/" asks about
+               everything under a directory.
+        diff:  a git range such as "main...HEAD"; "" means
+               "<default-branch>...HEAD". Docs changed in the range are left out
+               of the query (set include_docs to add them) and results the range
+               already edits are marked in_diff.
+
+    Returns:
+        {"schema", "query", "store", "matched_docs", "results", "unmatched_paths",
+        "skipped_paths"}. "matched_docs" counts the docs that matched before top_k cut them.
+        Each result has "rank", "doc", "score", "in_diff" and "matches"; each match
+        gives the queried "path", the "target" the doc names, how it matched
+        (exact | dir | glob | under), "df" (how many docs name that target) and
+        "evidence" [{"line", "text"}], the doc lines to re-read. "unmatched_paths"
+        are the changed paths no doc names. Or {"error", "detail"}.
+    """
+    return _impact(paths=paths, diff=diff, top_k=top_k, kinds=kinds, include_docs=include_docs)
+
+
 def main() -> None:
     """Entry point for carta-mcp command."""
     mcp_server.run()
