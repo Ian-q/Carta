@@ -1,4 +1,4 @@
-# Handoff primer — 2026-09-29
+# Handoff primer — 2026-10-17
 
 Current state and the next moves, for a session picking this up cold. Rewritten at each
 handoff; it is not a log. Durable *why* lives in [`ROADMAP.md`](ROADMAP.md), operating
@@ -8,22 +8,26 @@ lessons in [`field-notes.md`](field-notes.md), per-issue status on
 Private project names, paths and hosts are written as placeholders (`proj-a`, `~/work/…`,
 `qdrant.example.ts.net`, `192.0.2.10`); the real values are in the maintainer's auto-memory.
 
-**`main` = `8eb2b38`, pushed, suite 1479 passed / 4 skipped.** Working tree carries one
+**`main` = `7037d00` (0.18.0), pushed, suite 2530 passed / 3 skipped.** Working tree carries one
 intentional local edit (`.carta/config.yaml` — this machine's model/URL choices) plus two
 `.bak` files; leave them alone.
 
-## What just shipped
+## What just happened (2026-10-17)
 
-| PR | Change |
-|---|---|
-| #124 | `carta eval`: recall@1/@3, `reject:` hard negatives, per-tag breakdown, `--json` |
-| #125 | Recall judge sends `think: false` — it could never answer inside its 3s budget |
-| #126 | **HyDE**: optional `hypothetical` on MCP `carta_search`, `carta search --hypothetical`, `/doc-search` writes one |
-| #127 | **Cross-encoder gray-zone judge** (`judge_backend: auto`) + `carta/hook/eval/calibrate.py`; fastembed cache moved to `~/.carta/models/fastembed` |
-| #128 | **Calibrated gate**: `low_threshold` 0.65, `agree_rank` 1 |
-| `8eb2b38` | `carta doctor` checks `glm-ocr:latest` is pulled |
-
-Pushing the long-unpushed 0.17.0 commits auto-closed **#19, #120, #121, #122**.
+- **History rewrite.** A judge eval fixture (`carta/hook/eval/supersession_cases.yaml`) quoted a
+  private project's docs verbatim. It was purged from every commit with `git filter-repo`, names,
+  paths and hosts were replaced throughout (commit messages too), and all 56 tags were
+  rewritten. The fixture now holds fictional cases of the same shape. **Every SHA changed:**
+  never push a branch or clone made before this; re-fetch and rebuild work on the new `main`.
+  Local pre-rewrite branches were renamed `pre-rewrite/*`; a backup of the old history lives
+  outside the repo (see auto-memory). GitHub may still serve old commits by SHA until a
+  support purge.
+- **Tidy-up (#135):** MIT `LICENSE`, PyPI metadata (description, licence, URLs), untracked
+  scratch, `BUGS.md` removed, images moved to `docs/assets/`, issue template, merged remote
+  branches deleted and auto-delete-on-merge turned on.
+- **0.18.0 released:** the graph arm (#129–#131), HyDE (#126), cross-encoder judge (#127),
+  calibrated gate (#128), the judge-thinking fix (#125), eval metrics (#124). PyPI, GitHub
+  Release, version-bump commit and the local pipx install are all at 0.18.0.
 
 ## Decisions already settled — do not re-derive these
 
@@ -47,29 +51,20 @@ Pushing the long-unpushed 0.17.0 commits auto-closed **#19, #120, #121, #122**.
   unexplained latency. The stale-scan judge deliberately *keeps* thinking (precision, and
   it runs pre-push); a test pins that.
 
-## Next up: cut a release (nothing is published yet)
-
-`carta/__init__.py`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` all
-say **0.17.0**, but **no `v0.17.0` tag exists anywhere** — so 0.17.0 was prepared and never
-released, and everything above sits unreleased on top of it. **PyPI's latest is 0.16.1**, which
-is also what `pipx` has installed here.
+## Release mechanics
 
 `release.yml` fires only on a `v*` tag and then: parses the version from the tag → rewrites
-those three version files → commits and pushes the bump → builds → publishes to PyPI →
-creates a GitHub Release with generated notes. **It does not touch `CHANGELOG.md`.**
+`carta/__init__.py`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` →
+commits and pushes the bump to `main` → builds → publishes to PyPI → creates a GitHub Release
+with generated notes. **It does not touch `CHANGELOG.md`.** So:
 
-So the clean path is **0.18.0**, not a late `v0.17.0` (tagging that would relabel five PRs
-of work as 0.17.0):
-
-1. Move the `## [Unreleased]` entries (Changed / Added / Fixed — currently the five PRs
-   above) under `## [0.18.0] — <date>`, leaving `[Unreleased]` empty. Give it a lead line
-   in the style of the 0.17.0 section.
-2. Commit the CHANGELOG on `main`.
-3. `git tag v0.18.0 && git push origin v0.18.0`, then watch the Release workflow.
-4. Verify all four endpoints afterwards: PyPI, GitHub Release, the version-bump commit the
-   workflow pushes to `main`, and `pipx upgrade carta-cc`. Past releases logged a benign
-   git exit-128 annotation in that workflow — check the endpoints, not just the badge.
-5. Then re-pull: the workflow pushes a commit, so local `main` will be behind.
+1. Move the `## [Unreleased]` entries under `## [X.Y.0] — <date>` with a lead line, commit on `main`.
+2. `git tag vX.Y.0 && git push origin vX.Y.0`, then watch the Release workflow.
+3. Verify the endpoints, not the badge: `https://pypi.org/pypi/carta-cc/X.Y.0/json` (the bare
+   `/pypi/carta-cc/json` lags for minutes — see `docs/quirks/`), the GitHub Release, the bump
+   commit on `main`. Locally, `pipx upgrade` sees the lag too: `pipx runpip carta-cc install
+   --no-deps carta-cc==X.Y.0` installs past it without touching torch/fastembed.
+4. Re-pull: the workflow pushed a commit, so local `main` is behind.
 
 ## Open threads
 
