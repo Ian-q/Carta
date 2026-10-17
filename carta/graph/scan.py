@@ -126,7 +126,7 @@ def missing_path_findings(repo_root: Path, cfg: dict) -> List[dict]:
     settings = graph_settings(cfg)
     if not settings.enabled or not settings.scan_missing_paths:
         return []
-    build_graph(repo_root, cfg)
+    build_graph(repo_root, cfg, cochange=False)    # the finding reads mention edges only
     store = EdgeStore.open_existing(store_path(repo_root))
     if store is None:
         return []

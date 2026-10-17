@@ -15,7 +15,8 @@ from typing import Any, Mapping
 
 from carta.config import DEFAULTS, ConfigError
 from carta.graph.limits import (
-    MAX_CONFIG_GLOBS, MAX_GLOB_LENGTH, MAX_PATTERN_REGEX_LENGTH, MAX_PATTERNS,
+    MAX_COCHANGE_COMMIT_FILES, MAX_CONFIG_GLOBS, MAX_GLOB_LENGTH, MAX_PATTERN_REGEX_LENGTH,
+    MAX_PATTERNS,
 )
 from carta.graph.model import MENTION_EXTRACTOR_VERSION
 from carta.graph.paths import glob_problem
@@ -42,6 +43,35 @@ class PatternSpec:
     compiled: "re.Pattern[str]"
 
 
+COCHANGE_MEASURES = ("confidence", "lift")
+
+
+@dataclass(frozen=True)
+class CochangeSettings:
+    """``graph.cochange``: how git history is mined for files that change together."""
+
+    enabled: bool = True
+    max_files: int = 30
+    min_support: int = 1
+    min_score: float = 0.1
+    measure: str = "confidence"
+    half_life: int = 100
+    pending_window: int = 1000
+    follow_renames: bool = True
+
+    def fingerprint(self, graph: "GraphSettings", version: int) -> str:
+        """sha256 over everything that changes which co-change edges are stored."""
+        payload = {
+            "cochange": [self.max_files, self.min_support, self.min_score, self.measure,
+                         self.half_life, self.pending_window, self.follow_renames],
+            "doc_globs": list(graph.doc_globs),
+            "excluded_paths": list(graph.excluded_paths),
+            "extractor_version": version,
+        }
+        text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class GraphSettings:
     enabled: bool
@@ -62,6 +92,8 @@ class GraphSettings:
     replay_max_files: int
     replay_popularity_window: int
     replay_min_population: int
+    cochange: CochangeSettings = CochangeSettings()
+    impact_combine: str = "norm"
 
     def fingerprint(self) -> str:
         """sha256 over exactly the inputs that change what the extractor emits."""
@@ -183,6 +215,48 @@ def _patterns(value: Any) -> tuple:
     return tuple(out)
 
 
+def _bounded_int(value: Any, where: str, low: int, high: int) -> int:
+    number = _number(value, where, int)
+    if not low <= number <= high:
+        raise GraphConfigError(f"{where} must be between {low} and {high}, got {number}")
+    return number
+
+
+IMPACT_COMBINE = ("max", "sum", "norm", "rrf")
+
+
+def _combine(value: Any) -> str:
+    if value not in IMPACT_COMBINE:
+        raise GraphConfigError(
+            f"graph.impact.combine must be one of {', '.join(IMPACT_COMBINE)}, got {value!r}")
+    return value
+
+
+def _cochange(value: Any) -> CochangeSettings:
+    c = _mapping(value, "graph.cochange")
+    measure = c["measure"]
+    if measure not in COCHANGE_MEASURES:
+        raise GraphConfigError(
+            f"graph.cochange.measure must be one of {', '.join(COCHANGE_MEASURES)}, "
+            f"got {measure!r}")
+    min_score = _number(c["min_score"], "graph.cochange.min_score", float)
+    if min_score < 0.0:
+        raise GraphConfigError(f"graph.cochange.min_score must not be negative, got {min_score}")
+    return CochangeSettings(
+        enabled=_flag(c["enabled"], "graph.cochange.enabled"),
+        # Pairs are quadratic in the files of one commit, so the cap is a hard bound.
+        max_files=_bounded_int(c["max_files"], "graph.cochange.max_files", 2,
+                               MAX_COCHANGE_COMMIT_FILES),
+        min_support=_bounded_int(c["min_support"], "graph.cochange.min_support", 1, 1_000_000),
+        min_score=min_score,
+        measure=measure,
+        half_life=_bounded_int(c["half_life"], "graph.cochange.half_life", 0, 10_000_000),
+        pending_window=_bounded_int(c["pending_window"], "graph.cochange.pending_window",
+                                    0, 10_000_000),
+        follow_renames=_flag(c["follow_renames"], "graph.cochange.follow_renames"),
+    )
+
+
 def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
     """Build ``GraphSettings`` from a Carta config dict (any dict; keys are optional)."""
     user = cfg.get("graph") or {}
@@ -228,6 +302,8 @@ def graph_settings(cfg: Mapping[str, Any]) -> GraphSettings:
         replay_min_population=_within(
             replay["min_population"], "graph.replay.min_population", int,
             0, MAX_REPLAY_WINDOW),
+        cochange=_cochange(g["cochange"]),
+        impact_combine=_combine(impact["combine"]),
     )
 
 

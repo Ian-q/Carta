@@ -8,6 +8,7 @@ object both surfaces print.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import posixpath
@@ -16,7 +17,9 @@ from pathlib import Path
 from typing import Collection, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from carta.graph.build import build_graph, decode_text, list_repo_paths, read_doc
-from carta.graph.gitio import GitError, default_branch, diff_name_status
+from carta.graph.gitio import (
+    GitError, default_branch, diff_name_status, rev_list_first_parent,
+)
 from carta.graph.mentions import extract_mentions
 from carta.graph.model import KINDS, MENTION_EXTRACTOR, Edge, printable
 from carta.graph.paths import PathIndex, glob_matcher, in_path_set, is_doc_path
@@ -27,9 +30,19 @@ from carta.graph.store import (
 )
 
 IMPACT_SCHEMA = 1
-DEFAULT_KIND_WEIGHTS: Dict[str, float] = {"mention": 1.0, "symbol": 0.8, "cochange": 0.5}
+DEFAULT_KIND_WEIGHTS: Dict[str, float] = {"mention": 1.0, "symbol": 0.8, "cochange": 1.0}
 GLOB_SPEC = 0.5
 EVIDENCE_LINES_SHOWN = 3
+# How the rankings of several edge kinds become one. ``max``: one ranking in
+# which a doc is worth its best kind per queried path. The others rank each
+# kind on its own and fuse: ``sum`` adds the scores, ``norm`` adds each score
+# as a share of its kind's best, ``rrf`` adds ``(RRF_K + 1) / (RRF_K + rank)``
+# (reciprocal rank fusion, scaled so that first place in one kind is worth
+# that kind's weight). A kind that returns nothing takes no part.
+COMBINE_MODES = ("max", "sum", "norm", "rrf")
+RRF_K = 60
+# Edge kinds that record history, not something a doc says.
+HISTORY_KINDS = frozenset(("cochange",))
 
 # Target types a queried path can match. ``token`` and ``pattern`` targets are
 # not paths and never take part in an impact query.
@@ -173,7 +186,7 @@ def rank_impact(index: ImpactIndex, paths: Sequence[str], *,
                 kinds: Sequence[str] = ("mention",),
                 weights: Mapping[str, float] = DEFAULT_KIND_WEIGHTS,
                 top: Optional[int] = 10, min_score: float = 0.0,
-                exclude_docs: Collection[str] = ()) -> List[dict]:
+                exclude_docs: Collection[str] = (), combine: str = "max") -> List[dict]:
     """Rank the docs that name the queried paths. Pure: no I/O, no clock.
 
     For a doc ``d``, a queried path ``q`` and a matching target ``t``::
@@ -197,8 +210,18 @@ def rank_impact(index: ImpactIndex, paths: Sequence[str], *,
     glob target's contribution is reported split evenly over the paths it
     covers, so a result's match contributions sum to its score. ``top=None``
     returns everything.
+
+    ``combine`` only matters when more than one kind is read: see
+    ``COMBINE_MODES``. Under ``norm`` and ``rrf`` the score is a fused value
+    and no longer the sum of the match contributions, which stay in each
+    kind's own units; ``by_kind`` on every result gives the doc's rank and
+    score within each kind that found it.
     """
     kinds = sorted(set(kinds))
+    if combine not in COMBINE_MODES:
+        raise ValueError(f"unknown combine mode {combine!r}")
+    if combine != "max" and len(kinds) > 1:
+        return _rank_fused(index, paths, kinds, weights, top, min_score, exclude_docs, combine)
     queried = sorted(set(p for p in paths if p))
     excluded = set(exclude_docs)
     # doc -> path -> [(value, kind, target, match, mention)]
@@ -258,7 +281,52 @@ def rank_impact(index: ImpactIndex, paths: Sequence[str], *,
                              for line in sorted(mention.lines)],
             })
         matches.sort(key=lambda x: (-x["contribution"], x["path"], x["target"], x["kind"]))
-        results.append({"rank": rank, "doc": doc, "score": score, "matches": matches})
+        by_kind = ({kinds[0]: {"rank": rank, "score": score}} if len(kinds) == 1 else {})
+        results.append({"rank": rank, "doc": doc, "score": score, "matches": matches,
+                        "by_kind": by_kind})
+    return results
+
+
+def _rank_fused(index: ImpactIndex, paths: Sequence[str], kinds: Sequence[str],
+                weights: Mapping[str, float], top: Optional[int], min_score: float,
+                exclude_docs: Collection[str], combine: str) -> List[dict]:
+    """Rank each kind on its own, then fuse the rankings (see ``COMBINE_MODES``)."""
+    fused: Dict[str, float] = {}
+    found: Dict[str, Dict[str, dict]] = {}
+    rankings = {kind: rank_impact(index, paths, kinds=(kind,), weights=weights, top=None,
+                                  exclude_docs=exclude_docs) for kind in kinds}
+    answered = [kind for kind in kinds if rankings[kind]]
+    if len(answered) <= 1:
+        # Fusing with an empty ranking is the identity: the one kind that
+        # answered keeps its own scores.
+        return rank_impact(index, paths, kinds=answered or kinds[:1], weights=weights,
+                           top=top, min_score=min_score, exclude_docs=exclude_docs)
+    for kind in kinds:
+        ranked = rankings[kind]
+        best = ranked[0]["score"] if ranked else 0.0
+        w_kind = float(weights.get(kind, 1.0))
+        for item in ranked:
+            if combine == "sum":
+                part = item["score"]
+            elif combine == "norm":
+                part = w_kind * item["score"] / best
+            else:
+                part = w_kind * (RRF_K + 1) / (RRF_K + item["rank"])
+            fused[item["doc"]] = fused.get(item["doc"], 0.0) + part
+            found.setdefault(item["doc"], {})[kind] = item
+    scored = sorted(((score, doc) for doc, score in fused.items()
+                     if score > 0.0 and score >= min_score),
+                    key=lambda item: (-item[0], item[1]))
+    if top is not None:
+        scored = scored[:max(0, int(top))]
+    results = []
+    for rank, (score, doc) in enumerate(scored, 1):
+        matches = [m for kind in kinds if kind in found[doc] for m in found[doc][kind]["matches"]]
+        matches.sort(key=lambda x: (x["kind"], -x["contribution"], x["path"], x["target"]))
+        results.append({
+            "rank": rank, "doc": doc, "score": score, "matches": matches,
+            "by_kind": {kind: {"rank": item["rank"], "score": item["score"]}
+                        for kind, item in sorted(found[doc].items())}})
     return results
 
 
@@ -345,6 +413,38 @@ def _diff_paths(repo_root: Path, diff: str) -> Tuple[str, Dict[str, str]]:
             f"(try `git diff --name-status` with it)") from exc
 
 
+def _range_commits(repo_root: Path, range_spec: Optional[str]) -> frozenset:
+    """The mainline commits a diff range covers; empty for a path query."""
+    if not range_spec:
+        return frozenset()
+    try:
+        return frozenset(rev_list_first_parent(repo_root, range_spec))
+    except GitError:
+        return frozenset()
+
+
+def _history_edges(edges: Iterable[Edge], own_commits: frozenset) -> List[Edge]:
+    """History rows, minus those that rest on the change being asked about.
+
+    The store is mined up to ``HEAD``, so for ``--diff`` it already holds the
+    commits of the range itself. A pair whose **first** shared commit lies in
+    the range has no evidence older than the question: it says only that the
+    change touched both files, which the caller knows. Such a row is left
+    out. A pair with older evidence stays, its count including the range.
+    """
+    if not own_commits:
+        return list(edges)
+    kept = []
+    for edge in edges:
+        try:
+            first = json.loads(edge.meta).get("first")
+        except (ValueError, AttributeError, RecursionError):
+            first = None
+        if not isinstance(first, str) or first not in own_commits:
+            kept.append(edge)
+    return kept
+
+
 def _edges_before(repo_root: Path, settings: GraphSettings, gone: Sequence[str],
                   came: Sequence[str]) -> List[Edge]:
     """Mention edges as they were before ``gone`` went away, extracted in memory.
@@ -429,7 +529,8 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
 
     try:
         if build:
-            build_graph(repo_root, cfg)
+            # History is only read when a history kind is asked for.
+            build_graph(repo_root, cfg, cochange=any(k in HISTORY_KINDS for k in use_kinds))
         store = EdgeStore.open_readonly(store_path(repo_root))
     # The store's own messages name it by absolute path; this result also goes
     # to an MCP client, which is told where it is in the repository and no more.
@@ -449,7 +550,13 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
     if store is None:
         raise ImpactError("no edge store yet; run `carta graph build` (or drop --no-build)")
     with store:
-        edges = list(store.iter_edges(kinds=use_kinds))
+        # A history row is only ever read from a changed file to a doc.
+        edges = list(store.iter_edges(kinds=[k for k in use_kinds if k not in HISTORY_KINDS]))
+        history = [k for k in use_kinds if k in HISTORY_KINDS]
+        if history:
+            edges.extend(_history_edges(
+                store.iter_edges(kinds=history, dst_types=("doc",)),
+                _range_commits(repo_root, range_spec)))
         n_docs = len(store.source_hashes(MENTION_EXTRACTOR))
         total_edges = store.counts()["edges"]
         digest = store.edges_digest((MENTION_EXTRACTOR,))
@@ -458,7 +565,7 @@ def run_impact(repo_root: Path, cfg: dict, *, paths: Sequence[str] = (),
         edges.extend(_edges_before(repo_root, settings, gone, came))
     index = ImpactIndex(edges, n_docs)
     matched = rank_impact(index, query, kinds=use_kinds, weights=dict(settings.impact_weights),
-                          top=None)
+                          top=None, combine=settings.impact_combine)
     ranked = [item for item in matched if item["score"] >= use_min][:use_top]
     results = []
     for item in ranked:
@@ -493,8 +600,14 @@ def _match_reason(match: dict) -> str:
     if kind == "under":
         return f"names {printable(match['target'])} under it, {named}"
     if kind == "cochange":
-        return f"changes with it ({_count(match['df'], 'doc')})"
+        said = match["evidence"][0]["text"] if match["evidence"] else "changed together"
+        return f"{printable(said)} (git history; the doc need not name it)"
     return f"via {printable(match['target'])} ({kind}), {named}"
+
+
+def _relation(match: dict) -> str:
+    """Which of the two things an edge can mean: the doc says so, or history does."""
+    return "history" if match["kind"] in HISTORY_KINDS else "named"
 
 
 def format_impact(result: dict) -> str:
@@ -509,14 +622,19 @@ def format_impact(result: dict) -> str:
     lines: List[str] = []
     matched = result.get("matched_docs", len(results))
     n_paths = _count(len(query["paths"]), noun)
+    # With a history kind in the query a result need not name anything, so the
+    # wording changes and every reason is labelled with which of the two it is.
+    labelled = any(match["kind"] in HISTORY_KINDS
+                   for item in results for match in item["matches"])
+    one, many = (("is tied to", "are tied to") if labelled else ("mentions", "mention"))
     if results and matched > len(results):
-        lines.append(f"Top {len(results)} of {_count(matched, 'doc')} that mention "
+        lines.append(f"Top {len(results)} of {_count(matched, 'doc')} that {many} "
                      f"{n_paths} {corpus}")
     elif results:
-        verb = "mentions" if len(results) == 1 else "mention"
+        verb = one if len(results) == 1 else many
         lines.append(f"{_count(len(results), 'doc')} {verb} {n_paths} {corpus}")
     elif matched:
-        verb = "mentions" if matched == 1 else "mention"
+        verb = one if matched == 1 else many
         lines.append(f"{_count(matched, 'doc')} {verb} the "
                      f"{_count(len(query['paths']), 'queried ' + noun)}, but none scores at "
                      f"least {query['min_score']:g} (--min-score) {corpus}")
@@ -525,6 +643,9 @@ def format_impact(result: dict) -> str:
                      f"{corpus}")
     if query["diff"]:
         lines.append(f"Range: {printable(query['diff'])}")
+    if labelled:
+        lines.append("  named: the doc names the path.   history: they changed in the same "
+                     "commits; that is correlation, not a claim that the doc describes it.")
     if results:
         lines.append("")
     for item in results:
@@ -532,7 +653,10 @@ def format_impact(result: dict) -> str:
         lines.append(f"{item['rank']:>2}. {printable(item['doc'])}{flag}  "
                      f"score {item['score']:.6f}")
         for match in item["matches"]:
-            lines.append(f"      {printable(match['path'])}  {_match_reason(match)}")
+            label = f"[{_relation(match)}] " if labelled else ""
+            lines.append(f"      {printable(match['path'])}  {label}{_match_reason(match)}")
+            if match["match"] == "cochange":
+                continue                    # its one evidence line is the reason above
             evidence = match["evidence"]
             for ev in evidence[:EVIDENCE_LINES_SHOWN]:
                 where = f"L{ev['line']}: " if ev["line"] else ""
@@ -542,7 +666,8 @@ def format_impact(result: dict) -> str:
                 lines.append(f"        ... {_count(more, 'more line')}")
     tail: List[str] = []
     if result["unmatched_paths"]:
-        tail.append("No doc mentions: " + ", ".join(
+        nothing = "No doc names or has changed with" if labelled else "No doc mentions"
+        tail.append(f"{nothing}: " + ", ".join(
             printable(path) for path in result["unmatched_paths"]))
     if result["skipped_paths"]:
         tail.append("Skipped: " + ", ".join(

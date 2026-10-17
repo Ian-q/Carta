@@ -722,6 +722,13 @@ def carta_impact(
         (exact | dir | glob | under), "df" (how many docs name that target) and
         "evidence" [{"line", "text"}], the doc lines to re-read. "unmatched_paths"
         are the changed paths no doc names. Or {"error", "detail"}.
+
+        A match's "kind" says which of two things it means. "mention": the doc
+        names the path (re-read the evidence lines). "cochange" (match
+        "cochange"): the doc and the path changed in the same commits, and the
+        evidence text is the count ("changed together in 9 of 14 commits"); that
+        is git history, a correlation, and the doc may not name the path at all.
+        Pass kinds=["mention"] or kinds=["cochange"] to read one of them alone.
     """
     return _impact(paths=paths, diff=diff, top_k=top_k, kinds=kinds, include_docs=include_docs)
 

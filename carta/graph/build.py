@@ -108,10 +108,32 @@ def read_doc(repo_root: Path, rel: str) -> Tuple[Optional[bytes], str]:
 def _disabled_report() -> dict:
     return {"enabled": False, "docs": 0, "extracted": 0, "unchanged": 0, "written": 0,
             "removed": 0, "skipped": 0, "unreadable": 0, "edges": 0, "full": False,
-            "digest": "", "by_kind": {}}
+            "digest": "", "by_kind": {}, "cochange": {"enabled": False, "status": "disabled"}}
 
 
-def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
+def _cochange_pass(repo_root: Path, settings: GraphSettings, force: bool,
+                   run: bool) -> dict:
+    """The history pass of a build, as a report. It never fails the build.
+
+    A git failure, whether in listing the history or in reading a commit,
+    leaves the stored co-change rows and their cursor exactly as they were
+    (the pass is one transaction), so the store goes on reporting that it is
+    stale; the report says ``failed`` and why. Only a directory in no
+    repository and a branch with no commit are an empty history.
+    """
+    from carta.graph.cochange import build_cochange
+    if not run:
+        return {"enabled": settings.cochange.enabled, "status": "skipped"}
+    try:
+        return build_cochange(repo_root, settings, force=force)
+    except GitError as exc:
+        # git's own words, which may quote a file name: made safe to print.
+        detail = "".join(ch if ch.isprintable() else "?" for ch in str(exc))[:300]
+        return {"enabled": True, "status": "failed", "detail": detail}
+
+
+def build_graph(repo_root: Path, cfg: dict, *, force: bool = False,
+                cochange: bool = True) -> dict:
     """Bring the edge store at ``repo_root`` up to date with the working tree.
 
     Returns a report: ``docs`` (sources found), ``extracted`` (re-extracted
@@ -126,6 +148,12 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
     evidence that it stopped naming anything. The store records that it
     happened, and ``graph_status`` reports the store stale until a build
     reads every doc.
+
+    ``cochange`` (in the report under the same name) is the history pass:
+    co-change edges are brought up to date after the mention edges, unless
+    ``graph.cochange.enabled`` is false (its rows are then removed) or the
+    caller passes ``cochange=False`` (the pass is skipped and what is stored
+    is left alone).
     """
     repo_root = Path(repo_root)
     settings = graph_settings(cfg)
@@ -180,11 +208,15 @@ def build_graph(repo_root: Path, cfg: dict, *, force: bool = False) -> dict:
         counts = store.counts()
         digest = store.edges_digest((MENTION_EXTRACTOR,))
 
+    history = _cochange_pass(repo_root, settings, force, cochange)
+    if history.get("status") in ("ok", "no_history", "disabled"):
+        with EdgeStore(store_path(repo_root)) as store:
+            counts = store.counts()
     return {"enabled": True, "docs": len(present) - unreadable, "extracted": extracted,
             "unchanged": unchanged, "written": written, "removed": len(gone),
             "skipped": skipped, "unreadable": unreadable, "edges": counts["edges"],
             "full": bool(full),
-            "digest": digest, "by_kind": counts["by_kind"]}
+            "digest": digest, "by_kind": counts["by_kind"], "cochange": history}
 
 
 def graph_status(repo_root: Path, cfg: dict) -> dict:
@@ -194,7 +226,11 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
     lists why, from ``no_store``, ``newer_schema``, ``extractor_changed``,
     ``settings_changed``, ``paths_changed``, ``docs_changed``,
     ``docs_unreadable`` (a doc could not be read, now or at the last build, so
-    its rows may be out of date), ``unreadable`` (the file is damaged or is
+    its rows may be out of date), ``cochange_behind``,
+    ``cochange_settings_changed``, ``cochange_disabled`` and
+    ``cochange_git_failed`` (the history pass has commits to read, was mined
+    with other settings, holds rows the config no longer wants, or git could
+    not read the history, so nothing can vouch for the rows), ``unreadable`` (the file is damaged or is
     not a store; it is left exactly as found, and the next build replaces it)
     and ``unsafe_store`` (the store or its directory is a symbolic link, which
     is never followed, or the file is larger than ``MAX_STORE_BYTES``).
@@ -203,7 +239,10 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
     settings = graph_settings(cfg)
     status = {"enabled": settings.enabled, "exists": False, "schema_version": None,
               "extractor_version": None, "docs": 0, "edges": 0, "by_kind": {},
-              "by_dst_type": {}, "digest": "", "stale": True, "stale_reasons": ["no_store"]}
+              "by_dst_type": {}, "digest": "", "stale": True, "stale_reasons": ["no_store"],
+              "cochange": {"enabled": bool(settings.enabled and settings.cochange.enabled),
+                           "commits": 0, "head": "", "stale": False, "reason": "",
+                           "capped": 0}}
     try:
         store = EdgeStore.open_readonly(store_path(repo_root))
     except StoreVersionError:
@@ -240,8 +279,13 @@ def graph_status(repo_root: Path, cfg: dict) -> dict:
             reasons.append("docs_changed")
         if failed or (store.get_meta(META_UNREADABLE) or "0") != "0":
             reasons.append("docs_unreadable")
+        from carta.graph.cochange import cochange_status
+        history = cochange_status(repo_root, settings, store)
+        if history["stale"]:
+            reasons.append(history["reason"])
         counts = store.counts()
         status.update(
+            cochange=history,
             exists=True, schema_version=store.schema_version,
             extractor_version=int(stored_version) if (stored_version or "").isdigit() else None,
             docs=len(known), edges=counts["edges"], by_kind=counts["by_kind"],

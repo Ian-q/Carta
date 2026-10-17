@@ -245,8 +245,9 @@ DEFAULTS = {
         "impact": {
             "top": 10,
             "min_score": 0.0,
-            "kinds": ["mention"],
-            "weights": {"mention": 1.0, "symbol": 0.8, "cochange": 0.5},
+            "kinds": ["mention", "cochange"],   # what docs name, and what git history shows
+            "weights": {"mention": 1.0, "symbol": 0.8, "cochange": 1.0},
+            "combine": "norm",      # how several kinds become one ranking: norm|rrf|sum|max
         },
         "scan": {
             "missing_paths": True,
@@ -258,6 +259,18 @@ DEFAULTS = {
             "max_files": 100,       # commits touching more paths are skipped as bulk
             "popularity_window": 200,
             "min_population": 30,   # below this the replay report says "inconclusive"
+        },
+        # Co-change edges mined from first-parent git history (kind `cochange`).
+        "cochange": {
+            "enabled": True,
+            "max_files": 30,        # a commit touching more paths is a bulk change: no pairs
+            "min_support": 1,       # a pair is an edge once it has shared this many commits
+            "min_score": 0.1,       # and its score (see measure) is at least this
+            "measure": "confidence",    # confidence | lift
+            "half_life": 100,       # commits after which a co-change counts half; 0 = no decay
+            "pending_window": 1000,  # a pair below min_support is forgotten after this many
+                                     # commits without recurring; 0 = never
+            "follow_renames": True,  # a pure move (same content) keeps its history
         },
     },
     "modules": {

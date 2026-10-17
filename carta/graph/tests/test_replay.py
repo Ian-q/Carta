@@ -408,8 +408,8 @@ def test_report_has_no_timestamps_or_absolute_paths(history, tmp_path):
 
 def test_arms_unknown_kind_is_a_clear_error(history):
     repo, _c = history
-    with pytest.raises(ReplayError, match="cochange"):
-        run_replay(repo.root, arms={"x": ["cochange"]}, **OPTS)
+    with pytest.raises(ReplayError, match="related"):
+        run_replay(repo.root, arms={"x": ["related"]}, **OPTS)
     with pytest.raises(ReplayError):
         run_replay(repo.root, arms={"empty": []}, **OPTS)
     with pytest.raises(ReplayError):
@@ -587,7 +587,8 @@ def test_json_shape_is_the_spec(history):
     assert set(report["no_hub"]) == {"hub_docs", "population", "methods", "paired", "judgement"}
     assert set(report["settings"]) == {
         "arms", "ks", "hub_share", "max_files", "popularity_window", "min_population",
-        "resamples", "doc_globs", "excluded_paths", "config", "fingerprint", "weights"}
+        "resamples", "doc_globs", "excluded_paths", "config", "fingerprint", "weights",
+        "combine", "cochange"}
     assert "per_commit" not in report
     with_rows = run_replay(repo.root, per_commit=True, **OPTS)
     assert set(with_rows["per_commit"][0]) == {
@@ -653,8 +654,8 @@ def test_main_errors_are_messages_not_tracebacks(history, tmp_path, capsys):
     repo, _c = history
     assert main(["--repo", str(tmp_path / "nowhere"), "--no-cache"]) == 1
     assert "Error:" in capsys.readouterr().err
-    assert main(["--repo", str(repo.root), "--no-cache", "--arm", "x=cochange"]) == 1
-    assert "cochange" in capsys.readouterr().err
+    assert main(["--repo", str(repo.root), "--no-cache", "--arm", "x=related"]) == 1
+    assert "related" in capsys.readouterr().err
     assert main(["--repo", str(repo.root), "--no-cache", "--arm", "nonsense"]) == 1
     assert main(["--repo", str(repo.root), "--no-cache", "--k", "0,three"]) == 1
     assert main(["--repo", str(repo.root), "--no-cache", "--last", "2", "--range", "a..b"]) == 1

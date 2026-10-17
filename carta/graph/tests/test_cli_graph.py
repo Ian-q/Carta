@@ -92,7 +92,8 @@ def test_graph_status_before_and_after_build(project, monkeypatch, capsys):
     code, out, _ = run(monkeypatch, capsys, "graph", "status", "--json")
     status = json.loads(out)
     assert set(status) == {"enabled", "exists", "schema_version", "extractor_version", "docs",
-                           "edges", "by_kind", "by_dst_type", "digest", "stale", "stale_reasons"}
+                           "edges", "by_kind", "by_dst_type", "digest", "stale", "stale_reasons",
+                           "cochange"}
     assert status["exists"] and not status["stale"] and status["docs"] == 3
     code, out, _ = run(monkeypatch, capsys, "graph", "status")
     assert out.splitlines()[0] == "Graph: 3 docs, 4 edges, up to date"
@@ -187,7 +188,8 @@ def test_impact_diff(git_repo, monkeypatch, capsys):
 
     code, out, _ = run(monkeypatch, capsys, "impact", "--diff", "main..HEAD")
     assert code == 0
-    assert out.splitlines()[:2] == ["2 docs mention 1 changed path (3 docs, 4 edges)",
+    # six edges: the four mentions, and the pair the two commits gave history
+    assert out.splitlines()[:2] == ["2 docs mention 1 changed path (3 docs, 6 edges)",
                                     "Range: main..HEAD"]
     assert " 2. docs/overview.md  [already in this diff]  score" in out
 
