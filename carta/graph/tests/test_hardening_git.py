@@ -145,6 +145,36 @@ def test_raw_log_parser_reads_a_well_formed_stream():
     assert gitio._parse_raw_log(b"", [OID_A]) == {}
 
 
+def test_streamed_tokens_are_the_same_tokens_whatever_the_chunking(monkeypatch):
+    import io
+    data = b"".join(bytes([65 + i % 26]) * (i % 7) + b"\0" for i in range(200))
+    for chunk in (1, 2, 3, 64, 1 << 16):
+        monkeypatch.setattr(gitio, "_READ_CHUNK", chunk)
+        assert list(gitio._stream_tokens(io.BytesIO(data))) == gitio._records(data)
+        with pytest.raises(GitError):       # the last token has no terminator
+            list(gitio._stream_tokens(io.BytesIO(data + b"tail")))
+    assert list(gitio._stream_tokens(io.BytesIO(b""))) == []
+
+
+def test_history_readers_tell_no_commit_yet_from_a_branch_that_cannot_be_read(git_repo, tmp_path):
+    assert gitio.is_unborn(git_repo.root) is True
+    assert gitio.work_tree_root(tmp_path / "missing") is None
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert gitio.work_tree_root(plain) is None
+    git_repo.write("a.py", "a\n")
+    git_repo.commit("first", 0)
+    assert gitio.is_unborn(git_repo.root) is False
+    assert os.path.samefile(gitio.work_tree_root(git_repo.root), git_repo.root)
+    git_repo.git("checkout", "-q", "--detach")
+    assert gitio.is_unborn(git_repo.root) is False       # detached: HEAD names no branch
+    git_repo.git("checkout", "-q", "--orphan", "fresh")
+    assert gitio.is_unborn(git_repo.root) is True
+    (plain / ".git").write_text("gitdir: /nonexistent/elsewhere\n")
+    with pytest.raises(GitError):           # something that looks like a repository and is not
+        gitio.work_tree_root(plain)
+
+
 @pytest.mark.parametrize("out", [
     b"D\0", b"D\0a\0b\0", b"R100\0a\0", b"R\0a\0b\0", b"R1000\0a\0b\0", b"M\0a\0", b"D\n\0a\0",
     b"\nD\0a\0", b"D\0\0", b"D\0a", b"A\0a\0",

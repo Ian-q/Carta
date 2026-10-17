@@ -28,6 +28,7 @@ file into place, never through a link.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import re
 import statistics
@@ -57,10 +58,10 @@ from carta.graph.limits import MAX_CONFIG_BYTES, MAX_DOC_BYTES
 from carta.graph.markdown import scan_text
 from carta.graph.model import Edge, printable
 from carta.graph.paths import PathIndex, in_path_set, is_doc_glob_match, is_excluded_rel
-from carta.graph.query import ImpactIndex, rank_impact
+from carta.graph.query import COMBINE_MODES, ImpactIndex, rank_impact
 from carta.graph.safeio import SkippedFile, read_regular_file, write_text_replacing
 from carta.graph.settings import DEFAULT_SETTINGS, GraphSettings, graph_settings
-from carta.graph.limits import MAX_REPLAY_TEXT_BYTES
+from carta.graph.limits import MAX_REPLAY_HISTORY_CHANGES, MAX_REPLAY_TEXT_BYTES
 
 REPLAY_SCHEMA = 1
 DEFAULT_KS = (1, 3, 5, 10)
@@ -113,7 +114,9 @@ class EdgeProvider:
 
     A provider may also define ``relevant_edges(snapshot, paths)`` returning
     only the edges that can match ``paths``; ranking over them must equal
-    ranking over ``edges_at(snapshot)``.
+    ranking over ``edges_at(snapshot)``. And it may define
+    ``observe_entry(entry)``, called with the whole ``LogEntry`` (parents and
+    blob ids included) at the moment ``observe`` would be, and instead of it.
     """
 
     kind = ""
@@ -179,8 +182,16 @@ class MentionProvider(EdgeProvider):
         self._touched.update(p for _s, p in changes)
 
 
+def _cochange_provider(context: ReplayContext) -> EdgeProvider:
+    from carta.graph.eval.cochange_arm import CochangeProvider
+    return CochangeProvider(context)
+
+
 # kind -> factory(ReplayContext) -> EdgeProvider. #130 and #131 register theirs here.
-PROVIDERS: Dict[str, Callable[[ReplayContext], EdgeProvider]] = {"mention": MentionProvider}
+PROVIDERS: Dict[str, Callable[[ReplayContext], EdgeProvider]] = {
+    "mention": MentionProvider,
+    "cochange": _cochange_provider,
+}
 
 
 def register_provider(kind: str, factory: Callable[[ReplayContext], EdgeProvider]) -> None:
@@ -278,7 +289,7 @@ def _arms(arms: Optional[Mapping[str, Sequence[str]]]) -> Dict[str, Tuple[str, .
     for name, kinds in (arms or DEFAULT_ARMS).items():
         if not _ARM_NAME.match(str(name)):
             raise ReplayError(f"arm name {name!r} must match [A-Za-z0-9_.-]+")
-        kinds = tuple(sorted(set(str(k) for k in kinds)))
+        kinds = tuple(sorted(set(str(k) for k in kinds if not str(k).startswith("@"))))
         if not kinds:
             raise ReplayError(f"arm {name!r} names no edge kind")
         for kind in kinds:
@@ -287,6 +298,18 @@ def _arms(arms: Optional[Mapping[str, Sequence[str]]]) -> Dict[str, Tuple[str, .
                     f"arm {name!r}: no provider for edge kind {kind!r} "
                     f"(available: {', '.join(sorted(PROVIDERS))})")
         out[str(name)] = kinds
+    return out
+
+
+def _arm_combine(arms: Optional[Mapping[str, Sequence[str]]], default: str) -> Dict[str, str]:
+    """How each arm fuses its kinds: an ``@mode`` item among its kinds, else ``default``."""
+    out: Dict[str, str] = {}
+    for name, kinds in (arms or DEFAULT_ARMS).items():
+        modes = [str(k)[1:] for k in kinds if str(k).startswith("@")]
+        if len(modes) > 1 or any(mode not in COMBINE_MODES for mode in modes):
+            raise ReplayError(f"arm {name!r}: the combine mode must be one of "
+                              f"{', '.join(COMBINE_MODES)}")
+        out[str(name)] = modes[0] if modes else default
     return out
 
 
@@ -304,7 +327,7 @@ def _window(repo: Path, range_spec: Optional[str], last: int
             wanted = rev_list_first_parent(repo, range_spec)
             if not wanted:
                 return [], set(), "", range_spec
-            log = first_parent_log(repo, wanted[-1])
+            log = first_parent_log(repo, wanted[-1], MAX_REPLAY_HISTORY_CHANGES)
             on_line = {entry.sha for entry in log}
             off = [sha for sha in wanted if sha not in on_line]
             if off:
@@ -313,7 +336,7 @@ def _window(repo: Path, range_spec: Optional[str], last: int
                     f"are not on the first-parent line of {wanted[-1][:12]}; the replay walks "
                     f"one line of history, so give a range along it (A..B)")
             return log, set(wanted), wanted[-1], range_spec
-        log = first_parent_log(repo, "HEAD")
+        log = first_parent_log(repo, "HEAD", MAX_REPLAY_HISTORY_CHANGES)
     except GitError as exc:
         raise ReplayError(str(exc)) from exc
     if not log:
@@ -362,6 +385,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
     min_population = (settings.replay_min_population if min_population is None
                       else int(min_population))
     arm_kinds = _arms(arms)
+    arm_combine = _arm_combine(arms, settings.impact_combine)
     methods = [_method_name(a) for a in arm_kinds] + list(BASELINES)
     weights = dict(settings.impact_weights)
 
@@ -467,7 +491,7 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
             pool = edges[kinds[0]] if len(kinds) == 1 else [
                 e for kind in kinds for e in edges[kind]]
             ranked = rank_impact(ImpactIndex(pool, len(docs)), query, kinds=kinds,
-                                 weights=weights, top=None)
+                                 weights=weights, top=None, combine=arm_combine[arm])
             out[_method_name(arm)] = tuple(r["doc"] for r in ranked)
         sync_basenames()
         out["popularity"] = tuple(popularity.ranking(docs))
@@ -540,7 +564,11 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
             popularity.observe(got.edited_docs)
             prior.append((entry.sha, changes))
             for provider in providers.values():
-                provider.observe(entry.sha, changes)
+                whole = getattr(provider, "observe_entry", None)
+                if whole is not None:
+                    whole(entry)
+                else:
+                    provider.observe(entry.sha, changes)
     except GitError as exc:
         raise ReplayError(str(exc)) from exc
     finally:
@@ -621,6 +649,10 @@ def run_replay(repo: Path, *, range_spec: Optional[str] = None, last: int = 0,
         "repo": {"head": head, "range": label},
         "settings": {
             "arms": {arm: list(kinds) for arm, kinds in sorted(arm_kinds.items())},
+            "combine": {arm: arm_combine[arm] for arm, kinds in sorted(arm_kinds.items())
+                        if len(kinds) > 1},
+            "cochange": (dataclasses.asdict(settings.cochange)
+                         if "cochange" in providers else {}),
             "ks": list(ks), "hub_share": hub_share, "max_files": max_files,
             "popularity_window": window, "min_population": min_population,
             "resamples": int(resamples), "doc_globs": list(settings.doc_globs),
@@ -825,8 +857,9 @@ def build_parser(prog: str = "carta graph replay") -> argparse.ArgumentParser:
                         help="Scan the mainline commits of a git range")
     parser.add_argument("--last", type=int, default=0, metavar="N",
                         help="Scan the most recent N mainline commits (default 0: all of them)")
-    parser.add_argument("--arm", action="append", default=[], metavar="NAME=KIND[+KIND...]",
-                        help="An arm to score: a name and the edge kinds it reads "
+    parser.add_argument("--arm", action="append", default=[], metavar="NAME=KIND[+KIND...][@MODE]",
+                        help="An arm to score: a name and the edge kinds it reads, and for "
+                             "several kinds how they are fused: max, sum, norm or rrf "
                              "(repeatable; default mention=mention)")
     parser.add_argument("--k", default=None, metavar="K[,K...]",
                         help="Cutoffs to report (default 1,3,5,10)")
@@ -945,7 +978,10 @@ def _parse_arms(specs: Sequence[str]) -> Optional[Dict[str, List[str]]]:
         name, sep, kinds = spec.partition("=")
         if not sep or not name.strip() or not kinds.strip():
             raise ReplayError(f"--arm {spec!r}: expected NAME=KIND[+KIND...]")
+        kinds, at, mode = kinds.partition("@")
         arms[name.strip()] = [k.strip() for k in kinds.split("+") if k.strip()]
+        if at:
+            arms[name.strip()].append("@" + mode.strip())
     return arms
 
 

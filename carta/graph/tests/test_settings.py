@@ -17,8 +17,8 @@ def test_settings_from_empty_cfg_equals_defaults():
     assert s.enabled is True
     assert s.doc_globs == ("**/*.md",)
     assert s.ident_enabled is True and s.ident_min_length == 3
-    assert s.impact_top == 10 and s.impact_kinds == ("mention",)
-    assert dict(s.impact_weights) == {"mention": 1.0, "symbol": 0.8, "cochange": 0.5}
+    assert s.impact_top == 10 and s.impact_kinds == ("mention", "cochange")
+    assert dict(s.impact_weights) == {"mention": 1.0, "symbol": 0.8, "cochange": 1.0}
     assert s.replay_hub_share == 0.2 and s.replay_min_population == 30
 
 
@@ -31,7 +31,7 @@ def test_settings_are_hashable_and_immutable():
 def test_user_values_override_and_merge():
     s = graph_settings({"graph": {"impact": {"top": 3}, "doc_globs": ["docs/**/*.md", "*.rst"]}})
     assert s.impact_top == 3
-    assert dict(s.impact_weights)["cochange"] == 0.5
+    assert dict(s.impact_weights)["cochange"] == 1.0
     assert s.doc_globs == ("docs/**/*.md", "*.rst")
 
 

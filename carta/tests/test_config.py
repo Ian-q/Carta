@@ -201,7 +201,7 @@ def test_defaults_have_graph_section_and_search_graph_is_untouched():
     from carta.config import DEFAULTS
     assert DEFAULTS["graph"]["enabled"] is True
     assert DEFAULTS["graph"]["doc_globs"] == ["**/*.md"]
-    assert DEFAULTS["graph"]["impact"]["kinds"] == ["mention"]
+    assert DEFAULTS["graph"]["impact"]["kinds"] == ["mention", "cochange"]
     assert set(DEFAULTS["search"]["graph"]) == {"enabled", "hops", "seed_count", "candidate_depth"}
 
 
