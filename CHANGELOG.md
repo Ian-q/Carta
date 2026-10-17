@@ -4,7 +4,15 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-17
+
+**Carta gets a second arm, and its recall hook stops guessing.** Search answers "which passage is about this question?"; nothing answered "which docs describe the file I just changed?", which is the question a stale doc actually poses. A deterministic graph arm now does: mention, co-change and symbol edges in a local SQLite store, queried by `carta impact` with no model, Qdrant or Ollama involved.
+
+The proactive-recall hook's judgement moves from constants picked by feel to measurement. Its gray-zone judge is a local cross-encoder (AUC 0.915, about 10 ms warm), its thresholds come from `carta/hook/eval/calibrate.py`, and the old Ollama judge, which turned out never to answer inside its budget because it was thinking, is fixed for anyone who keeps it. `carta_search` also takes a caller-written hypothetical answer (HyDE), which lifted MCP search MRR from 0.46 to 0.70 on the private eval set.
+
 ### Changed
+
+- **The PyPI page has a description, a licence and project links.** The package declared none of them; the repository also gains the MIT `LICENSE` file that the README and plugin manifest already referred to.
 
 - **The recall gate's thresholds are calibrated instead of guessed (#118).** `low_threshold` 0.60 → **0.65** and `agree_rank` 3 → **1**, derived with the new `calibrate gate` mode, which sweeps both through the hook's own gate over an 84-query eval corpus plus 15 off-corpus prompts — prompts nothing in the corpus answers, which is the case `low_threshold` exists for and the one an eval set cannot supply. Measured top-hit dense cosines: relevant 0.651–0.815, plausible-but-wrong 0.714–0.795, unrelated 0.616–0.784, **no-answer 0.600–0.659**. So 0.65 silences 9 of the 10 no-answer prompts carrying a cosine at a cost of **zero** relevant hits (0.68 costs 3, 0.70 costs 9), while the old 0.60 silenced none of them. `agree_rank: 1` — rank 0 in both lanes — cuts unvetted injections of unrelated top hits from 6 to **0** and plausible-but-wrong from 4 to 1, sending the rest to a judge that now costs ~10 ms rather than an LLM call that always timed out. **The headline negative result:** outside the no-answer band the dense cosine barely separates relevant from irrelevant top hits (71% of unrelated top hits score above the *weakest relevant* one, and plausible-but-wrong hits score *higher* than relevant ones on median), so `low_threshold` is a floor for "nothing answers this", not a relevance score. The judge does the discriminating.
 
@@ -27,6 +35,10 @@ All notable changes to **carta-cc** are documented here. The format is loosely b
 ### Fixed
 
 - **The proactive-recall judge could never answer inside its budget — it was thinking.** The default `proactive_recall.ollama_model`, `qwen3.5:0.8b`, is a reasoning model, and Ollama lets a reasoning model emit a hidden chain of thought before it answers unless the request says `"think": false`. `ollama_yesno` never did. Measured on an M3 Max: one hook judge call produced **~3,100 thinking tokens and took ~55 s**, against `judge_timeout_s: 3` — so every prompt that reached the judge zone timed out and failed open to **silence**, and the calls that did finish were no more accurate for it (it answered "no" to a plainly relevant pair). With thinking off the same call returns in **~80 ms p50** (0 of 234 labelled calls over 3 s). This is the bug class `llm_rerank.py` fixed in 0.9.0 with an explicit comment; the fix never reached the judge. The hook's long-prompt condenser (`_extract_query`, 4 s budget, same model) had the same defect and always fell back to `prompt[-500:]`; it is fixed too. The stale-scan supersession judge (`ollama_json`, `qwen3.5:9b`) **keeps** thinking on purpose: turning it off is ~15x faster but admitted a false positive on 2 of 3 runs of the #84 corpus, and it runs pre-push where the latency is affordable. **Worth knowing for #86:** with a format constraint, Ollama does not count thinking in `eval_count`, so it surfaces only as wall-clock time that looks like model-management overhead.
+
+### Notes
+
+- **The repository's git history was rewritten on 2026-10-17** to remove content from a private project that had been quoted in a test fixture. Every commit and tag SHA changed; clones and forks made before then should be re-cloned rather than pulled. Released packages are unaffected.
 
 ## [0.17.0] — 2026-08-30
 
