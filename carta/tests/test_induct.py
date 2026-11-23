@@ -49,7 +49,7 @@ class TestGenerateSidecarStub:
 
         # Check existing fields still present
         assert "slug" in stub
-        assert stub["slug"] == "my-file"
+        assert stub["slug"].startswith("docs-my-file-md-")  # #89: path-qualified
         assert "doc_type" in stub
         assert "file_type" in stub
         assert "current_path" in stub
@@ -215,3 +215,62 @@ class TestSpreadsheetFileType:
 
     def test_pdf_unchanged(self, tmp_path):
         assert self._stub(tmp_path, "f.pdf")["file_type"] == "pdf"
+
+
+class TestSlugForPath:
+    """#89: the slug must not collide across extensions or directories."""
+
+    def test_extension_disambiguates(self):
+        from carta.embed.induct import slug_for_path
+        assert slug_for_path(Path("docs/widget-spec.md")) != slug_for_path(Path("docs/widget-spec.pdf"))
+
+    def test_directory_disambiguates(self):
+        from carta.embed.induct import slug_for_path
+        assert slug_for_path(Path("docs/overview.md")) != slug_for_path(Path("docs/v2/overview.md"))
+
+    def test_punctuation_collapse_does_not_collide(self):
+        """a_b.md and a-b.md slugify to the same text; the path hash keeps them apart."""
+        from carta.embed.induct import slug_for_path
+        assert slug_for_path(Path("docs/a_b.md")) != slug_for_path(Path("docs/a-b.md"))
+
+    def test_deterministic_readable_and_safe(self):
+        import re
+        from carta.embed.induct import slug_for_path
+        slug = slug_for_path(Path("docs/Widget Spec (v2).pdf"))
+        assert slug == slug_for_path(Path("docs/Widget Spec (v2).pdf"))
+        assert slug.startswith("docs-widget-spec-v2-pdf-")
+        assert re.fullmatch(r"[a-z0-9-]+", slug)
+
+    def test_long_paths_are_capped_and_keep_the_filename(self):
+        from carta.embed.induct import slug_for_path
+        deep = Path("/".join(["very-long-directory-name"] * 8) + "/leaf-document.md")
+        slug = slug_for_path(deep)
+        assert len(slug) <= 72
+        assert "leaf-document-md" in slug
+        assert not slug.startswith("-")
+
+    def test_stub_slugs_unique_for_colliding_names(self, tmp_path):
+        cfg = {"project_name": "p", "qdrant_url": "http://localhost:6333"}
+        paths = ["docs/overview.md", "docs/overview.pdf", "docs/v2/overview.md"]
+        slugs = set()
+        for rel in paths:
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"# x\n")
+            slugs.add(generate_sidecar_stub(f, tmp_path, cfg)["slug"])
+        assert len(slugs) == 3
+
+    def test_existing_sidecar_keeps_its_legacy_slug_and_location(self, tmp_path):
+        """Sidecars are found by path, not slug, so legacy ones keep resolving untouched."""
+        from carta.embed.induct import sidecar_path, read_sidecar
+        src = tmp_path / "docs" / "overview.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("# x\n")
+        legacy = tmp_path / ".carta" / "sidecars" / "docs" / "overview.embed-meta.yaml"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(yaml.safe_dump(
+            {"slug": "overview", "current_path": "docs/overview.md", "status": "embedded"}
+        ))
+        assert sidecar_path(src, tmp_path) == legacy
+        assert read_sidecar(sidecar_path(src, tmp_path))["slug"] == "overview"
+        assert [p for p, _ in iter_canonical_sidecars(tmp_path)] == [legacy]

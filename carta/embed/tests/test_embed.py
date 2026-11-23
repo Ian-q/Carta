@@ -207,7 +207,8 @@ def test_generate_sidecar_stub_fields(tmp_path):
     f.parent.mkdir(parents=True)
     f.touch()
     stub = generate_sidecar_stub(f, tmp_path, MINIMAL_CFG)
-    assert stub["slug"] == "chip"
+    # #89: slug is path- and extension-qualified (see slug_for_path)
+    assert stub["slug"].startswith("docs-reference-chip-pdf-")
     assert stub["status"] == "pending"
     assert stub["collection"] == "test-proj_doc"
     assert stub["indexed_at"] is None
