@@ -104,9 +104,14 @@ def test_payload_fields_and_full_record_on_chunk_zero(env):
 def test_unchanged_transcript_is_skipped(env):
     _put(env, standard_session(str(env["root"])))
     assert _run(env)["indexed"] == 1
-    with patch("carta.sessions.index.index_record") as ir:
+    # Same size and mtime: the file is not even opened (no hash, no cwd probe).
+    with patch("carta.sessions.index.index_record") as ir, \
+         patch("carta.sessions.index._sha256") as sha, \
+         patch("carta.sessions.index.first_cwd") as fc:
         s = _run(env)
     ir.assert_not_called()
+    sha.assert_not_called()
+    fc.assert_not_called()
     assert s["indexed"] == 0 and s["unchanged"] == 1
 
 
