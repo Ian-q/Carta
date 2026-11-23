@@ -193,6 +193,11 @@ def _update_sidecar(sidecar_path: Path, updates: dict) -> None:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
+# Sidecar statuses that mean "not finished — retry me". Shared by batch
+# discovery and the single-file fast-path guard so the two surfaces agree.
+REPICKABLE_STATUSES = frozenset({"pending", "embed_failed", "partial"})
+
+
 def discover_pending_files(repo_root: Path) -> list[dict]:
     """Find all sidecars under .carta/sidecars/ awaiting (re-)embedding.
 
@@ -208,7 +213,7 @@ def discover_pending_files(repo_root: Path) -> list[dict]:
         return results
     for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
         data = read_sidecar(sc_path)
-        if data is None or data.get("status") not in ("pending", "embed_failed", "partial"):
+        if data is None or data.get("status") not in REPICKABLE_STATUSES:
             continue
         current_path = data.get("current_path")
         if not current_path:
@@ -1444,8 +1449,13 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     # Read sidecar for file_info
     sidecar_data = read_sidecar(sc_path) or {}
 
+    # A re-pickable status means the last attempt did not finish (#96): stamps
+    # left from an EARLIER successful embed must not let the fast paths below
+    # report it "already embedded". Treat it like a forced re-embed.
+    repickable = sidecar_data.get("status") in REPICKABLE_STATUSES
+
     # Mtime fast-path: skip hash computation if mtime unchanged (unless force=True)
-    if not force and not needs_rehash(file_path, sidecar_data):
+    if not force and not repickable and not needs_rehash(file_path, sidecar_data):
         return {"status": "skipped", "reason": "already embedded, file unchanged"}
 
     # Hash comparison: check if content has changed
@@ -1453,7 +1463,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     old_hash = sidecar_data.get("file_hash")
     current_mtime = os.path.getmtime(str(file_path))
 
-    if not force and current_hash == old_hash and old_hash is not None:
+    if not force and not repickable and current_hash == old_hash and old_hash is not None:
         # Hash unchanged: just update mtime and fast-path fields
         _update_sidecar(sc_path, {
             "file_mtime": current_mtime,
@@ -1498,10 +1508,10 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         VISUAL_DONE_KEY: [],
     }
 
-    # Mark chunks as stale in Qdrant (with migration boundary guard)
-    if sidecar_data.get("sidecar_id"):
-        client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
-        mark_sidecar_stale(client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now)
+    # Stale-flagging the previous generation happens AFTER the embed step, and
+    # only once replacement points exist (#96). Flagging first left every failure
+    # path — an exception, extraction_failed, a missing-dependency `pending` —
+    # with the old points marked stale and nothing written to replace them.
 
     # Proceed with re-embedding
     file_info = {
@@ -1529,6 +1539,15 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     if sidecar_updates.get("status") == "pending":
         _update_sidecar(sc_path, {"status": "pending"})
         return {"status": "skipped", "reason": "extraction skipped — optional dependency missing"}
+    # Replacement points now exist: flag whatever older generation survives
+    # (a complete upsert already deleted it; a partial one keeps it on purpose)
+    # as stale — never the generation just written (migration boundary guard:
+    # pre-999.1 sidecars carry no sidecar_id and are skipped).
+    if count > 0 and sidecar_data.get("sidecar_id"):
+        mark_sidecar_stale(
+            client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now,
+            exclude_generation=new_generation,
+        )
     # Merge lifecycle updates with embedding updates.
     # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
     # or "extraction_failed") — apply lifecycle fields first, then let embed results win.
