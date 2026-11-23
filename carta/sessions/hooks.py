@@ -75,7 +75,8 @@ def spawn_detached(cmd: list[str], cwd: Path, log_path: Path) -> None:
     except OSError:
         pass
     with open(log_path, "ab") as log:
-        log.write(f"\n--- {time.strftime('%Y-%m-%dT%H:%M:%S')} {' '.join(cmd[3:])}\n"
+        shown = cmd[cmd.index("index"):] if "index" in cmd else cmd
+        log.write(f"\n--- {time.strftime('%Y-%m-%dT%H:%M:%S')} {' '.join(shown)}\n"
                   .encode())
         log.flush()
         subprocess.Popen(cmd, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=log,
@@ -132,9 +133,33 @@ def handle_stop(payload: dict, *, now: float | None = None,
         if _throttled(stamp, interval, now):
             return "throttled"
     _touch(stamp, now)
-    cmd = [sys.executable, "-m", "carta.sessions.hooks", "index", str(tpath)]
-    spawn(cmd, Path(repo_root), state_dir / "hook-index.log")
+    spawn(index_command(tpath, Path(repo_root)), state_dir, state_dir / "hook-index.log")
     return "spawned"
+
+
+def index_command(transcript: Path, repo_root: Path) -> list[str]:
+    """The detached child's command line.
+
+    The child must never import from the project it indexes: a repository is not
+    trusted code, and ``python -m`` puts the working directory first on
+    ``sys.path``, where a ``carta/`` folder in the repository would shadow the
+    installed package. So the child starts in Carta's own state directory, with
+    safe-path mode where the interpreter has it (3.11+), and is told the project
+    root as an argument (see ``_enter_project``).
+    """
+    safe = ["-P"] if sys.version_info >= (3, 11) else []
+    return [sys.executable, *safe, "-m", "carta.sessions.hooks", "index",
+            str(transcript), str(repo_root)]
+
+
+def _enter_project(repo_root: str) -> None:
+    """Drop the start directory from ``sys.path``, then move to the project root."""
+    start = os.getcwd()
+    sys.path[:] = [p for p in sys.path
+                   if p not in ("", ".") and os.path.realpath(p) != os.path.realpath(start)]
+    os.chdir(repo_root)
+    here = os.path.realpath(repo_root)
+    sys.path[:] = [p for p in sys.path if os.path.realpath(p) != here]
 
 
 def _default_index(argv: list[str]) -> int:
@@ -159,7 +184,7 @@ def index_locked(transcript: str, *, run: Callable[[list[str]], int] | None = No
     nothing: this process is already detached. Gives up (exit 1) after ``wait_s``.
     """
     run = run or _default_index
-    cfg, _root = _project(None)          # cwd is the project root (see handle_stop)
+    cfg, _root = _project(None)          # cwd is the project root (see _enter_project)
     lock_path = _state_dir(cfg) / LOCK_NAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     argv = ["sessions", "index", "--session", transcript]
@@ -209,8 +234,10 @@ def run_hook(event: str, stdin=None, stdout=None) -> int:
 
 
 if __name__ == "__main__":
-    # The detached child handle_stop starts: ``python -m carta.sessions.hooks index <t>``.
-    if len(sys.argv) == 3 and sys.argv[1] == "index":
+    # The detached child handle_stop starts (see index_command).
+    if len(sys.argv) == 4 and sys.argv[1] == "index":
+        _enter_project(sys.argv[3])
         sys.exit(index_locked(sys.argv[2]))
-    print("usage: python -m carta.sessions.hooks index <transcript>", file=sys.stderr)
+    print("usage: python -m carta.sessions.hooks index <transcript> <project-root>",
+          file=sys.stderr)
     sys.exit(2)

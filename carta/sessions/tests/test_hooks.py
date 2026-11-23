@@ -56,9 +56,15 @@ def test_stop_spawns_index_of_the_transcript(project):
     spy = Spy()
     assert hk.handle_stop(_payload(project), spawn=spy) == "spawned"
     (cmd, cwd, log), = spy.calls
-    assert cmd[:3] == [sys.executable, "-m", "carta.sessions.hooks"]
-    assert cmd[3:] == ["index", str(project["transcript"])]
-    assert cwd == project["root"]
+    i = cmd.index("-m")
+    assert cmd[0] == sys.executable
+    assert cmd[i:] == ["-m", "carta.sessions.hooks", "index",
+                       str(project["transcript"]), str(project["root"])]
+    # The child must not start inside the (untrusted) project: see index_command.
+    assert cwd == project["state"]
+    assert cwd != project["root"]
+    if sys.version_info >= (3, 11):
+        assert "-P" in cmd[:i]
     assert log == project["state"] / "hook-index.log"
 
 
@@ -362,3 +368,25 @@ def test_init_copies_both_session_hooks(tmp_path):
         p = dest / name
         assert p.is_file() and os.access(p, os.X_OK)
     assert "carta sessions hook stop" in (dest / "carta-stop-hook.sh").read_text()
+
+
+def test_index_child_never_imports_from_the_project(project, tmp_path):
+    """A ``carta/`` folder planted in the project must not shadow the installed package."""
+    import subprocess
+    planted = project["root"] / "carta"
+    (planted / "sessions").mkdir(parents=True)
+    marker = tmp_path / "planted-code-ran"
+    for f in (planted / "__init__.py", planted / "sessions" / "__init__.py",
+              planted / "sessions" / "hooks.py"):
+        f.write_text(f"open({str(marker)!r}, 'w').close()\n")
+    project["state"].mkdir(parents=True, exist_ok=True)
+    cmd = hk.index_command(project["transcript"], project["root"])
+    probe = ("import os, sys; from carta.sessions import hooks as h; "
+             "h._enter_project(sys.argv[1]); import carta.config; "
+             "print(os.path.realpath(carta.config.__file__))")
+    i = cmd.index("-m")
+    out = subprocess.run([*cmd[:i], "-c", probe, str(project["root"])],
+                         cwd=str(project["state"]), capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert not marker.exists()
+    assert not out.stdout.strip().startswith(os.path.realpath(str(project["root"])))
