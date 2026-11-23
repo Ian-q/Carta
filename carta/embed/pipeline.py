@@ -516,7 +516,7 @@ def _embed_one_file(
     visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
     _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
 
-    if file_path.suffix == ".pdf":
+    if suffix == ".pdf":
         # Two-pass visual: classify pages cheaply and queue image-heavy ones for deferred
         # visual embedding instead of running inline VLM/ColPali.
         # Classification was already performed during text extraction above (single fitz pass).
@@ -742,7 +742,7 @@ def _embed_one_file(
         # non-PDFs, zero-page PDFs, or runs with visual/OCR disabled.
         embed_cfg = cfg.get("embed", {})
         ocr_recoverable = (
-            file_path.suffix == ".pdf"
+            suffix == ".pdf"
             and len(pages) > 0
             and embed_cfg.get("two_pass_visual", True)
             and embed_cfg.get("vision_routing", "auto") != "off"
@@ -764,7 +764,7 @@ def _embed_one_file(
             )
 
     # File fully embedded — clear any per-page resume checkpoint.
-    if file_path.suffix == ".pdf":
+    if suffix == ".pdf":
         cp = _vision_checkpoint_path(repo_root, slug)
         try:
             cp.unlink(missing_ok=True)
