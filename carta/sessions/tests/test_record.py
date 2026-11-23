@@ -1,5 +1,4 @@
 """Session-record builder: noise filtering, sidechains, extraction, caps."""
-from pathlib import Path
 
 import pytest
 
