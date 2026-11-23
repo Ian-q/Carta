@@ -24,6 +24,8 @@ from typing import Callable, Optional
 
 import requests
 
+from carta.config import ingest_ollama_url, is_loopback_url, is_split_ollama, query_ollama_url
+
 WRAPPER_NAME = "carta-prompt-hook.sh"
 # The pre-#138 wrapper treated "python3 could not read the config" as "disabled".
 _LEGACY_GATE_MARKER = '|| echo "False")'
@@ -230,7 +232,7 @@ def check_recall_hook(cfg: dict, repo_root: Path, *, probe: bool = True,
         check_qdrant(cfg),
     ]
     pr = cfg.get("proactive_recall", {})
-    ollama_url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+    ollama_url = query_ollama_url(cfg)
     llm = pr.get("ollama_model", "qwen3.5:0.8b")
     timeout_s = pr.get("judge_timeout_s", 3)
     backend = _resolve_judge_backend(cfg)
@@ -346,7 +348,7 @@ def check_stale_scan_judge(cfg: dict, repo_root: Optional[Path] = None, *,
     sc = cfg.get("hooks", {}).get("stale_scan", {})
     if not sc.get("enabled", True):
         return [HealthItem("stale_scan_judge", "skip", "hooks.stale_scan is disabled")]
-    url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+    url = query_ollama_url(cfg)
     model = sc.get("ollama_model", "qwen3.5:9b")
     timeout_s = sc.get("judge_timeout_s", 60)
     installed = repo_root is not None and git_hook_installed(repo_root)
@@ -376,4 +378,157 @@ def check_stale_scan_judge(cfg: dict, repo_root: Optional[Path] = None, *,
             items.append(_timeout_verdict("stale_scan_judge_latency", "stale-scan judge",
                                           "hooks.stale_scan.judge_timeout_s",
                                           timeout_s, cold, None))
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Endpoints: remote Qdrant/Ollama and the query/ingest split (#106, #116)
+# ---------------------------------------------------------------------------
+
+def _where(url: str) -> str:
+    return "local" if is_loopback_url(url) else "remote"
+
+
+def ollama_tags(url: str, timeout: float = 5) -> dict[str, str]:
+    """{model name: digest} from GET /api/tags. Raises on connection failure."""
+    r = requests.get(f"{url}/api/tags", timeout=timeout)
+    r.raise_for_status()
+    return {m.get("name", ""): m.get("digest", "") for m in r.json().get("models", [])}
+
+
+def _resolve_tag(name: str, tags: dict[str, str]) -> Optional[str]:
+    """The pulled name `name` refers to (`foo` means `foo:latest`), or None."""
+    if name in tags:
+        return name
+    if ":" not in name and f"{name}:latest" in tags:
+        return f"{name}:latest"
+    return None
+
+
+def _latency_note(ms: int, url: str, budget_s: float, key: str) -> Optional[str]:
+    """A warning when a remote round trip eats a large share of the hook's budget."""
+    if is_loopback_url(url) or not budget_s:
+        return None
+    if ms > budget_s * 1000 / 3:
+        return (f"round trip {ms} ms is over a third of {key}={budget_s}s — the recall "
+                "hook will often run out of budget")
+    return None
+
+
+def check_endpoints(cfg: dict) -> list[HealthItem]:
+    """Reachability, round-trip time and models for every backend the config names.
+
+    Runs whether or not the recall hook is enabled: `carta search` and `carta embed`
+    need these too. In a split-host setup (embed.ingest_ollama_url set), both Ollama
+    hosts are checked for the models THEIR path uses, and the embedding model is
+    compared across them: documents embedded by one build and queries by another
+    land in different vector spaces, which looks like bad recall, not an error.
+    """
+    items: list[HealthItem] = []
+    pr = cfg.get("proactive_recall", {}) or {}
+    embed = cfg.get("embed", {}) or {}
+    budget = float(pr.get("search_timeout_s", 3) or 0)
+    embed_model = embed.get("ollama_model", "nomic-embed-text:latest")
+
+    # Qdrant -------------------------------------------------------------
+    q_url = str(cfg.get("qdrant_url", "http://localhost:6333")).rstrip("/")
+    t0 = time.monotonic()
+    try:
+        r = requests.get(f"{q_url}/healthz", timeout=5)
+        ms = int((time.monotonic() - t0) * 1000)
+        if r.status_code == 200:
+            note = _latency_note(ms, q_url, budget, "proactive_recall.search_timeout_s")
+            items.append(HealthItem(
+                "endpoint_qdrant", "warn" if note else "pass",
+                f"Qdrant ({_where(q_url)}) reachable at {q_url}, {ms} ms" + (f" — {note}" if note else ""),
+                details={"url": q_url, "ms": ms, "remote": not is_loopback_url(q_url)}))
+        else:
+            items.append(HealthItem("endpoint_qdrant", "fail",
+                                    f"Qdrant at {q_url} answered HTTP {r.status_code}",
+                                    details={"url": q_url}))
+    except Exception as e:
+        items.append(HealthItem(
+            "endpoint_qdrant", "fail",
+            f"Qdrant ({_where(q_url)}) unreachable at {q_url} ({type(e).__name__})",
+            suggestion=("Check the network path to the Qdrant host (VPN/tailnet up?), "
+                        "or correct qdrant_url" if not is_loopback_url(q_url)
+                        else "Start Qdrant, or correct qdrant_url in .carta/config.yaml"),
+            details={"url": q_url}))
+
+    # Ollama: query, then ingest when split -------------------------------
+    q_ollama = query_ollama_url(cfg)
+    i_ollama = ingest_ollama_url(cfg)
+    split = is_split_ollama(cfg)
+
+    def _ollama(check: str, url: str, role: str, key: str, *, down_status: str,
+                note_budget: bool) -> Optional[dict]:
+        t0 = time.monotonic()
+        try:
+            tags = ollama_tags(url)
+        except Exception as e:
+            items.append(HealthItem(
+                check, down_status,
+                f"{role} Ollama ({_where(url)}) unreachable at {url} ({type(e).__name__})",
+                suggestion=(f"Check the network path to that host, or correct {key}"
+                            if not is_loopback_url(url)
+                            else f"Start Ollama (ollama serve), or correct {key}"),
+                details={"url": url}))
+            return None
+        ms = int((time.monotonic() - t0) * 1000)
+        note = _latency_note(ms, url, budget, "proactive_recall.search_timeout_s") \
+            if note_budget else None
+        items.append(HealthItem(
+            check, "warn" if note else "pass",
+            f"{role} Ollama ({_where(url)}) reachable at {url}, {ms} ms"
+            + (f" — {note}" if note else ""),
+            details={"url": url, "ms": ms, "remote": not is_loopback_url(url)}))
+        return tags
+
+    def _need(check: str, url: str, tags: dict, model: str, role: str, status: str):
+        if _resolve_tag(model, tags):
+            items.append(HealthItem(check, "pass", f"'{model}' pulled on {url} ({role})"))
+        else:
+            items.append(HealthItem(
+                check, status, f"'{model}' is not pulled on {url} — {role} fails",
+                suggestion=f"ollama pull {model} (on the host at {url})",
+                details={"url": url, "pulled": sorted(tags)}))
+
+    q_role = "query" if split else "query + ingest"
+    q_tags = _ollama("endpoint_ollama_query", q_ollama, q_role.capitalize(),
+                     "embed.ollama_url", down_status="fail", note_budget=True)
+    if q_tags is not None:
+        _need("endpoint_query_embed_model", q_ollama, q_tags, embed_model,
+              "query embedding", "fail")
+
+    if split:
+        # A laptop away from the GPU host can still search; only `carta embed`
+        # needs the ingest host, so it being down is a warning.
+        i_tags = _ollama("endpoint_ollama_ingest", i_ollama, "Ingest",
+                         "embed.ingest_ollama_url", down_status="warn", note_budget=False)
+        if i_tags is not None:
+            _need("endpoint_ingest_embed_model", i_ollama, i_tags, embed_model,
+                  "document embedding", "fail")
+            for key, default, role in (
+                ("ocr_model", "glm-ocr:latest", "OCR of image-heavy pages"),
+                ("ollama_vision_model", "qwen3-vl:8b", "vision descriptions"),
+            ):
+                _need(f"endpoint_ingest_{key}", i_ollama, i_tags,
+                      embed.get(key, default), role, "warn")
+        if q_tags is not None and i_tags is not None:
+            q_name, i_name = _resolve_tag(embed_model, q_tags), _resolve_tag(embed_model, i_tags)
+            if q_name and i_name:
+                qd, idg = q_tags.get(q_name, ""), i_tags.get(i_name, "")
+                if qd and idg and qd != idg:
+                    items.append(HealthItem(
+                        "endpoint_embed_model_match", "fail",
+                        f"'{embed_model}' differs between the query host ({qd[:12]}) and the "
+                        f"ingest host ({idg[:12]}) — documents and queries are embedded by "
+                        "different builds, so search quality silently degrades",
+                        suggestion=f"Pull the same '{embed_model}' on both hosts "
+                                   "(ollama pull on each), then re-embed if the ingest one changed",
+                        details={"query_digest": qd, "ingest_digest": idg}))
+                elif qd and idg:
+                    items.append(HealthItem(
+                        "endpoint_embed_model_match", "pass",
+                        f"'{embed_model}' is the same build on both hosts ({qd[:12]})"))
     return items

@@ -17,7 +17,7 @@ from qdrant_client import models as qmodels
 from qdrant_client.models import Filter
 
 from carta import __version__ as _CARTA_VERSION
-from carta.config import collection_name, collection_for_doc_type, find_config
+from carta.config import collection_name, collection_for_doc_type, find_config, query_ollama_url
 from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens, resolve_doc_title, apply_contextual_headers
 from carta.embed.embed import (
     UNEMBEDDABLE_KEY,
@@ -2184,7 +2184,7 @@ def _embed_query_or_raise(query: str, cfg: dict, collections: list[str],
     """
     if not any(not c.endswith("_visual") for c in collections):
         return None
-    ollama_url = cfg["embed"]["ollama_url"]
+    ollama_url = query_ollama_url(cfg)
     model = cfg["embed"]["ollama_model"]
     kwargs = {"ollama_url": ollama_url, "model": model, "prefix": "search_query: "}
     if timeout is not None:
@@ -2537,7 +2537,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
         # Dense lane only: BM25 and ColPali below still receive the raw `query`.
         try:
             hyp_vec = hyde.embed_hypothetical(
-                hypothetical, cfg["embed"]["ollama_url"], cfg["embed"]["ollama_model"],
+                hypothetical, query_ollama_url(cfg), cfg["embed"]["ollama_model"],
                 timeout=_remaining())
         except Exception as e:
             raise RuntimeError(
@@ -2734,7 +2734,7 @@ def run_search(query: str, cfg: dict, verbose: bool = False, stats: dict | None 
             query,
             pool,
             rr_cfg=rr_cfg,
-            ollama_url=cfg.get("embed", {}).get("ollama_url", "http://localhost:11434"),
+            ollama_url=query_ollama_url(cfg),
             top_n=top_n,
         )
         # Both backends stamp rerank_score only when they actually ran; every

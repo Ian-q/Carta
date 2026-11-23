@@ -198,13 +198,14 @@ def extract_image_descriptions(pdf_path: Path, cfg: dict) -> list[dict]:
 
     Args:
         pdf_path: path to the PDF file.
-        cfg: carta config dict (must contain cfg["embed"]["ollama_url"] and
+        cfg: carta config dict (Ollama from ingest_ollama_url(cfg); needs
              cfg["embed"]["ollama_vision_model"]).
 
     Returns:
         List of image description dicts, empty if no images or all failed.
     """
-    ollama_url = cfg["embed"]["ollama_url"]
+    from carta.config import ingest_ollama_url
+    ollama_url = ingest_ollama_url(cfg)  # vision is ingest (#116)
     model = cfg["embed"].get("ollama_vision_model", "llava:latest")
 
     with mupdf_quiet():

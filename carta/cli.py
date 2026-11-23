@@ -947,7 +947,8 @@ def cmd_status(args):
         current_path = str(repo_root.resolve())
         name = cfg["project_name"]
         qdrant_url = cfg.get("qdrant_url")
-        ollama_url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+        from carta.config import query_ollama_url
+        ollama_url = query_ollama_url(cfg)
         try:
             register_project(repo_root, name, qdrant_url)
         except Exception:

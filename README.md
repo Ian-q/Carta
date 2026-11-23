@@ -313,6 +313,12 @@ without a budget every prompt would stall for the full timeout. Only the hook is
 `carta search`, MCP and `carta eval` keep their generous timeouts, since a slow search there is
 fine and a slow prompt is not.
 
+With a remote backend the hook also opens one TCP connection to each non-local backend before
+doing anything else (`proactive_recall.connect_timeout_s`, default 1 s). If the VPN is down or the
+host is asleep, the hook prints one line and lets the prompt through. To keep queries local while
+`carta embed` uses a GPU machine, set `embed.ingest_ollama_url`. See
+[docs/split-host.md](docs/split-host.md).
+
 ### Hypothetical answers (HyDE)
 
 A short question and the passage that answers it often share almost no words — especially when

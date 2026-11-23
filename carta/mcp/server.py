@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from qdrant_client import QdrantClient
 from typing import Literal, Optional, Union
 
-from carta.config import find_config, load_config, ConfigError
+from carta.config import find_config, load_config, ConfigError, query_ollama_url
 from carta.embed.embed import get_embedding
 from carta.embed.pipeline import run_search, run_focus, run_embed_file, discover_stale_files, run_embed, FILE_TIMEOUT_S, _text_source, _rrf_merge_collections
 from carta.embed.lock import embed_lock, EmbedLockHeld
@@ -295,7 +295,7 @@ def _run_search_collection(query: str, cfg: dict, collection_name: str, top_n: i
     from carta.embed.embed import DENSE_VECTOR_NAME, collection_is_hybrid
     from carta.search import hyde
 
-    ollama_url = cfg["embed"]["ollama_url"]
+    ollama_url = query_ollama_url(cfg)
     model = cfg["embed"]["ollama_model"]
 
     # Embed first: a failure here is a backend outage, not a collection miss. Raise a

@@ -20,7 +20,8 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from carta.config import collection_name, collection_for_doc_type, ollama_keep_alive
+from carta.config import (collection_name, collection_for_doc_type, ingest_ollama_url,
+                          ollama_keep_alive)
 
 # nomic-embed-text produces 768-dimensional vectors
 VECTOR_DIM = 768
@@ -263,8 +264,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
             "slug", "text", "chunk_index"; "file_path" (repo-relative) should
             also be set — it is the primary point-ID key (slug is a fallback).
             Any additional keys are stored as Qdrant payload.
-        cfg: carta config dict (must contain qdrant_url, embed.ollama_url,
-             embed.ollama_model, and project_name).
+        cfg: carta config dict (must contain qdrant_url, embed.ollama_model and
+             project_name; Ollama is ingest_ollama_url(cfg), #116).
         client: optional QdrantClient instance. If None, a new client is created.
 
     Returns:
@@ -292,7 +293,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     batch_doc_type = chunks[0].get("doc_type", "unknown") if chunks else "unknown"
     coll_name = collection_for_doc_type(cfg, batch_doc_type)
     embed_cfg = cfg["embed"]
-    ollama_url = embed_cfg["ollama_url"]
+    ollama_url = ingest_ollama_url(cfg)  # document embeds are ingest (#116)
     model = embed_cfg["ollama_model"]
     workers = max(1, int(embed_cfg.get("embedding_workers", 8)))
 

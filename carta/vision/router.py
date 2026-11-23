@@ -180,7 +180,9 @@ class SmartRouter:
         embed = cfg.get("embed", {})
         self.ocr_model: str = embed.get("ocr_model", "glm-ocr:latest")
         self.vision_model: str = embed.get("ollama_vision_model", "qwen3-vl:8b")
-        self.ollama_url: str = embed.get("ollama_url", "http://localhost:11434")
+        # OCR + vision are ingest work: the GPU host in a split-host setup (#116).
+        from carta.config import ingest_ollama_url
+        self.ollama_url: str = ingest_ollama_url(cfg)
         self.flattened_min_yield: int = embed.get("vision_flattened_min_yield", 50)
         self.max_images_per_page: int = embed.get("vision_max_images_per_page", 4)
         self.vision_workers: int = max(1, int(embed.get("vision_workers", 4)))

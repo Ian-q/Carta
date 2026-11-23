@@ -443,7 +443,9 @@ def suggest_related_for_doc(
         if not doc_text.strip():
             return []
 
-        ollama_url = cfg.get("embed", {}).get("ollama_url", "http://localhost:11434")
+        # A lookup against the index, not ingest: the query endpoint (#116).
+        from carta.config import query_ollama_url
+        ollama_url = query_ollama_url(cfg)
         model = cfg.get("embed", {}).get("ollama_model", "nomic-embed-text:latest")
         coll = collection_name(cfg, "doc")
 

@@ -10,6 +10,7 @@ Map of this documentation tree for humans and coding agents. Start here, then ju
 | Goal | Go to |
 |------|-------|
 | Install / set up Qdrant + Ollama + models | [install.md](install.md), then `carta doctor` |
+| Run Qdrant/Ollama on another machine (GPU box for ingest, local for queries) | [split-host.md](split-host.md) |
 | Find **structural** doc issues (stale/broken `related:`, homeless/orphaned docs) | `carta scan` (no LLM) or the `/doc-audit` skill → `docs/AUDIT_REPORT.md` |
 | Check **embedded-data integrity** (orphaned sidecars, damaged/duplicate points) | `carta audit` / `carta doctor` |
 | Diagnose a **retrieval-quality** problem (recall/ranking) | `carta eval` against the eval set (see [../README.md](../README.md) "Retrieval quality") |
@@ -23,6 +24,7 @@ Map of this documentation tree for humans and coding agents. Start here, then ju
 ## Docs map
 
 - **[install.md](install.md)** — setup walkthrough (Qdrant, Ollama, embedding/vision/OCR models).
+- **[split-host.md](split-host.md)** — remote Qdrant + a GPU host for ingest, local query path; how the recall hook fails open.
 - **[quirks/](quirks/)** — captured quirk notes (surprising system/hardware behavior).
 - **notes/** — captured bug-notes / helpful-notes (created on demand by `carta remember`).
 - **[superpowers/](superpowers/)** — design specs, implementation plans, and skill docs (see below).

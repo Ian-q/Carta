@@ -80,6 +80,10 @@ class AutoInstaller:
 
     def can_fix(self, check: PreflightCheck) -> bool:
         """Check if this specific check can be auto-fixed."""
+        if (check.details or {}).get("remote"):
+            # A remote backend (#106): starting a local Docker Qdrant would not
+            # fix it, only leave an empty second Qdrant behind.
+            return False
         if not check.fixable or check.auto_fix_func is None:
             # Try to determine fixability by check name
             return check.name in (
