@@ -56,10 +56,46 @@ def test_stop_spawns_index_of_the_transcript(project):
     spy = Spy()
     assert hk.handle_stop(_payload(project), spawn=spy) == "spawned"
     (cmd, cwd, log), = spy.calls
-    assert cmd[:3] == [sys.executable, "-m", "carta"]
-    assert cmd[3:] == ["sessions", "index", "--session", str(project["transcript"])]
+    assert cmd[:3] == [sys.executable, "-m", "carta.sessions.hooks"]
+    assert cmd[3:] == ["index", str(project["transcript"])]
     assert cwd == project["root"]
     assert log == project["state"] / "hook-index.log"
+
+
+def test_background_index_runs_under_the_project_lock(project, monkeypatch):
+    """Hook-launched runs of one project are serialised: parallel sessions (and a Stop
+    run still going when SessionEnd fires) would otherwise each load the shared
+    index state, and the last save would drop the others' entries — or an older read
+    of the same transcript would overwrite the newer one's points."""
+    import fcntl
+    monkeypatch.chdir(project["root"])
+    seen = {}
+
+    def fake_index(argv):
+        with open(project["state"] / hk.LOCK_NAME, "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen["locked"] = False
+            except BlockingIOError:
+                seen["locked"] = True
+        seen["argv"] = argv
+        return 0
+
+    assert hk.index_locked(str(project["transcript"]), run=fake_index) == 0
+    assert seen == {"locked": True,
+                    "argv": ["sessions", "index", "--session", str(project["transcript"])]}
+
+
+def test_background_index_gives_up_when_the_lock_stays_held(project, monkeypatch):
+    import fcntl
+    monkeypatch.chdir(project["root"])
+    project["state"].mkdir(parents=True, exist_ok=True)
+    calls = []
+    with open(project["state"] / hk.LOCK_NAME, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        rc = hk.index_locked(str(project["transcript"]), run=calls.append,
+                             wait_s=0.3, poll_s=0.05)
+    assert rc == 1 and not calls
 
 
 def test_state_dir_matches_the_index(project, tmp_path, monkeypatch):

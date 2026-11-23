@@ -2,8 +2,8 @@
 
 ``carta sessions hook stop`` (Stop and SessionEnd) indexes the session that just
 ended: it reads the hook's stdin JSON, and when the project has session memory on,
-starts ``carta sessions index --session <transcript>`` as a detached process and
-returns at once. The child's output goes to a log file next to the index state, so
+starts ``carta sessions index --session <transcript>`` as a detached process (which
+waits for a per-project lock, so two index runs never overlap) and returns at once. The child's output goes to a log file next to the index state, so
 the hook itself never prints, never waits for Qdrant or Ollama, and a dead backend
 costs nothing but a failed background run (whose transcript is retried next time).
 
@@ -29,6 +29,8 @@ from typing import Callable
 DEFAULT_MIN_INTERVAL_S = 300
 LOG_MAX_BYTES = 1 << 20
 STAMP_MAX_AGE_S = 30 * 86400
+LOCK_NAME = "index.lock"
+LOCK_WAIT_S = 1800
 
 
 def read_payload(stream) -> dict:
@@ -130,9 +132,54 @@ def handle_stop(payload: dict, *, now: float | None = None,
         if _throttled(stamp, interval, now):
             return "throttled"
     _touch(stamp, now)
-    cmd = [sys.executable, "-m", "carta", "sessions", "index", "--session", str(tpath)]
+    cmd = [sys.executable, "-m", "carta.sessions.hooks", "index", str(tpath)]
     spawn(cmd, Path(repo_root), state_dir / "hook-index.log")
     return "spawned"
+
+
+def _default_index(argv: list[str]) -> int:
+    from carta.cli import main
+    sys.argv = ["carta", *argv]
+    try:
+        main()
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    return 0
+
+
+def index_locked(transcript: str, *, run: Callable[[list[str]], int] | None = None,
+                 wait_s: float = LOCK_WAIT_S, poll_s: float = 1.0) -> int:
+    """Body of the detached child: ``carta sessions index --session <transcript>``,
+    run while holding the project's index lock.
+
+    The index keeps one state file per project and rewrites it whole, so two runs at
+    once (parallel sessions, or SessionEnd firing while a Stop run is still
+    embedding) would drop each other's entries, and an older read of the same
+    transcript could replace the newer one's points. Waiting here costs the session
+    nothing: this process is already detached. Gives up (exit 1) after ``wait_s``.
+    """
+    run = run or _default_index
+    cfg, _root = _project(None)          # cwd is the project root (see handle_stop)
+    lock_path = _state_dir(cfg) / LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    argv = ["sessions", "index", "--session", transcript]
+    try:
+        import fcntl
+    except ImportError:                  # no flock (Windows): run unserialised
+        return run(argv)
+    with open(lock_path, "a") as lock:
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    print(f"Error: index lock {lock_path} still held after {wait_s:.0f}s; "
+                          f"giving up on {transcript}", file=sys.stderr)
+                    return 1
+                time.sleep(poll_s)
+        return run(argv)
 
 
 def handle_session_start(payload: dict, **brief_kwargs) -> list[str]:
@@ -159,3 +206,11 @@ def run_hook(event: str, stdin=None, stdout=None) -> int:
     except Exception:
         pass
     return 0
+
+
+if __name__ == "__main__":
+    # The detached child handle_stop starts: ``python -m carta.sessions.hooks index <t>``.
+    if len(sys.argv) == 3 and sys.argv[1] == "index":
+        sys.exit(index_locked(sys.argv[2]))
+    print("usage: python -m carta.sessions.hooks index <transcript>", file=sys.stderr)
+    sys.exit(2)
