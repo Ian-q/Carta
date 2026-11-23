@@ -191,6 +191,23 @@ class TestRunExport:
         assert "snapshots/myproj_visual.snapshot" in names
         assert any(n.startswith("sidecars/") and n.endswith(".embed-meta.yaml") for n in names)
 
+    def test_bundles_companions(self, tmp_path):
+        """#99: .carta/companions/ travels with the bundle so companion_path resolves."""
+        carta_dir = _make_carta_dir(tmp_path, project_name="myproj")
+        comp = carta_dir / "companions" / "data"
+        comp.mkdir(parents=True)
+        (comp / "sales.csv.md").write_text("# sales.csv\n")
+        cfg = {"project_name": "myproj", "qdrant_url": "http://localhost:6333"}
+        client = _export_mock_client(["myproj_doc"])
+
+        with patch("carta.share.QdrantClient", return_value=client), \
+             patch("carta.share.requests.get", side_effect=_fake_requests_get), \
+             patch("carta.share._now_iso", return_value="2026-06-08T00:00:00Z"):
+            out = share.run_export(cfg, carta_dir, output_path=tmp_path / "bundle.tar.gz",
+                                   include_visual=False, verbose=False)
+
+        assert "companions/data/sales.csv.md" in _extract_names(out)
+
     def test_manifest_records_collections_and_points(self, tmp_path):
         carta_dir = _make_carta_dir(tmp_path, project_name="myproj")
         cfg = {"project_name": "myproj", "qdrant_url": "http://localhost:6333"}
@@ -274,7 +291,7 @@ class TestRunExport:
 
 def _write_bundle(path, *, project="myproj", collection_points=None,
                   qdrant_url="http://localhost:6333", qdrant_version="1.17.1",
-                  with_sidecars=True, include_visual=True):
+                  with_sidecars=True, include_visual=True, with_companions=False):
     """Create a real bundle .tar.gz on disk (as run_export would)."""
     if collection_points is None:
         collection_points = {"myproj_doc": 5}
@@ -298,6 +315,10 @@ def _write_bundle(path, *, project="myproj", collection_points=None,
         sc = staging / "sidecars" / "docs"
         sc.mkdir(parents=True)
         (sc / "guide.embed-meta.yaml").write_text("slug: guide\nstatus: indexed\n")
+    if with_companions:
+        comp = staging / "companions" / "data"
+        comp.mkdir(parents=True)
+        (comp / "sales.csv.md").write_text("# sales.csv (bundled)\n")
     with tarfile.open(path, "w:gz") as tf:
         for item in sorted(staging.iterdir()):
             tf.add(item, arcname=item.name)
@@ -428,6 +449,41 @@ class TestRunImport:
 
         # local sidecar must be left untouched
         assert (existing_sc / "guide.embed-meta.yaml").read_text() == "LOCAL-NEWER\n"
+
+    def test_companions_restored_non_destructively(self, tmp_path):
+        """#99: bundled companions land in .carta/companions/; local ones win."""
+        bundle = _write_bundle(tmp_path / "b.tar.gz", with_companions=True)
+        target_carta = tmp_path / "dest" / ".carta"
+        client = _import_mock_client()
+
+        with patch("carta.share.QdrantClient", return_value=client), \
+             patch("carta.share.requests.get", side_effect=_fake_get_version), \
+             patch("carta.share._upload_snapshot"):
+            summary = share.run_import(bundle, target_carta, verbose=False)
+
+        restored = target_carta / "companions" / "data" / "sales.csv.md"
+        assert restored.read_text() == "# sales.csv (bundled)\n"
+        assert summary["companions_written"] == 1
+
+        # Second import into a tree whose companion was regenerated locally.
+        restored.write_text("LOCAL-NEWER\n")
+        with patch("carta.share.QdrantClient", return_value=_import_mock_client()), \
+             patch("carta.share.requests.get", side_effect=_fake_get_version), \
+             patch("carta.share._upload_snapshot"):
+            summary = share.run_import(bundle, target_carta, force=True, verbose=False)
+        assert restored.read_text() == "LOCAL-NEWER\n"
+        assert summary["companions_written"] == 0
+
+    def test_bundle_without_companions_imports(self, tmp_path):
+        """Bundles from before #99 have no companions/ dir; import still succeeds."""
+        bundle = _write_bundle(tmp_path / "b.tar.gz")
+        target_carta = tmp_path / ".carta"
+        with patch("carta.share.QdrantClient", return_value=_import_mock_client()), \
+             patch("carta.share.requests.get", side_effect=_fake_get_version), \
+             patch("carta.share._upload_snapshot"):
+            summary = share.run_import(bundle, target_carta, verbose=False)
+        assert summary["companions_written"] == 0
+        assert not (target_carta / "companions").exists()
 
     def test_qdrant_url_falls_back_to_bundled_config(self, tmp_path):
         bundle = _write_bundle(tmp_path / "b.tar.gz", qdrant_url="http://example:6333")
