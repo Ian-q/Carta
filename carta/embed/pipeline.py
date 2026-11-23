@@ -33,6 +33,7 @@ from carta.embed.embed import (
     UPSERT_CLIENT_TIMEOUT_S,
 )
 from carta.embed.sparse import embed_sparse_query
+from carta.embed.filetypes import EMBEDDABLE_SUFFIXES, EMBEDDABLE_SUFFIXES_ORDERED
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars, SPREADSHEET_SUFFIXES
 from carta.embed.tabular import (
     extract_spreadsheet_text, write_companion, companion_rel_path, OpenpyxlMissing,
@@ -77,8 +78,9 @@ def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str =
     return updates
 
 
-_SUPPORTED_EXTENSIONS = [".pdf", ".md", ".csv", ".xlsx"]
-_SUPPORTED_EXTENSIONS_SET = frozenset(_SUPPORTED_EXTENSIONS)
+# Derived from the single source in carta/embed/filetypes.py (#97).
+_SUPPORTED_EXTENSIONS = list(EMBEDDABLE_SUFFIXES_ORDERED)
+_SUPPORTED_EXTENSIONS_SET = EMBEDDABLE_SUFFIXES
 
 
 def _iter_inductable_files(docs_root: Path) -> Iterator[Path]:

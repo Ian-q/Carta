@@ -15,13 +15,14 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from carta.embed.filetypes import BINARY_SUFFIXES
 from qdrant_client.models import FieldCondition, Filter, HasIdCondition, MatchValue, DatetimeRange
 
 # Binary formats hashed as raw bytes. CRLF→LF normalization on a binary container
 # (pdf, xlsx-zip) is semantically wrong: two distinct payloads differing only in
 # \r\n vs \n byte sequences would collide. Text formats keep LF-normalization so
 # Windows-checkout line-ending churn does not trigger re-embeds.
-_BINARY_SUFFIXES = frozenset({".pdf", ".xlsx"})
+_BINARY_SUFFIXES = BINARY_SUFFIXES
 
 
 def compute_file_hash(path: Path) -> str:
