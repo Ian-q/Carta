@@ -652,7 +652,7 @@ def _embed_one_file(
                     kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
                     expected_images = len(kept_image_chunks)
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
-                    unembeddable +=[c for c in kept_image_chunks if c.get(UNEMBEDDABLE_KEY)]
+                    unembeddable += [c for c in kept_image_chunks if c.get(UNEMBEDDABLE_KEY)]
                     kept_image_chunks = [c for c in kept_image_chunks if not c.get(UNEMBEDDABLE_KEY)]
                     expected_images = len(kept_image_chunks)
                     if verbose:
@@ -689,6 +689,9 @@ def _embed_one_file(
                         kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
                         expected_images = len(kept_image_chunks)
                         image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                        unembeddable += [c for c in kept_image_chunks if c.get(UNEMBEDDABLE_KEY)]
+                        kept_image_chunks = [c for c in kept_image_chunks if not c.get(UNEMBEDDABLE_KEY)]
+                        expected_images = len(kept_image_chunks)
                         if verbose:
                             print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
                 except Exception as legacy_exc:
@@ -1566,11 +1569,21 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     # (a complete upsert already deleted it; a partial one keeps it on purpose)
     # as stale — never the generation just written (migration boundary guard:
     # pre-999.1 sidecars carry no sidecar_id and are skipped).
+    # Best-effort: the new points are already written, so a failure to set a
+    # payload flag on the OLD ones must not turn a successful embed into an
+    # exception that skips the sidecar update below.
     if count > 0 and sidecar_data.get("sidecar_id"):
-        mark_sidecar_stale(
-            client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now,
-            exclude_generation=new_generation,
-        )
+        try:
+            mark_sidecar_stale(
+                client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now,
+                exclude_generation=new_generation,
+            )
+        except Exception as exc:
+            print(
+                f"Warning: could not stale-flag the previous generation of "
+                f"{file_path.name}: {exc}",
+                file=sys.stderr, flush=True,
+            )
     # Merge lifecycle updates with embedding updates.
     # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
     # or "extraction_failed") — apply lifecycle fields first, then let embed results win.

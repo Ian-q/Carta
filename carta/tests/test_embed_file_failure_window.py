@@ -107,6 +107,30 @@ class TestRunEmbedFileFailureWindow:
         mark.assert_called_once()
         assert mark.call_args.kwargs.get("exclude_generation") == 2
 
+    def test_stale_flag_failure_does_not_fail_a_written_embed(self, tmp_path):
+        """The stale flag runs after the new points exist; if it raises, the
+        embed must still report ok and the sidecar must still be updated."""
+        from carta.embed.induct import read_sidecar
+        from carta.embed.pipeline import run_embed_file
+        doc = tmp_path / "docs" / "a.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("# Title\n\nbody text for the widget manual\n")
+        cfg_path = _setup_repo(tmp_path)
+        sc = self._prior_sidecar(tmp_path, doc)
+
+        with patch("carta.embed.pipeline.find_config", return_value=cfg_path), \
+             patch("carta.embed.pipeline.QdrantClient"), \
+             patch("carta.embed.pipeline.ensure_collection"), \
+             patch("carta.embed.pipeline.delete_other_points"), \
+             patch("carta.embed.pipeline.upsert_chunks", return_value=1), \
+             patch("carta.embed.pipeline.mark_sidecar_stale",
+                   side_effect=RuntimeError("qdrant hiccup")):
+            result = run_embed_file(doc, CFG)
+        assert result["status"] == "ok"
+        data = read_sidecar(sc)
+        assert data["status"] == "embedded"
+        assert data["generation"] == 2
+
     @pytest.mark.parametrize("status", ["pending", "embed_failed", "partial"])
     def test_repickable_status_defeats_mtime_fast_path(self, tmp_path, status):
         """A previously-embedded file whose sidecar is re-pickable must not be
