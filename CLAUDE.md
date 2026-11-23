@@ -191,17 +191,27 @@ keeping the board honest.
 | `claude-md` | Reconcile CLAUDE.md against the docs graph: `check` reports superseded sections (JSON), `record` stamps the sync sidecar. Pairs with the `/claude-md-sync` skill |
 | `impact` | Reverse lookup over the graph arm: `impact <path>...` or `impact --diff [range]` → the docs that name those paths, ranked, with evidence lines (`--json`). No model, Qdrant or Ollama (`carta/graph/query.py`) |
 | `graph` | The deterministic edge store at `.carta/graph/edges.db`: `graph build` (incremental by content hash; `--force`), `graph status` (never builds), `graph replay` (PR-replay eval over git history against popularity and basename baselines; reads git objects only, needs no config; `carta/graph/eval/`) |
-| `export` / `import` | Share / restore embeddings + sidecars |
+| `export` / `import` | Share / restore embeddings + sidecars (session collections only with `--include-sessions`) |
+| `sessions` | Session memory (#137): `sessions index [--backfill]` indexes Claude Code transcripts into `{project}_sessions`; `sessions brief` prints the SessionStart primer (≤15 lines, payloads only, no model call, silent when Qdrant is down); `sessions hook stop\|session-start` is the hook entry point (stdin JSON, always exit 0) |
+| `recall` | Search past sessions: `recall "<words>" [--since 14d] [--worktree X\|.] [--branch B] [--limit N] [--json]` → session records with date, worktree, refs and the matching passages (`carta/sessions/recall.py`). `carta eval` scores a set with `target: sessions` (or `--sessions`) against it |
 | `update` | Self-update the installed package |
 
 ### MCP — `carta-mcp` (stdio, `carta/mcp/server.py`)
 
 Claude-initiated tools: `carta_search`, `carta_focus`, `carta_embed`, `carta_scan`, `carta_remember`,
-`carta_impact` (the `carta impact --json` object; the graph package is imported inside the handler).
+`carta_impact` (the `carta impact --json` object; the graph package is imported inside the handler),
+`carta_recall` (past sessions; same results as `carta recall --json`).
 `carta_search` takes an optional `hypothetical` (HyDE) — the calling agent writes it; Carta never
 generates one (a local 9b writer did not help — see the HyDE spec).
 
 ### Hook — `carta-hook` (+ `carta/hooks/*.sh`)
+
+Session memory adds two more scripts (copies in `carta/hooks/` for `carta init`, in
+`hooks/scripts/` for the plugin's `hooks/hooks.json`): `carta-stop-hook.sh` on **Stop** and
+**SessionEnd** starts a detached `carta sessions index --session <transcript>` and returns at
+once (Stop at most once per `sessions.stop_hook_min_interval_s`, default 300), and
+`carta-session-start-hook.sh` on **SessionStart** prints `carta sessions brief`. Both are
+fail-open and silent. There is deliberately no PreToolUse hook and no daemon.
 
 Pre-prompt-submit proactive recall with a three-zone gate on the **top hit**.
 On the hybrid path it reads two different signals — **lane rank for agreement,

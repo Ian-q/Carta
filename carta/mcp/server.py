@@ -739,6 +739,70 @@ def carta_impact(
     return _impact(paths=paths, diff=diff, top_k=top_k, kinds=kinds, include_docs=include_docs)
 
 
+def _recall(query: str, since: str = "", worktree: str = "", branch: str = "",
+            limit: int = 5) -> dict:
+    """Plain-function core for carta_recall (kept undecorated for testability)."""
+    try:
+        cfg_path = find_config()
+        cfg = load_config(cfg_path)
+    except (ConfigError, FileNotFoundError) as e:
+        return {"error": "service_unavailable", "detail": str(e)}
+    if not (cfg.get("modules") or {}).get("session_memory", True):
+        return {"error": "disabled", "detail": "modules.session_memory is false"}
+    try:
+        from carta.sessions.recall import RecallUnavailable, parse_since, recall
+        since_ts = parse_since(since or None)
+        if worktree == ".":
+            from carta.sessions.cli import current_worktree
+            worktree = current_worktree(cfg_path) or ""
+        results = recall(query, cfg, since_ts=since_ts, worktree=worktree or None,
+                         branch=branch or None, limit=max(1, min(int(limit), 20)))
+        for r in results:
+            r.pop("file_path", None)   # the eval's match key, noise to an agent
+        return {"results": results}
+    except ValueError as e:
+        return {"error": "invalid_request", "detail": str(e)}
+    except RecallUnavailable as e:
+        return {"error": "not_indexed", "detail": str(e)}
+    except Exception as e:
+        _logger.warning("carta_recall error: %s", e)
+        return {"error": "service_unavailable", "detail": str(e)}
+
+
+@mcp_server.tool()
+def carta_recall(
+    query: str,
+    since: str = "",
+    worktree: str = "",
+    branch: str = "",
+    limit: int = 5,
+) -> dict:
+    """Search past Claude Code sessions of this project: "what did we do about X?".
+
+    Use when the user refers to earlier work ("we fixed this last week", "the
+    session where we changed the exporter") or before redoing something that may
+    already have been tried. Searches the session records `carta sessions index`
+    builds from transcripts: the user's prompts, files edited, commits, issue/PR
+    numbers and the final message. For project documentation use carta_search.
+
+    Args:
+        query: what is remembered about the session, in plain words.
+        since: only sessions started within a span ("14d", "36h", "2w") or since a
+            date ("YYYY-MM-DD"); "" = all time.
+        worktree: only sessions run in this worktree ("." = the current one).
+        branch: only sessions on this git branch.
+        limit: sessions to return (1-20).
+
+    Returns:
+        {"results": [{"rank", "score", "session_id", "date", "started_at", "ended_at",
+        "repo", "worktree", "branch", "title", "first_prompt", "summary", "issues",
+        "prs", "commits", "transcript_path", "transcript_exists", "passages":
+        [{"chunk_index", "text"}]}]}, best first. Or {"error", "detail"}; error
+        "not_indexed" means no session has been indexed yet.
+    """
+    return _recall(query, since=since, worktree=worktree, branch=branch, limit=limit)
+
+
 def main() -> None:
     """Entry point for carta-mcp command."""
     mcp_server.run()

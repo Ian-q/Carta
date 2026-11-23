@@ -295,6 +295,12 @@ DEFAULTS = {
         # Count prompts a program sent through the Agent SDK as a session's prompts.
         # Off: a scripted session is not a person's session.
         "include_sdk_sessions": False,
+        # The Stop hook fires after every assistant turn; it re-indexes a session at
+        # most once per this many seconds. SessionEnd always indexes.
+        "stop_hook_min_interval_s": 300,
+        # `carta sessions brief` (the SessionStart primer): sessions shown for this
+        # worktree, then for the rest of the repo; max_lines is capped at 15.
+        "brief": {"worktree": 5, "repo": 5, "max_lines": 15, "width": 110},
         "limits": {
             "max_prompts": 60,
             "max_prompt_chars": 2000,

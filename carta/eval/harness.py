@@ -21,6 +21,13 @@ Two optional per-query fields:
 A reject VIOLATION is a reject doc ranked above the first expect hit within the
 top-k (or present in the top-k when no expect doc is). A path that matches an
 expect substring is never counted as a reject.
+
+A set may declare what it searches with a top-level ``target``: ``docs`` (the
+default) or ``sessions``, the past-session collection ``carta recall`` reads. For
+sessions, ``expect`` and ``reject`` substrings are matched against
+``session:<id> | <date> | <worktree> | <branch> | <title>`` (see
+``carta.sessions.recall.session_key``); a session id, or a unique prefix of one, is
+the most robust expectation. Example: ``carta/eval/datasets/sessions-example.yaml``.
 """
 from __future__ import annotations
 
@@ -48,6 +55,19 @@ def _clean(values) -> list[str]:
     if isinstance(values, (str, int, float)):
         values = [values]
     return [s for v in (values or []) if (s := str(v).strip())]
+
+
+EVAL_TARGETS = ("docs", "sessions")
+
+
+def load_eval_target(path: Path) -> str:
+    """The set's top-level ``target`` (``docs`` when absent)."""
+    data = yaml.safe_load(Path(path).read_text()) or {}
+    target = str(data.get("target") or "docs").strip().lower()
+    if target not in EVAL_TARGETS:
+        raise ValueError(f"eval set {path}: target must be one of {EVAL_TARGETS}, "
+                         f"got {target!r}")
+    return target
 
 
 def load_eval_set(path: Path) -> list[EvalQuery]:

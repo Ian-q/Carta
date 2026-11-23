@@ -206,6 +206,8 @@ last_reviewed: 2026-03-20
 | `carta focus` / `carta_focus` | Deep retrieval scoped to one file: page-anchored passages, an outline (omit query), and table/figure pages as images. Two-step partner to `/doc-search` (locate → go deep) |
 | `carta remember` / `carta_remember` | Save a curated project note (quirk / bug-note / helpful-note) as a repo markdown file and embed it. `--about <file>` records which file the note is about |
 | `carta impact` / `carta_impact` | Reverse lookup: given the files you changed (or a git range), the docs that name them or that git history shows changing with them, ranked and labelled, with the lines to re-read. No model, no Qdrant, no Ollama |
+| `carta recall` / `carta_recall` | Search past Claude Code sessions of this project ("we fixed this last week"): date, worktree, issue/PR refs and the matching passages. Filters: `--since 14d`, `--worktree`, `--branch`. Sessions are indexed by the Stop/SessionEnd hook, or `carta sessions index --backfill` |
+| `carta sessions brief` | The session-start primer: recent sessions of this worktree, then this repo, one line each, at most 15 lines, no model call |
 
 ---
 

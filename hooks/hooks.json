@@ -6,6 +6,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/carta-check-deps.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/carta-session-start-hook.sh"
           }
         ]
       }
@@ -22,6 +26,17 @@
       }
     ],
     "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/carta-stop-hook.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
       {
         "matcher": "",
         "hooks": [
