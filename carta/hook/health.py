@@ -508,12 +508,20 @@ def check_endpoints(cfg: dict) -> list[HealthItem]:
         if i_tags is not None:
             _need("endpoint_ingest_embed_model", i_ollama, i_tags, embed_model,
                   "document embedding", "fail")
-            for key, default, role in (
-                ("ocr_model", "glm-ocr:latest", "OCR of image-heavy pages"),
-                ("ollama_vision_model", "qwen3-vl:8b", "vision descriptions"),
-            ):
-                _need(f"endpoint_ingest_{key}", i_ollama, i_tags,
-                      embed.get(key, default), role, "warn")
+    else:
+        i_tags = q_tags  # one host serves both paths; its embed model is checked above
+
+    # OCR + vision live on the ingest host — the only host when not split. Checked
+    # here in both cases: doctor-in-project skips phase 3's fixed model list.
+    if i_tags is not None:
+        for key, default, role in (
+            ("ocr_model", "glm-ocr:latest", "OCR of image-heavy pages"),
+            ("ollama_vision_model", "qwen3-vl:8b", "vision descriptions"),
+        ):
+            _need(f"endpoint_ingest_{key}", i_ollama, i_tags,
+                  embed.get(key, default), role, "warn")
+
+    if split:
         if q_tags is not None and i_tags is not None:
             q_name, i_name = _resolve_tag(embed_model, q_tags), _resolve_tag(embed_model, i_tags)
             if q_name and i_name:

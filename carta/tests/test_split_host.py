@@ -291,6 +291,21 @@ def test_endpoints_single_host_checks_one_ollama():
     assert "endpoint_ollama_ingest" not in items
 
 
+def test_endpoints_single_host_still_checks_ocr_and_vision_models():
+    # Doctor-in-project skips phase 3's fixed model list in favour of phase 5, so
+    # a single-host project must still hear about a missing OCR/vision model here.
+    from carta.hook import health
+    with patch("carta.hook.health.requests.get", side_effect=_fake_get({
+        "http://localhost:6333": _ok(),
+        QUERY: _tags("embedder:latest"),
+    })):
+        items = _by_name(health.check_endpoints(_cfg()))
+    assert items["endpoint_ingest_ocr_model"].status == "warn"
+    assert items["endpoint_ingest_ollama_vision_model"].status == "warn"
+    assert "endpoint_ingest_embed_model" not in items  # same host: checked once
+    assert "endpoint_embed_model_match" not in items
+
+
 def test_endpoints_split_host_all_good():
     from carta.hook import health
     with patch("carta.hook.health.requests.get", side_effect=_fake_get({
