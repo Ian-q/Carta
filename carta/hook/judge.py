@@ -27,11 +27,17 @@ def ollama_yesno(
     user: str,
     *,
     timeout_s: float = 4,
+    err: dict | None = None,
 ) -> bool | None:
     """Ask Ollama a yes/no question via /api/chat.
 
     Returns True if the answer begins with 'yes', False for any other answer,
     and None on any network/parse error (so the caller can fail open).
+
+    ``err`` (optional) receives ``{"error": "<reason>"}`` when the result is None,
+    so a caller that reports health can say WHY — "model not found" and "connection
+    refused" both collapse to None otherwise, which is how a missing judge model
+    hid behind a silent hook (#138).
     """
     try:
         resp = requests.post(
@@ -48,9 +54,17 @@ def ollama_yesno(
             },
             timeout=timeout_s,
         )
-        answer = resp.json()["message"]["content"].strip().lower()
+        body = resp.json()
+        if isinstance(body, dict) and body.get("error"):
+            # Ollama answers a missing model with HTTP 404 + {"error": "model ... not found"}.
+            if err is not None:
+                err["error"] = f"ollama: {body['error']}"
+            return None
+        answer = body["message"]["content"].strip().lower()
         return answer.startswith("yes")
-    except Exception:
+    except Exception as e:
+        if err is not None:
+            err["error"] = f"{type(e).__name__}: {e}"
         return None
 
 

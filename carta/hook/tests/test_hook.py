@@ -506,7 +506,7 @@ def test_call_ollama_judge_uses_given_timeout():
     hits = [_make_hit(0.75)]
     captured = {}
 
-    def fake_yesno(url, model, system, user, *, timeout_s):
+    def fake_yesno(url, model, system, user, *, timeout_s, **kw):
         captured["timeout_s"] = timeout_s
         return True
 
