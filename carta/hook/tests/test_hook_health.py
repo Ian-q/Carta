@@ -503,3 +503,22 @@ def test_wrapper_gate(tmp_path, python3_body, should_run):
                            text=True, capture_output=True, env=env)
         assert r.returncode == 0, r.stderr
         assert (tmp_path / "ran").exists() is should_run, (script, r.stdout, r.stderr)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
+                    reason="needs bash and git")
+def test_wrapper_without_carta_hook_exits_zero(tmp_path):
+    """python3 without PyYAML now falls through to carta-hook; if carta-hook is not
+    installed either, the wrapper must not turn that into a hook error per prompt."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".carta").mkdir()
+    (repo / ".carta" / "config.yaml").write_text("modules: {proactive_recall: true}\n")
+    env = _shim_env(tmp_path, 'echo "No module named yaml" >&2; exit 1')
+    (tmp_path / "bin" / "carta-hook").unlink()
+    r = subprocess.run(["bash", str(health.packaged_wrapper())], cwd=repo,
+                       input='{"prompt": "x"}', text=True, capture_output=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == ""
+    assert "carta-hook not on PATH" in r.stderr

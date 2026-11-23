@@ -19,6 +19,14 @@ if [ "$ENABLED" = "False" ]; then
   exit 0
 fi
 
+# Without carta-hook on PATH, `exec` would fail with status 127 and Claude Code
+# would report a hook error on every prompt. Exit 0 with one stderr line instead;
+# `carta doctor` reports the missing entry point as an error.
+if ! command -v carta-hook >/dev/null 2>&1; then
+  echo "carta-prompt-hook: carta-hook not on PATH, recall skipped (run: carta doctor)" >&2
+  exit 0
+fi
+
 # Pass the Claude Code hook payload to the Python module via stdin.
 # carta-hook reads JSON from stdin, queries Qdrant, and writes context JSON to stdout.
 exec carta-hook
