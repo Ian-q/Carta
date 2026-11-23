@@ -20,6 +20,7 @@ from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, collection_for_doc_type, find_config
 from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens, resolve_doc_title, apply_contextual_headers
 from carta.embed.embed import (
+    UNEMBEDDABLE_KEY,
     ensure_collection,
     upsert_chunks,
     get_embedding,
@@ -473,6 +474,16 @@ def _embed_one_file(
 
     count = upsert_chunks(enriched, cfg, client=client)
 
+    # A chunk the model cannot take even at the truncation floor will fail the
+    # same way on every run (#103). Count it out of the expected set — so the
+    # doc can finish instead of sitting 'partial' and re-embedding forever —
+    # and record the gap in the sidecar. Transient failures are NOT marked and
+    # still downgrade the doc to a re-pickable status below.
+    unembeddable = [c for c in kept_text_chunks if c.get(UNEMBEDDABLE_KEY)]
+    if unembeddable:
+        kept_text_chunks = [c for c in kept_text_chunks if not c.get(UNEMBEDDABLE_KEY)]
+        expected_text = len(kept_text_chunks)
+
     # Vision progress tracking — events collected by callback, passed to caller via sidecar_updates
     _page_events: list[dict] = []
 
@@ -639,6 +650,9 @@ def _embed_one_file(
                     kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
                     expected_images = len(kept_image_chunks)
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                    unembeddable +=[c for c in kept_image_chunks if c.get(UNEMBEDDABLE_KEY)]
+                    kept_image_chunks = [c for c in kept_image_chunks if not c.get(UNEMBEDDABLE_KEY)]
+                    expected_images = len(kept_image_chunks)
                     if verbose:
                         print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
 
@@ -709,6 +723,13 @@ def _embed_one_file(
         sidecar_updates.update(_visual_queue_updates)
 
     sidecar_updates["_vision_events"] = _page_events
+
+    # Record any permanent one-chunk gaps (#103) so the operator — and a later
+    # audit — can see the doc is done but not whole. Always written, so a later
+    # clean embed clears an earlier gap.
+    sidecar_updates["unembeddable_chunks"] = sorted(
+        int(c["chunk_index"]) for c in unembeddable if "chunk_index" in c
+    )
 
     # Nothing extractable anywhere: no text was attempted, no image chunks were
     # attempted, and no pages are queued for pass-2 visual embedding.

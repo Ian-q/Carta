@@ -67,6 +67,34 @@ class EmbedDimError(RuntimeError):
 
 _CONTEXT_OVERFLOW = "the input length exceeds the context length"
 
+# Context-overflow recovery (#103). Overflow is counted in TOKENS, but text that
+# is mostly long URLs/ids, CJK, base64 or wide tables carries many tokens per
+# word, so word-count truncation can never get under the limit. Shrink by
+# CHARACTERS instead (any tokenizer emits at most ~1 token per character), and
+# keep going until the text fits or reaches the floor below.
+_OVERFLOW_SHRINK = 0.5
+_OVERFLOW_MIN_CHARS = 32
+_OVERFLOW_MAX_ATTEMPTS = 12
+
+
+class EmbedInputTooLong(RuntimeError):
+    """The input overflowed the model's context even at the truncation floor.
+
+    Typed so callers can tell a permanently un-embeddable chunk apart from a
+    transient failure: retrying it on the next run can never succeed (#103).
+    """
+
+
+def _shrink_for_overflow(text: str) -> str:
+    """Cut ``text`` to about half its characters, at a whitespace boundary
+    when one falls in the back half of the kept span."""
+    target = int(len(text) * _OVERFLOW_SHRINK)
+    cut = text[:target]
+    space = cut.rfind(" ")
+    if space >= target // 2:
+        cut = cut[:space]
+    return cut.rstrip()
+
 
 def _fastembed_available() -> bool:
     try:
@@ -85,8 +113,9 @@ def get_embedding(
 ) -> list[float]:
     """Get embedding vector from Ollama API.
 
-    If Ollama reports the input exceeds the model's context length, truncates
-    the text by 25% per attempt and retries up to 3 times before raising.
+    If Ollama reports the input exceeds the model's context length, halves the
+    text by characters and retries until it fits; raises ``EmbedInputTooLong``
+    only once the text would drop below ``_OVERFLOW_MIN_CHARS``.
 
     ``timeout`` is the per-request budget. The 60s default suits the ingest path,
     where a long document chunk against a cold model legitimately takes a while.
@@ -94,7 +123,7 @@ def get_embedding(
     blocks prompt submission — pass something far smaller (issue #106).
     """
     attempt_text = text
-    for attempt in range(4):
+    for attempt in range(_OVERFLOW_MAX_ATTEMPTS):
         resp = requests.post(
             f"{ollama_url}/api/embeddings",
             json={"model": model, "prompt": f"{prefix}{attempt_text}", "keep_alive": ollama_keep_alive()},
@@ -112,20 +141,25 @@ def get_embedding(
                 )
             if attempt > 0:
                 print(
-                    f"  (truncated to {len(attempt_text.split())} words after {attempt} attempt(s))",
+                    f"  (truncated to {len(attempt_text)} of {len(text)} chars "
+                    f"after {attempt} attempt(s))",
                     flush=True,
                 )
             return emb
         body = resp.text
         if resp.status_code == 500 and _CONTEXT_OVERFLOW in body:
-            words = attempt_text.split()
-            keep = int(len(words) * 0.75)
-            if keep < 10:
-                raise RuntimeError(f"Ollama embedding failed — input too long even after truncation: {body[:200]}")
-            attempt_text = " ".join(words[:keep])
+            shrunk = _shrink_for_overflow(attempt_text)
+            if len(shrunk) < _OVERFLOW_MIN_CHARS:
+                raise EmbedInputTooLong(
+                    f"Ollama embedding failed — input too long even after truncation: {body[:200]}"
+                )
+            attempt_text = shrunk
             continue
         raise RuntimeError(f"Ollama embedding failed ({resp.status_code}): {body[:200]}")
-    raise RuntimeError(f"Ollama embedding failed — input too long after 3 truncation attempts")
+    raise EmbedInputTooLong(
+        f"Ollama embedding failed — input too long after {_OVERFLOW_MAX_ATTEMPTS - 1} "
+        f"truncation attempts"
+    )
 
 
 def ensure_collection(client: QdrantClient, coll_name: str) -> None:
@@ -203,6 +237,22 @@ def _visual_point_id(key: str, page_num: int) -> str:
     """Deterministic UUID for visual page embeddings, keyed by file path."""
     raw = f"{key}:visual:{page_num}"
     return str(uuid.UUID(hashlib.md5(raw.encode()).hexdigest()))
+
+
+# Set (in place) on a chunk dict that upsert_chunks could not embed because it
+# overflows the model even at the truncation floor (#103). Callers read it to
+# tell a permanent one-chunk gap from a transient failure; it never reaches a
+# Qdrant payload because the chunk is never built into a point.
+UNEMBEDDABLE_KEY = "_unembeddable"
+
+
+def _note_unembeddable(chunk: dict, chunk_id: str, exc: Exception) -> None:
+    chunk[UNEMBEDDABLE_KEY] = True
+    print(
+        f"Warning: unembeddable chunk {chunk_id} dropped — {exc}. "
+        f"The rest of the document is kept; this chunk is a recorded gap.",
+        flush=True,
+    )
 
 
 def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) -> int:
@@ -332,6 +382,9 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
                 batch.append(build_point(chunk, vec))
             except EmbedDimError:
                 raise  # model/collection dim mismatch — abort loudly, never swallow
+            except EmbedInputTooLong as e:
+                _note_unembeddable(chunk, chunk_id, e)
+                continue
             except Exception as e:
                 print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
                 continue
@@ -354,6 +407,9 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
                     batch.append(build_point(chunk, vec))
                 except EmbedDimError:
                     raise  # model/collection dim mismatch — abort loudly, never swallow
+                except EmbedInputTooLong as e:
+                    _note_unembeddable(chunk, chunk_id, e)
+                    continue
                 except Exception as e:
                     print(f"Warning: skipping chunk {chunk_id} — {e}", flush=True)
                     continue
