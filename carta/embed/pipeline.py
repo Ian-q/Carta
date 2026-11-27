@@ -20,6 +20,7 @@ from carta import __version__ as _CARTA_VERSION
 from carta.config import collection_name, collection_for_doc_type, find_config
 from carta.embed.parse import extract_pdf_text, extract_pdf_text_and_classify, extract_markdown_text, chunk_text, _estimate_tokens, resolve_doc_title, apply_contextual_headers
 from carta.embed.embed import (
+    UNEMBEDDABLE_KEY,
     ensure_collection,
     upsert_chunks,
     get_embedding,
@@ -32,6 +33,7 @@ from carta.embed.embed import (
     UPSERT_CLIENT_TIMEOUT_S,
 )
 from carta.embed.sparse import embed_sparse_query
+from carta.embed.filetypes import EMBEDDABLE_SUFFIXES, EMBEDDABLE_SUFFIXES_ORDERED
 from carta.embed.induct import generate_sidecar_stub, read_sidecar, write_sidecar, sidecar_path, iter_canonical_sidecars, SPREADSHEET_SUFFIXES
 from carta.embed.tabular import (
     extract_spreadsheet_text, write_companion, companion_rel_path, OpenpyxlMissing,
@@ -76,8 +78,9 @@ def _mark_or_collect_visual_pages(page_classes: list, cfg: dict, rel_path: str =
     return updates
 
 
-_SUPPORTED_EXTENSIONS = [".pdf", ".md", ".csv", ".xlsx"]
-_SUPPORTED_EXTENSIONS_SET = frozenset(_SUPPORTED_EXTENSIONS)
+# Derived from the single source in carta/embed/filetypes.py (#97).
+_SUPPORTED_EXTENSIONS = list(EMBEDDABLE_SUFFIXES_ORDERED)
+_SUPPORTED_EXTENSIONS_SET = EMBEDDABLE_SUFFIXES
 
 
 def _iter_inductable_files(docs_root: Path) -> Iterator[Path]:
@@ -193,6 +196,11 @@ def _update_sidecar(sidecar_path: Path, updates: dict) -> None:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
+# Sidecar statuses that mean "not finished — retry me". Shared by batch
+# discovery and the single-file fast-path guard so the two surfaces agree.
+REPICKABLE_STATUSES = frozenset({"pending", "embed_failed", "partial"})
+
+
 def discover_pending_files(repo_root: Path) -> list[dict]:
     """Find all sidecars under .carta/sidecars/ awaiting (re-)embedding.
 
@@ -208,7 +216,7 @@ def discover_pending_files(repo_root: Path) -> list[dict]:
         return results
     for sc_path in sidecars_root.rglob("*.embed-meta.yaml"):
         data = read_sidecar(sc_path)
-        if data is None or data.get("status") not in ("pending", "embed_failed", "partial"):
+        if data is None or data.get("status") not in REPICKABLE_STATUSES:
             continue
         current_path = data.get("current_path")
         if not current_path:
@@ -468,6 +476,16 @@ def _embed_one_file(
 
     count = upsert_chunks(enriched, cfg, client=client)
 
+    # A chunk the model cannot take even at the truncation floor will fail the
+    # same way on every run (#103). Count it out of the expected set — so the
+    # doc can finish instead of sitting 'partial' and re-embedding forever —
+    # and record the gap in the sidecar. Transient failures are NOT marked and
+    # still downgrade the doc to a re-pickable status below.
+    unembeddable = [c for c in kept_text_chunks if c.get(UNEMBEDDABLE_KEY)]
+    if unembeddable:
+        kept_text_chunks = [c for c in kept_text_chunks if not c.get(UNEMBEDDABLE_KEY)]
+        expected_text = len(kept_text_chunks)
+
     # Vision progress tracking — events collected by callback, passed to caller via sidecar_updates
     _page_events: list[dict] = []
 
@@ -500,7 +518,7 @@ def _embed_one_file(
     visual_pages_count = 0  # NEW: Count of pages embedded via ColPali
     _visual_queue_updates: dict = {}  # populated by two_pass_visual pass-1 for PDFs
 
-    if file_path.suffix == ".pdf":
+    if suffix == ".pdf":
         # Two-pass visual: classify pages cheaply and queue image-heavy ones for deferred
         # visual embedding instead of running inline VLM/ColPali.
         # Classification was already performed during text extraction above (single fitz pass).
@@ -634,6 +652,9 @@ def _embed_one_file(
                     kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
                     expected_images = len(kept_image_chunks)
                     image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                    unembeddable += [c for c in kept_image_chunks if c.get(UNEMBEDDABLE_KEY)]
+                    kept_image_chunks = [c for c in kept_image_chunks if not c.get(UNEMBEDDABLE_KEY)]
+                    expected_images = len(kept_image_chunks)
                     if verbose:
                         print(f"    embedded {image_chunk_count} image description chunk(s)", flush=True)
 
@@ -668,6 +689,9 @@ def _embed_one_file(
                         kept_image_chunks = [c for c in image_chunks if (c.get("text") or "").strip()]
                         expected_images = len(kept_image_chunks)
                         image_chunk_count = upsert_chunks(image_chunks, cfg, client=client)
+                        unembeddable += [c for c in kept_image_chunks if c.get(UNEMBEDDABLE_KEY)]
+                        kept_image_chunks = [c for c in kept_image_chunks if not c.get(UNEMBEDDABLE_KEY)]
+                        expected_images = len(kept_image_chunks)
                         if verbose:
                             print(f"    embedded {image_chunk_count} image description chunk(s) (legacy)", flush=True)
                 except Exception as legacy_exc:
@@ -705,6 +729,13 @@ def _embed_one_file(
 
     sidecar_updates["_vision_events"] = _page_events
 
+    # Record any permanent one-chunk gaps (#103) so the operator — and a later
+    # audit — can see the doc is done but not whole. Always written, so a later
+    # clean embed clears an earlier gap.
+    sidecar_updates["unembeddable_chunks"] = sorted(
+        int(c["chunk_index"]) for c in unembeddable if "chunk_index" in c
+    )
+
     # Nothing extractable anywhere: no text was attempted, no image chunks were
     # attempted, and no pages are queued for pass-2 visual embedding.
     if (expected_text == 0 and expected_images == 0
@@ -716,7 +747,7 @@ def _embed_one_file(
         # non-PDFs, zero-page PDFs, or runs with visual/OCR disabled.
         embed_cfg = cfg.get("embed", {})
         ocr_recoverable = (
-            file_path.suffix == ".pdf"
+            suffix == ".pdf"
             and len(pages) > 0
             and embed_cfg.get("two_pass_visual", True)
             and embed_cfg.get("vision_routing", "auto") != "off"
@@ -738,7 +769,7 @@ def _embed_one_file(
             )
 
     # File fully embedded — clear any per-page resume checkpoint.
-    if file_path.suffix == ".pdf":
+    if suffix == ".pdf":
         cp = _vision_checkpoint_path(repo_root, slug)
         try:
             cp.unlink(missing_ok=True)
@@ -1444,8 +1475,13 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     # Read sidecar for file_info
     sidecar_data = read_sidecar(sc_path) or {}
 
+    # A re-pickable status means the last attempt did not finish (#96): stamps
+    # left from an EARLIER successful embed must not let the fast paths below
+    # report it "already embedded". Treat it like a forced re-embed.
+    repickable = sidecar_data.get("status") in REPICKABLE_STATUSES
+
     # Mtime fast-path: skip hash computation if mtime unchanged (unless force=True)
-    if not force and not needs_rehash(file_path, sidecar_data):
+    if not force and not repickable and not needs_rehash(file_path, sidecar_data):
         return {"status": "skipped", "reason": "already embedded, file unchanged"}
 
     # Hash comparison: check if content has changed
@@ -1453,7 +1489,7 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     old_hash = sidecar_data.get("file_hash")
     current_mtime = os.path.getmtime(str(file_path))
 
-    if not force and current_hash == old_hash and old_hash is not None:
+    if not force and not repickable and current_hash == old_hash and old_hash is not None:
         # Hash unchanged: just update mtime and fast-path fields
         _update_sidecar(sc_path, {
             "file_mtime": current_mtime,
@@ -1498,10 +1534,10 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
         VISUAL_DONE_KEY: [],
     }
 
-    # Mark chunks as stale in Qdrant (with migration boundary guard)
-    if sidecar_data.get("sidecar_id"):
-        client = QdrantClient(url=cfg["qdrant_url"], timeout=UPSERT_CLIENT_TIMEOUT_S)
-        mark_sidecar_stale(client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now)
+    # Stale-flagging the previous generation happens AFTER the embed step, and
+    # only once replacement points exist (#96). Flagging first left every failure
+    # path — an exception, extraction_failed, a missing-dependency `pending` —
+    # with the old points marked stale and nothing written to replace them.
 
     # Proceed with re-embedding
     file_info = {
@@ -1529,6 +1565,25 @@ def run_embed_file(path: Path, cfg: dict, force: bool = False, verbose: bool = F
     if sidecar_updates.get("status") == "pending":
         _update_sidecar(sc_path, {"status": "pending"})
         return {"status": "skipped", "reason": "extraction skipped — optional dependency missing"}
+    # Replacement points now exist: flag whatever older generation survives
+    # (a complete upsert already deleted it; a partial one keeps it on purpose)
+    # as stale — never the generation just written (migration boundary guard:
+    # pre-999.1 sidecars carry no sidecar_id and are skipped).
+    # Best-effort: the new points are already written, so a failure to set a
+    # payload flag on the OLD ones must not turn a successful embed into an
+    # exception that skips the sidecar update below.
+    if count > 0 and sidecar_data.get("sidecar_id"):
+        try:
+            mark_sidecar_stale(
+                client, collection_name(cfg, "doc"), sidecar_data.get("sidecar_id"), now,
+                exclude_generation=new_generation,
+            )
+        except Exception as exc:
+            print(
+                f"Warning: could not stale-flag the previous generation of "
+                f"{file_path.name}: {exc}",
+                file=sys.stderr, flush=True,
+            )
     # Merge lifecycle updates with embedding updates.
     # lifecycle_updates must NOT clobber the status _embed_one_file chose ("embedded"
     # or "extraction_failed") — apply lifecycle fields first, then let embed results win.

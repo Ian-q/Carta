@@ -15,13 +15,14 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from carta.embed.filetypes import BINARY_SUFFIXES
 from qdrant_client.models import FieldCondition, Filter, HasIdCondition, MatchValue, DatetimeRange
 
 # Binary formats hashed as raw bytes. CRLF→LF normalization on a binary container
 # (pdf, xlsx-zip) is semantically wrong: two distinct payloads differing only in
 # \r\n vs \n byte sequences would collide. Text formats keep LF-normalization so
 # Windows-checkout line-ending churn does not trigger re-embeds.
-_BINARY_SUFFIXES = frozenset({".pdf", ".xlsx"})
+_BINARY_SUFFIXES = BINARY_SUFFIXES
 
 
 def compute_file_hash(path: Path) -> str:
@@ -71,7 +72,11 @@ def needs_rehash(file_path: Path, sidecar: dict) -> bool:
 
 
 def mark_sidecar_stale(
-    client, collection_name: str, sidecar_id: str | None, now: datetime
+    client,
+    collection_name: str,
+    sidecar_id: str | None,
+    now: datetime,
+    exclude_generation: int | None = None,
 ) -> None:
     """Mark all chunks with a given sidecar_id as stale in Qdrant.
 
@@ -80,6 +85,9 @@ def mark_sidecar_stale(
         collection_name: Qdrant collection name.
         sidecar_id: Sidecar ID to match. If empty or None, this is a no-op (pre-999.1 guard).
         now: Current datetime to record as stale_as_of.
+        exclude_generation: when set, points whose ``doc_generation`` equals it
+            are left alone — used to flag only the generations a just-completed
+            re-embed superseded, never the one it wrote (#96).
 
     Behavior:
         - If sidecar_id is empty string or None, returns without calling client (pre-999.1 migration boundary)
@@ -89,14 +97,22 @@ def mark_sidecar_stale(
     if not sidecar_id:  # Empty string or None
         return
 
+    must_not = []
+    if exclude_generation is not None:
+        must_not.append(
+            FieldCondition(key="doc_generation", match=MatchValue(value=exclude_generation))
+        )
     filter_condition = Filter(
-        must=[FieldCondition(key="sidecar_id", match=MatchValue(value=sidecar_id))]
+        must=[FieldCondition(key="sidecar_id", match=MatchValue(value=sidecar_id))],
+        must_not=must_not or None,
     )
 
     client.set_payload(
         collection_name=collection_name,
         payload={"stale_as_of": now.isoformat(), "status": "stale"},
-        points_selector=filter_condition,
+        # set_payload's selector parameter is `points` (delete's is
+        # `points_selector`); the old keyword raised TypeError on a real client.
+        points=filter_condition,
     )
 
 

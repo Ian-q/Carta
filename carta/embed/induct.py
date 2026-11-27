@@ -7,6 +7,7 @@ from typing import Iterator, Optional
 import yaml
 
 from carta.config import collection_name, collection_for_doc_type
+from carta.embed.filetypes import MARKDOWN_SUFFIXES, SPREADSHEET_SUFFIXES
 
 
 # Map parent directory names to doc_type values
@@ -27,7 +28,8 @@ _PATH_TYPE_MAP = {
 # it, so same-stem files (data.csv + data.md) would silently share one sidecar and
 # auto-induction would skip the second. Legacy types (.md/.pdf) keep the historical
 # mapping so existing sidecar state never migrates. Eventual unification: issue #89.
-SPREADSHEET_SUFFIXES = frozenset({".csv", ".xlsx"})
+# The set itself is single-sourced in carta/embed/filetypes.py (#97); re-exported
+# here because existing callers import it from induct.
 
 
 def _sidecar_rel(rel: Path) -> Path:
@@ -66,7 +68,7 @@ def resolve_doc_type(file_path: Path, rel_path: Path) -> str:
         file_path: absolute path (read for frontmatter when markdown).
         rel_path: repo-relative path (parent names drive inference).
     """
-    if file_path.suffix == ".md":
+    if file_path.suffix.lower() in MARKDOWN_SUFFIXES:
         from carta.scanner.scanner import parse_frontmatter
         try:
             # parse_frontmatter handles malformed YAML itself (returns None);
@@ -99,7 +101,7 @@ def generate_sidecar_stub(
     doc_type = resolve_doc_type(file_path, rel_path)
     slug = slug_from_filename(file_path.name)
     suffix = file_path.suffix.lower()
-    if suffix == ".md":
+    if suffix in MARKDOWN_SUFFIXES:
         file_type = "markdown"
     elif suffix in SPREADSHEET_SUFFIXES:
         file_type = "spreadsheet"

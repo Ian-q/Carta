@@ -18,6 +18,7 @@ from qdrant_client import QdrantClient
 
 import yaml
 
+from carta.embed.filetypes import EMBEDDABLE_SUFFIXES
 from carta.embed.lifecycle import compute_file_hash
 from carta.scanner.scanner import is_excluded
 
@@ -328,10 +329,10 @@ def detect_disconnected_files(repo_root: Path, cfg: dict, sidecar_registry: dict
                 # double-reported as disconnected "no sidecar, no chunks").
                 covered_files.add(repo_root / file_path_str)
 
-    # Scan for all discoverable files (both .md and .pdf)
+    # Scan for every embeddable source type (single-sourced, #97), case-insensitively
     discoverable_files = set()
     for file_path in docs_root.rglob("*"):
-        if file_path.suffix in (".md", ".pdf"):
+        if file_path.is_file() and file_path.suffix.lower() in EMBEDDABLE_SUFFIXES:
             discoverable_files.add(file_path)
 
     # Check if excluded

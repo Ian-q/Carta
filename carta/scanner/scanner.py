@@ -9,6 +9,8 @@ from typing import Optional
 
 import yaml
 
+from carta.embed.filetypes import INDUCTION_CHECK_SUFFIXES
+
 
 # ---------------------------------------------------------------------------
 # Frontmatter
@@ -638,8 +640,8 @@ def check_sidecar_broken_related(
 # Embed file type checks (config-driven scan dirs)
 # ---------------------------------------------------------------------------
 
-_EMBED_EXTENSIONS = frozenset(
-    [".pdf", ".m4a", ".mp3", ".wav", ".aac", ".csv", ".xlsx"])
+# Derived from the single source in carta/embed/filetypes.py (#97).
+_EMBED_EXTENSIONS = INDUCTION_CHECK_SUFFIXES
 
 
 def _get_embed_scan_dirs(cfg: dict) -> list:
