@@ -778,6 +778,12 @@ def cmd_eval(args):
     cfg = load_config(cfg_path)
     k = args.k
 
+    from carta.eval.harness import load_eval_target
+    if getattr(args, "sessions", False) or load_eval_target(Path(args.eval_path)) == "sessions":
+        from carta.sessions.recall import run_sessions_eval
+        run_sessions_eval(Path(args.eval_path), cfg, k=k, json_path=getattr(args, "json", None))
+        return
+
     # Deep-copy cfg once; the closure mutates top_n per call so each query
     # uses the correct top_k cutoff. run_search reads cfg["search"]["top_n"]
     # internally; results use "source" as the file path key (not "file_path"),
@@ -1297,6 +1303,12 @@ def cmd_impact(args):
         print(format_impact(result))
 
 
+def cmd_recall(args):
+    """Search past sessions: `carta recall` (see carta/sessions/cli.py)."""
+    from carta.sessions.cli import run_recall
+    run_recall(args)
+
+
 def cmd_sessions(args):
     """Session memory: `carta sessions index` (see carta/sessions/cli.py)."""
     from carta.sessions.cli import run
@@ -1498,6 +1510,9 @@ def main():
     eval_p.add_argument("-k", type=int, default=5, help="top-k cutoff (default 5)")
     eval_p.add_argument("--json", metavar="PATH",
                         help="also write the full metrics (incl. per-query ranks) as JSON")
+    eval_p.add_argument("--sessions", action="store_true",
+                        help="Score against past sessions (carta recall) instead of docs; "
+                             "implied by `target: sessions` in the eval set")
 
     remember_p = sub.add_parser(
         "remember",
@@ -1660,7 +1675,9 @@ def main():
     impact_p.set_defaults(impact_usage=impact_p.format_usage())
 
     from carta.sessions.cli import add_parser as _add_sessions_parser
+    from carta.sessions.cli import add_recall_parser as _add_recall_parser
     _add_sessions_parser(sub)
+    _add_recall_parser(sub)
 
     # `graph replay` owns its options (it also runs as a module), so they are
     # passed through untouched; every other command rejects unknown arguments.
@@ -1691,6 +1708,7 @@ def main():
         "graph": cmd_graph,
         "impact": cmd_impact,
         "sessions": cmd_sessions,
+        "recall": cmd_recall,
     }
 
     if args.command not in dispatch:

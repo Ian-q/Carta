@@ -19,7 +19,7 @@ modules:
   doc_audit: true          # Documentation consistency auditing
   doc_embed: true          # Document embedding and vectorization
   doc_search: true         # Semantic search over documents
-  session_memory: true     # Session-level memory persistence
+  session_memory: true     # Session memory commands (carta recall, carta sessions ...)
   proactive_recall: true   # Similarity-based doc suggestions during sessions
 
 # Root directory to scan for markdown documents
@@ -110,3 +110,10 @@ cross_project_recall:
 # Many more advanced settings exist (visual/ColPali embedding, vision-routing
 # thresholds, graph/fusion search tuning). See carta/config.py (DEFAULTS) for the
 # complete, authoritative list.
+
+# Session memory is opt-in per project. Set enabled: true to let the Stop/SessionEnd
+# hook index each finished Claude Code session into <project>_sessions and the
+# SessionStart hook print a short brief of recent sessions. Try it first by hand:
+#   carta sessions index --backfill && carta sessions brief
+sessions:
+  enabled: false

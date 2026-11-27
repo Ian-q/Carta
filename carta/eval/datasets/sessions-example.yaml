@@ -1,0 +1,33 @@
+# Carta session-recall eval set (fictional example).
+#
+# `target: sessions` makes `carta eval` score these queries with `carta recall`
+# against the project's past sessions ({project}_sessions) instead of its docs.
+# (`carta eval --sessions` does the same for a set without the key.)
+#
+# A query hits when an `expect` substring appears in a returned session's key:
+#     session:<id> | <date> | <worktree> | <branch> | <title>
+# The session id (or a unique prefix of it, from `carta recall --json`) is the most
+# robust expectation; a branch or worktree name works when it is unique to the
+# session. Write queries the way you would actually remember the work: vague,
+# in your own words, without the exact terms the session used.
+#
+# The sessions below belong to an invented "widgets" project. The test
+# carta/sessions/tests/test_recall.py builds matching synthetic transcripts and
+# scores this file end to end. Aim for 20+ queries in a real set.
+target: sessions
+queries:
+  - q: "the time we made the counter safe to use from several threads"
+    expect: ["session:sess-counter"]
+    tags: [vague]
+  - q: "when did we add retries to the exporter that kept timing out"
+    expect: ["session:sess-exporter"]
+  - q: "fix for the dark mode colours on the settings page"
+    expect: ["session:sess-theme"]
+    reject: ["session:sess-exporter"]
+    tags: [hard-negative]
+  - q: "csv export work"
+    expect: ["session:sess-exporter"]
+    tags: [short]
+  - q: "locking change on the feature branch for widgets"
+    expect: ["feat/widgets"]
+    tags: [by-branch]

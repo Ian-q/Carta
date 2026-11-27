@@ -130,7 +130,7 @@ def test_create_qdrant_collections_uses_namespaced_names():
         _create_qdrant_collections("my-project", "http://localhost:6333")
     created = [c.kwargs["collection_name"] for c in client.create_collection.call_args_list]
     assert "my-project_doc" in created
-    assert "my-project_session" in created
+    assert "my-project_session" not in created     # never written; retired with #137
     assert "my-project_notes" in created
 
 
@@ -323,7 +323,7 @@ def test_carta_claude_block_content():
     assert '`/doc-search "<name> responsibilities"`' in block   # trigger table row
     assert "/doc-audit" in block and "/doc-embed" in block       # maintenance line
     # collections comment interpolates the project name and stays inside the block
-    assert "Carta is active. Collections: acme_doc, acme_session, acme_notes" in block
+    assert "Carta is active. Collections: acme_doc, acme_notes" in block
 
 
 def test_append_claude_md_appends_to_existing(tmp_path):

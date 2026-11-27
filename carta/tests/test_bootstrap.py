@@ -186,7 +186,7 @@ def test_bootstrap_creates_notes_not_quirk():
     created = [c.kwargs["collection_name"] for c in client.create_collection.call_args_list]
     assert "p_notes" in created
     assert "p_doc" in created
-    assert "p_session" in created
+    assert "p_session" not in created
     assert "p_quirk" not in created
     # Hybrid schema: a named 'dense' vector + a 'bm25' sparse vector on each collection.
     for c in client.create_collection.call_args_list:

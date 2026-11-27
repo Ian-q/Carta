@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
-# carta-stop-hook.sh — Stop hook (plugin-native)
-set -euo pipefail
-
-# Guard: carta-hook binary must be on PATH
-if ! command -v carta-hook &>/dev/null; then
-  exit 0
-fi
-
-CONFIG="$(git rev-parse --show-toplevel 2>/dev/null)/.carta/config.yaml"
-if [ ! -f "$CONFIG" ]; then
-  exit 0
-fi
-
-ENABLED=$(python3 -c "import yaml, sys; cfg=yaml.safe_load(open('$CONFIG')); print(cfg.get('modules', {}).get('session_memory', False))" 2>/dev/null || echo "False")
-ENABLED=$([ "$ENABLED" = "True" ] && echo "true" || echo "false")
-
-if [ "$ENABLED" != "true" ]; then
-  exit 0
-fi
-
-# Session save logic placeholder for future Plan 2 work
+# carta-stop-hook.sh — Stop and SessionEnd hook: index the session that just ended.
+#
+# `carta sessions hook stop` reads the hook's JSON from stdin (transcript_path, cwd,
+# session_id, hook_event_name), and when the project has opted in (sessions.enabled: true),
+# starts `carta sessions index --session <transcript>` as a detached background
+# process and returns at once. It never blocks the session, never prints, and exits
+# 0 on every error: with Qdrant or Ollama down the background run fails quietly
+# (log: <carta home>/sessions/<project>/hook-index.log) and the transcript is
+# picked up by the next run. On Stop, a session is re-indexed at most once per
+# sessions.stop_hook_min_interval_s; SessionEnd always indexes.
+command -v carta >/dev/null 2>&1 || exit 0
+carta sessions hook stop >/dev/null 2>&1 || true
 exit 0
