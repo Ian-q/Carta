@@ -251,7 +251,7 @@ def run_bootstrap(project_root: Path, *, skip_skills: bool = False) -> None:
                 print(f"\n✓ Carta skills at {display}: {', '.join(msg_parts)}")
                 print("  (Reload Claude Code to activate)")
 
-    colls = f"{project_name}_doc, {project_name}_session, {project_name}_notes"
+    colls = f"{project_name}_doc, {project_name}_notes"
     if collections_ok:
         print(f"\n✅ Carta ready. Collections: {colls}")
         print("  Slash commands available: /doc-audit, /doc-embed, /doc-search")
@@ -375,7 +375,10 @@ def _create_qdrant_collections(project_name: str, qdrant_url: str, vector_size: 
         return False
 
     failures = 0
-    for type_ in ["doc", "session", "notes"]:
+    # No "{project}_session": nothing ever wrote to it. Session memory (#137) lives
+    # in "{project}_sessions", created by `carta sessions index` on first use. An
+    # existing "_session" collection is left alone and still searchable.
+    for type_ in ["doc", "notes"]:
         collection = f"{project_name}_{type_}"
         try:
             existed = client.collection_exists(collection)
@@ -478,7 +481,7 @@ def _carta_claude_block(project_name: str) -> str:
         "stale/contradictory docs), `/doc-embed` (re-index).\n"
         "\n"
         f"<!-- Carta is active. Collections: {project_name}_doc, "
-        f"{project_name}_session, {project_name}_notes -->\n"
+        f"{project_name}_notes -->\n"
         "<!-- carta:guidance:end -->\n"
     )
 
@@ -573,7 +576,7 @@ written to docs/quirks/ or docs/notes/ (git-shareable) and are immediately searc
 2. Seed knowledge store: `/doc-embed`
 3. Search docs: `/doc-search <query>`
 
-<!-- Carta is active. Collections: {project_name}_doc, {project_name}_session, {project_name}_notes -->
+<!-- Carta is active. Collections: {project_name}_doc, {project_name}_notes -->
 '''
     agents_md.write_text(content)
     print(f"  Created AGENTS.md with Carta slash commands")
