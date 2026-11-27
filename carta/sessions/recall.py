@@ -91,10 +91,11 @@ def best_passage(text: str, query: str, max_chars: int = PASSAGE_CHARS) -> str:
 
 
 def _query_vector(query: str, cfg: dict) -> list[float]:
+    from carta.config import query_ollama_url
     from carta.embed import embed as _embed   # module attribute: patchable in tests
     e = cfg.get("embed") or {}
-    return _embed.get_embedding(query, ollama_url=e["ollama_url"], model=e["ollama_model"],
-                                prefix="search_query: ")
+    return _embed.get_embedding(query, ollama_url=query_ollama_url(cfg),
+                                model=e["ollama_model"], prefix="search_query: ")
 
 
 def _search_points(client: QdrantClient, coll: str, query: str, qvec: list[float],
