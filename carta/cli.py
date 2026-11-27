@@ -955,13 +955,54 @@ def cmd_status(args):
             check=check, ollama_url=ollama_url,
         )
 
+    # Candidate projects, in display order: the registry, then git worktrees of
+    # every known project, then (with --scan) unregistered configs on disk. The
+    # registry alone under-reports (#117): it misses worktrees, which carry their
+    # own .carta/config.yaml, and any project no carta command has run in.
+    scan_root = getattr(args, "scan", None)
+    seen = {current_path} if current_path else set()
+    candidates = []  # (path, registry_entry_or_None, source)
+
+    def _add(path, entry, source):
+        try:
+            key = str(Path(path).resolve())
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append((Path(key), entry, source))
+
+    registry = sorted(load_registry(), key=lambda e: e["last_seen"], reverse=True)
+    for entry in registry:
+        _add(entry["path"], entry, "registered")
+    roots = ([Path(current_path)] if current_path else []) + [Path(e["path"]) for e in registry]
+    for root in roots:
+        for wt in status_mod.list_worktrees(root):
+            _add(wt, None, "worktree")
+    if scan_root:
+        for found in status_mod.scan_for_projects(scan_root):
+            _add(found, None, "unregistered")
+
     others = []
-    for entry in sorted(load_registry(), key=lambda e: e["last_seen"], reverse=True):
-        if current_path and str(Path(entry["path"]).resolve()) == current_path:
-            continue
-        others.append(status_mod.gather_project_status(
-            Path(entry["path"]), name=entry["name"], qdrant_url=entry["qdrant_url"],
-        ))
+    for path, entry, source in candidates:
+        # Prefer the live config over the registry's copy: the registry records
+        # the URL as of the last command, and a stale URL is what we must show.
+        live = status_mod.read_project_config(path)
+        name = (live[0] if live else None) or (entry or {}).get("name") or path.name
+        qdrant_url = (live[1] if live else None) or (entry or {}).get("qdrant_url")
+        snap = status_mod.gather_project_status(path, name=name, qdrant_url=qdrant_url)
+        snap["source"] = source
+        others.append(snap)
+
+    if check:
+        # One probe per distinct endpoint, so a dead URL is flagged on every row.
+        reach = {}
+        for snap in others:
+            url = snap.get("qdrant_url")
+            if url and url not in reach:
+                reach[url] = status_mod.probe_qdrant(url)
+            snap["endpoint_reachable"] = reach.get(url) if url else None
 
     if as_json:
         print(_json.dumps(
@@ -971,7 +1012,8 @@ def cmd_status(args):
 
     if current is None and not others:
         print("Not inside a carta project, and none registered yet — "
-              "run a carta command inside a project first.")
+              "run a carta command inside a project first"
+              + ("." if scan_root else ", or find unregistered ones with `carta status --scan ~`."))
         return
 
     if current is not None:
@@ -982,6 +1024,9 @@ def cmd_status(args):
         print(f"Other projects ({len(others)}):")
         for snap in others:
             print(status_mod.format_other(snap, color=color))
+        if any(s.get("source") == "unregistered" for s in others):
+            print("\n[unregistered] projects were found by --scan; run any carta command "
+                  "inside one (e.g. `carta status`) to register it.")
 
 
 def _print_stale_result(result, scfg):
@@ -1496,10 +1541,16 @@ def main():
     )
     status_p.add_argument(
         "--check", action="store_true",
-        help="Also query Qdrant/Ollama for the current project (live counts + health)",
+        help="Also query Qdrant/Ollama for the current project (live counts + health) "
+             "and probe every other project's Qdrant endpoint",
     )
     status_p.add_argument(
         "--json", action="store_true", help="Output status as JSON",
+    )
+    status_p.add_argument(
+        "--scan", metavar="ROOT", nargs="?", const="~", default=None,
+        help="Also walk ROOT (default: your home directory) for .carta/config.yaml "
+             "files the registry does not know about",
     )
 
     claude_md_p = sub.add_parser("claude-md", help="Sync CLAUDE.md against the docs graph")

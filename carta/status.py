@@ -7,7 +7,9 @@ Pure aggregation over artifacts that already exist (.carta/embed-status.json,
 """
 
 import json
+import os
 import socket
+import subprocess
 import time
 from pathlib import Path
 
@@ -157,6 +159,115 @@ def gather_project_status(repo_root, *, name: str, qdrant_url, check: bool = Fal
 
 
 # ---------------------------------------------------------------------------
+# Project discovery beyond the registry (#117)
+# ---------------------------------------------------------------------------
+# The registry only knows projects a carta command has run in. Worktrees carry
+# their own .carta/ (and so their own, possibly stale, qdrant_url), and a config
+# that was copied in or hand-written is never registered at all.
+
+# Directory names never worth descending into while scanning for configs.
+_SCAN_PRUNE = frozenset({
+    ".git", ".carta", "node_modules", ".venv", "venv", "__pycache__", ".tox",
+    ".mypy_cache", ".pytest_cache", ".cache", ".npm", ".cargo", ".rustup",
+    "Library", ".Trash", "site-packages", "dist", "build",
+})
+SCAN_MAX_DEPTH = 6
+
+
+def _has_config(root: Path) -> bool:
+    return (Path(root) / ".carta" / "config.yaml").is_file()
+
+
+def read_project_config(root) -> tuple | None:
+    """Return ``(project_name, qdrant_url)`` from a project's config, or None.
+
+    Read raw so a half-written config still reports where it points. Never raises.
+    """
+    try:
+        import yaml
+        data = yaml.safe_load((Path(root) / ".carta" / "config.yaml").read_text())
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = data.get("project_name") or Path(root).name
+    return str(name), data.get("qdrant_url")
+
+
+def list_worktrees(repo_root) -> list:
+    """Other git worktrees of ``repo_root`` that carry a .carta/config.yaml.
+
+    Uses ``git worktree list --porcelain``; a non-git directory, a missing git,
+    or a slow git yields []. ``repo_root`` itself is excluded.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return []
+    if out.returncode != 0:
+        return []
+    try:
+        own = Path(repo_root).resolve()
+    except OSError:
+        own = Path(repo_root)
+    found = []
+    for line in out.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        wt = Path(line[len("worktree "):])
+        try:
+            if wt.resolve() == own:
+                continue
+        except OSError:
+            continue
+        if _has_config(wt):
+            found.append(wt)
+    return found
+
+
+def scan_for_projects(root, max_depth: int = SCAN_MAX_DEPTH) -> list:
+    """Walk ``root`` (to ``max_depth`` levels) for directories holding .carta/config.yaml.
+
+    Hidden directories are walked (worktrees live under ``.worktrees/`` and
+    ``.claude/worktrees/``); dependency, cache and VCS directories are pruned,
+    and symlinks are not followed. Never raises.
+    """
+    root = Path(root).expanduser()
+    if not root.is_dir():
+        return []
+    base_depth = len(root.parts)
+    found = []
+    for dirpath, dirnames, _files in os.walk(root, onerror=lambda e: None):
+        here = Path(dirpath)
+        if _has_config(here):
+            found.append(here)
+        if len(here.parts) - base_depth >= max_depth:
+            dirnames[:] = []
+            continue
+        dirnames[:] = sorted(d for d in dirnames if d not in _SCAN_PRUNE)
+    return found
+
+
+def probe_qdrant(url) -> bool:
+    """True if anything answers ``GET <url>/collections`` within 2 s.
+
+    Any HTTP response counts as reachable (a 401 is a live server with an auth
+    problem, not a dead endpoint); only a connection failure or timeout is not.
+    """
+    if not url:
+        return False
+    try:
+        import requests
+        requests.get(str(url).rstrip("/") + "/collections", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Rendering layer — pure string formatters, no I/O
 # ---------------------------------------------------------------------------
 
@@ -288,4 +399,15 @@ def format_other(snap: dict, *, color: bool = True) -> str:
         if co["total"] and not co["pending"] and not co["stale"]:
             parts.append("all done")
         summary = " · ".join(parts)
-    return f"  {snap['name']:<14} {word} {summary}   {_home_path(snap['path'])}"
+    line = f"  {snap['name']:<14} {word} {summary}   {_home_path(snap['path'])}"
+    source = snap.get("source")
+    if source in ("worktree", "unregistered"):
+        line += "  " + _col(color, _YELLOW, f"[{source}]")
+    if snap.get("qdrant_url"):
+        line += "\n  " + " " * 15 + _col(color, _DIM, f"qdrant {snap['qdrant_url']}")
+        reachable = snap.get("endpoint_reachable")
+        if reachable is False:
+            line += " " + _col(color, _RED, "unreachable")
+        elif reachable is True:
+            line += " " + _col(color, _GREEN, "up")
+    return line

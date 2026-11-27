@@ -1,5 +1,6 @@
 """Sidecar stub generation for carta embed induction."""
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Iterator, Optional
@@ -46,11 +47,38 @@ def sidecar_path(file_path: Path, repo_root: Path) -> Path:
 
 
 def slug_from_filename(filename: str) -> str:
-    """Convert a filename (with extension) to a kebab-case slug."""
+    """Convert a filename (with extension) to a kebab-case slug of its stem.
+
+    Not unique: it drops the extension and the directory. New sidecars get
+    :func:`slug_for_path`; this stays for callers that want a display label.
+    """
     stem = Path(filename).stem
     slug = re.sub(r"[^a-zA-Z0-9-]+", "-", stem)
     slug = re.sub(r"-+", "-", slug).strip("-")
     return slug.lower()
+
+
+_SLUG_TEXT_MAX = 63  # readable part; total slug is at most this + 9 ("-" + 8 hex)
+
+
+def slug_for_path(rel_path: Path) -> str:
+    """Unique, stable slug for a repo-relative source path (#89).
+
+    ``<kebab-cased path incl. extension>-<first 8 hex of sha1(posix path)>``,
+    e.g. ``docs/v2/overview.md`` -> ``docs-v2-overview-md-1a2b3c4d``. The readable
+    part keeps the tail of long paths (the filename is the informative end); the
+    hash keeps apart paths that kebab-case to the same text (``a_b.md`` /
+    ``a-b.md``) or are cut short by the cap.
+
+    Only newly inducted sidecars use it. A sidecar is located by its source path,
+    never by slug, so existing sidecars keep their stored slug and keep resolving.
+    """
+    posix = Path(rel_path).as_posix()
+    text = re.sub(r"[^a-zA-Z0-9]+", "-", posix).strip("-").lower()
+    if len(text) > _SLUG_TEXT_MAX:
+        text = text[-_SLUG_TEXT_MAX:].lstrip("-")
+    digest = hashlib.sha1(posix.encode("utf-8")).hexdigest()[:8]
+    return f"{text}-{digest}" if text else digest
 
 
 def infer_doc_type(file_path: Path) -> str:
@@ -99,7 +127,7 @@ def generate_sidecar_stub(
     """
     rel_path = file_path.relative_to(repo_root)
     doc_type = resolve_doc_type(file_path, rel_path)
-    slug = slug_from_filename(file_path.name)
+    slug = slug_for_path(rel_path)
     suffix = file_path.suffix.lower()
     if suffix in MARKDOWN_SUFFIXES:
         file_type = "markdown"

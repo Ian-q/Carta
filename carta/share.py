@@ -1,7 +1,8 @@
 """Share a project's embeddings between machines.
 
 `carta export` bundles this project's Qdrant collections — plus a copy of the
-config, the sidecar metadata, and a manifest — into a single portable `.tar.gz`.
+config, the sidecar metadata, the spreadsheet companion notes, and a manifest —
+into a single portable `.tar.gz`.
 `carta import` restores that bundle into another machine's Qdrant and wires up
 `.carta/` so `carta search` works immediately, with no re-embedding.
 
@@ -204,6 +205,11 @@ def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
         sidecars_src = carta_dir / "sidecars"
         if sidecars_src.exists():
             shutil.copytree(sidecars_src, staging / "sidecars")
+        # Spreadsheet companion notes: chunk payloads carry a companion_path into
+        # .carta/companions/, so ship them too or the receiver's paths dangle (#99).
+        companions_src = carta_dir / "companions"
+        if companions_src.exists():
+            shutil.copytree(companions_src, staging / "companions")
 
         manifest = _build_manifest(
             project_name=project_name,
@@ -265,7 +271,7 @@ def _unpack_bundle(bundle_path: Path, dest_dir: Path) -> None:
 
 
 def _copy_sidecars_non_destructive(src_dir: Path, dst_dir: Path) -> int:
-    """Copy sidecar files from src to dst, skipping any that already exist locally.
+    """Copy sidecar (or companion) files from src to dst, skipping any that already exist locally.
 
     Returns the number of files written.
     """
@@ -397,6 +403,11 @@ def run_import(bundle_path, carta_dir: Path, *, qdrant_url=None, project=None,
         sidecars_written = _copy_sidecars_non_destructive(
             staging / "sidecars", carta_dir / "sidecars"
         )
+        # Companions follow the same rule as sidecars: a local copy (regenerated
+        # by a re-embed here) is never overwritten. Older bundles have none (#99).
+        companions_written = _copy_sidecars_non_destructive(
+            staging / "companions", carta_dir / "companions"
+        )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -421,6 +432,7 @@ def run_import(bundle_path, carta_dir: Path, *, qdrant_url=None, project=None,
         "project": target_project,
         "restored": restored,
         "sidecars_written": sidecars_written,
+        "companions_written": companions_written,
         "qdrant_url": effective_url,
     }
     if verbose:
@@ -430,5 +442,7 @@ def run_import(bundle_path, carta_dir: Path, *, qdrant_url=None, project=None,
         )
         if sidecars_written:
             print(f"Wrote {sidecars_written} new sidecar file(s).")
+        if companions_written:
+            print(f"Wrote {companions_written} new companion note(s).")
         print(f'Try: carta search "your query"')
     return summary
