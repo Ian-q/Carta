@@ -23,7 +23,7 @@ def project(tmp_path, monkeypatch):
         cfg = make_cfg(root, tmp_path)
         (root / ".carta" / "config.yaml").write_text(yaml.safe_dump({
             "project_name": "widgets", "qdrant_url": cfg["qdrant_url"],
-            "sessions": cfg["sessions"]}))
+            "sessions": {**cfg["sessions"], "enabled": True}}))
         client = build_index(cfg, root)
         monkeypatch.chdir(root)
         with patch("carta.sessions.recall.QdrantClient", return_value=client), \

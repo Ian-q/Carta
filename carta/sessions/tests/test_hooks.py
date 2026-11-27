@@ -28,7 +28,8 @@ def project(tmp_path):
     state = tmp_path / "state"
     cfg = {"project_name": "widgets", "qdrant_url": DEAD,
            "embed": {"ollama_url": DEAD, "embedding_workers": 1},
-           "sessions": {"state_dir": str(state), "transcripts_dir": str(tmp_path / "t")}}
+           "sessions": {"enabled": True, "state_dir": str(state),
+                        "transcripts_dir": str(tmp_path / "t")}}
     (root / ".carta" / "config.yaml").write_text(yaml.safe_dump(cfg))
     transcript = standard_session(str(root)).write(tmp_path / "t" / "x" / "sess-alpha.jsonl")
     return {"root": root, "state": state / "widgets", "transcript": transcript,
@@ -180,6 +181,33 @@ def test_stop_disabled_module(project):
     assert not spy.calls
 
 
+def _opt_out(project):
+    cfg = yaml.safe_load(project["cfg_path"].read_text())
+    del cfg["sessions"]["enabled"]
+    cfg["modules"] = {"session_memory": True}      # what every pre-#137 config carries
+    project["cfg_path"].write_text(yaml.safe_dump(cfg))
+
+
+def test_stop_does_nothing_until_the_project_opts_in(project):
+    _opt_out(project)
+    spy = Spy()
+    assert hk.handle_stop(_payload(project), spawn=spy) == "disabled"
+    assert hk.handle_stop(_payload(project, event="SessionEnd"), spawn=spy) == "disabled"
+    assert not spy.calls
+
+
+def test_session_start_prints_nothing_until_the_project_opts_in(project, monkeypatch):
+    import carta.sessions.brief as brief
+    monkeypatch.setattr(brief, "safe_brief", lambda *a, **k: ["a brief line"])
+    assert hk.handle_session_start(_payload(project, event="SessionStart")) == ["a brief line"]
+    _opt_out(project)
+    assert hk.handle_session_start(_payload(project, event="SessionStart")) == []
+
+
+def test_session_start_outside_a_project_prints_nothing(tmp_path):
+    assert hk.handle_session_start({"cwd": str(tmp_path), "session_id": "s"}) == []
+
+
 def test_stop_with_broken_config_does_nothing(project):
     project["cfg_path"].write_text("project_name: [unclosed\n")
     spy = Spy()
@@ -263,7 +291,7 @@ def test_run_hook_swallows_unexpected_errors(monkeypatch):
     assert out.getvalue() == ""
 
 
-def test_session_start_prints_the_brief(monkeypatch):
+def test_session_start_prints_the_brief(project, monkeypatch):
     seen = {}
 
     def fake_brief(cwd, exclude_session=None, **kw):
@@ -272,9 +300,9 @@ def test_session_start_prints_the_brief(monkeypatch):
     monkeypatch.setattr("carta.sessions.brief.safe_brief", fake_brief)
     out = io.StringIO()
     hk.run_hook("session-start", io.StringIO(json.dumps(
-        {"session_id": "s-now", "cwd": "/somewhere", "source": "resume"})), out)
+        {"session_id": "s-now", "cwd": str(project["root"]), "source": "resume"})), out)
     assert out.getvalue().splitlines()[0] == "Past sessions"
-    assert seen == {"cwd": "/somewhere", "exclude": "s-now"}
+    assert seen == {"cwd": str(project["root"]), "exclude": "s-now"}
 
 
 def test_session_start_with_qdrant_down_prints_nothing(project):

@@ -285,6 +285,11 @@ DEFAULTS = {
     # Session memory (#137): Claude Code transcripts indexed into
     # {project}_sessions. Gated by modules.session_memory.
     "sessions": {
+        # Opt-in, per project. Off: the Stop/SessionEnd hook indexes nothing and the
+        # SessionStart hook prints no brief. `carta sessions index`, `carta sessions
+        # brief` and `carta recall` still work when run by hand, so a project can be
+        # backfilled and tried before anything runs on its own.
+        "enabled": False,
         "transcripts_dir": "~/.claude/projects",
         # Where the incremental index state lives; "" = <carta home>/sessions/<project>/.
         # Machine-level, never in the repo: transcripts are per machine.
@@ -323,6 +328,17 @@ DEFAULTS = {
 
 class ConfigError(Exception):
     pass
+
+
+def sessions_auto_enabled(cfg: dict) -> bool:
+    """True when this project opted in to session memory running on its own (the
+    indexing hook and the session-start brief): ``modules.session_memory`` is not
+    switched off AND ``sessions.enabled`` is true. ``modules.session_memory`` alone
+    is not consent: every config written before #137 already carries it as true.
+    """
+    if not (cfg.get("modules") or {}).get("session_memory", True):
+        return False
+    return (cfg.get("sessions") or {}).get("enabled", False) is True
 
 
 def load_config(path: Path) -> dict:

@@ -120,7 +120,8 @@ def handle_stop(payload: dict, *, now: float | None = None,
         cfg, repo_root = _project(payload.get("cwd"))
     except Exception:
         return "no-project"
-    if not (cfg.get("modules") or {}).get("session_memory", True):
+    from carta.config import sessions_auto_enabled
+    if not sessions_auto_enabled(cfg):
         return "disabled"
 
     state_dir = _state_dir(cfg)
@@ -208,8 +209,16 @@ def index_locked(transcript: str, *, run: Callable[[list[str]], int] | None = No
 
 
 def handle_session_start(payload: dict, **brief_kwargs) -> list[str]:
-    """The brief for the session being started; ``[]`` on any failure."""
+    """The brief for the session being started; ``[]`` on any failure, and when
+    the project has not opted in (``sessions.enabled``)."""
+    from carta.config import sessions_auto_enabled
     from carta.sessions.brief import safe_brief
+    try:
+        cfg, _root = _project(payload.get("cwd"))
+    except Exception:
+        return []
+    if not sessions_auto_enabled(cfg):
+        return []
     sid = payload.get("session_id")
     return safe_brief(payload.get("cwd") or None,
                       exclude_session=sid if isinstance(sid, str) else None, **brief_kwargs)

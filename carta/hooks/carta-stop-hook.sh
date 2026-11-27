@@ -2,7 +2,7 @@
 # carta-stop-hook.sh — Stop and SessionEnd hook: index the session that just ended.
 #
 # `carta sessions hook stop` reads the hook's JSON from stdin (transcript_path, cwd,
-# session_id, hook_event_name), and when the project has modules.session_memory on,
+# session_id, hook_event_name), and when the project has opted in (sessions.enabled: true),
 # starts `carta sessions index --session <transcript>` as a detached background
 # process and returns at once. It never blocks the session, never prints, and exits
 # 0 on every error: with Qdrant or Ollama down the background run fails quietly
