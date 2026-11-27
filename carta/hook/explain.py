@@ -59,7 +59,11 @@ def explain(prompt: str, cfg: dict, repo_root: Path, *, as_json: bool = False,
     print(f"  query ({src}): {d.query[:160]!r}")
     if d.query_error:
         print(f"  query extraction error: {d.query_error}")
-    if d.search_error:
+    if d.backends_down:
+        for line in d.backends_down:
+            print(f"  BACKEND UNREACHABLE: {line}")
+        print("  (the hook skips recall for this prompt and lets it through)")
+    elif d.search_error:
         print(f"  SEARCH FAILED: {d.search_error}")
     else:
         print(f"  thresholds: low={t['low']} high={t['high']} agree_rank={t['agree_rank']} "

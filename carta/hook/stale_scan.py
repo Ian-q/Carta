@@ -111,7 +111,8 @@ def _stale_judge(section_text: str, candidate: dict, cfg: dict):
     → caller fails open). True only when the judge cites a clause that genuinely
     conflicts with a claim in the section — not merely related/corroborating text."""
     sc = cfg.get("hooks", {}).get("stale_scan", {})
-    ollama_url = cfg["embed"]["ollama_url"]
+    from carta.config import query_ollama_url
+    ollama_url = query_ollama_url(cfg)
     model = sc.get("ollama_model", "qwen3.5:9b")
     timeout_s = sc.get("judge_timeout_s", 30)
     system = (

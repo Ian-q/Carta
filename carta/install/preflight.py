@@ -251,6 +251,23 @@ class PreflightChecker:
         except Exception:
             return None
 
+    def _endpoint_urls(self) -> tuple[str, str]:
+        """(qdrant_url, query Ollama url) that phases 2-3 should check.
+
+        Under `carta doctor` (include_hooks) inside a project, the project's own
+        config: a split-host project names remote hosts there, and checking
+        localhost instead would report a healthy remote setup as broken (#106).
+        Otherwise (`carta init`, before any config exists) the CARTA_*_URL seeds.
+        """
+        if self.include_hooks:
+            loaded = self._project_config()
+            if loaded is not None:
+                from carta.config import query_ollama_url
+                cfg = loaded[0]
+                return str(cfg.get("qdrant_url", "")).rstrip("/"), query_ollama_url(cfg)
+        return (os.environ.get("CARTA_QDRANT_URL", "http://localhost:6333"),
+                os.environ.get("CARTA_OLLAMA_URL", "http://localhost:11434"))
+
     def _phase5_hooks(self) -> None:
         """The project's recall hook and stale-scan judge, against ITS config (#138).
 
@@ -264,7 +281,12 @@ class PreflightChecker:
             return
         cfg, repo_root = loaded
         from carta.hook import health
-        items = health.check_recall_hook(cfg, repo_root, probe=self.probe_judges)
+        # Endpoints first (#106/#116): remote Qdrant/Ollama reachability, round trip,
+        # and — split-host — the models each Ollama host needs for ITS path.
+        items = health.check_endpoints(cfg)
+        recall = health.check_recall_hook(cfg, repo_root, probe=self.probe_judges)
+        # check_endpoints already reported Qdrant; don't say it twice.
+        items += [i for i in recall if i.name != "recall_hook_qdrant"]
         items += health.check_stale_scan_judge(cfg, repo_root, probe=self.probe_judges)
         for it in items:
             self.checks.append(PreflightCheck(
@@ -366,12 +388,34 @@ class PreflightChecker:
 
     def _phase2_infrastructure(self) -> None:
         """Check Docker, Qdrant, Ollama, ports."""
-        self.checks.append(self._check_docker_installed())
-        self.checks.append(self._check_docker_running())
-        self.checks.append(self._check_qdrant_running())
-        self.checks.append(self._check_ollama_installed())
-        self.checks.append(self._check_ollama_running())
-        self.checks.append(self._check_ports_available())
+        from carta.config import is_loopback_url
+        qdrant_url, ollama_url = self._endpoint_urls()
+        qdrant_remote = not is_loopback_url(qdrant_url)
+        ollama_remote = not is_loopback_url(ollama_url)
+        docker = [self._check_docker_installed(), self._check_docker_running()]
+        if qdrant_remote:
+            # Docker only exists here to run a LOCAL Qdrant (#106).
+            for c in docker:
+                if c.status != "pass":
+                    c.status, c.fixable = "skip", False
+                    c.message = f"Not needed: Qdrant is remote ({qdrant_url})"
+                    c.suggestion = None
+        self.checks.extend(docker)
+        self.checks.append(self._check_qdrant_running(qdrant_url))
+        installed = self._check_ollama_installed()
+        if ollama_remote and installed.status != "pass":
+            installed.status = "skip"
+            installed.message = f"Not needed locally: Ollama is remote ({ollama_url})"
+            installed.suggestion = None
+        self.checks.append(installed)
+        self.checks.append(self._check_ollama_running(ollama_url))
+        if qdrant_remote and ollama_remote:
+            self.checks.append(PreflightCheck(
+                name="ports_available", status="skip",
+                message="Skipped: Qdrant and Ollama are both remote",
+                category="infrastructure"))
+        else:
+            self.checks.append(self._check_ports_available())
 
     def _phase3_models(self) -> None:
         """Check Ollama models, ColPali cache."""
@@ -379,7 +423,15 @@ class PreflightChecker:
         ollama_check = next(
             (c for c in self.checks if c.name == "ollama_running"), None
         )
-        if ollama_check and ollama_check.status == "pass":
+        if self.include_hooks and self._project_config() is not None:
+            # Phase 5 checks the models THIS project configures, on the host each
+            # path really uses (query vs ingest, #116). A fixed list checked
+            # against one host here would be wrong in a split-host setup.
+            self.checks.append(PreflightCheck(
+                name="ollama_models", status="skip",
+                message="Checked against this project's config in Phase 5",
+                category="models"))
+        elif ollama_check and ollama_check.status == "pass":
             self.checks.append(self._check_ollama_model("nomic-embed-text"))
             self.checks.append(self._check_ollama_model("qwen3-vl:8b"))
             self.checks.append(self._check_ollama_model("qwen3.5:0.8b"))
@@ -642,6 +694,9 @@ class PreflightChecker:
         """
         if url is None:
             url = os.environ.get("CARTA_QDRANT_URL", "http://localhost:6333")
+        from carta.config import is_loopback_url
+        if not is_loopback_url(url):
+            return self._check_remote_qdrant(url)
         try:
             response = requests.get(f"{url}/healthz", timeout=3)
             if response.status_code == 200:
@@ -679,6 +734,34 @@ class PreflightChecker:
                 fixable=True,
                 suggestion=QDRANT_RUN_SUGGESTION,
             )
+
+    def _check_remote_qdrant(self, url: str) -> PreflightCheck:
+        """A remote Qdrant: reachability and round trip, never a local auto-fix.
+
+        Starting a local Docker Qdrant would not fix an unreachable remote one —
+        it would just leave an empty second Qdrant behind — so this is not fixable.
+        """
+        import time as _time
+        t0 = _time.monotonic()
+        try:
+            response = requests.get(f"{url}/healthz", timeout=5)
+            ms = int((_time.monotonic() - t0) * 1000)
+            if response.status_code == 200:
+                return PreflightCheck(
+                    name="qdrant_running", status="pass",
+                    message=f"Qdrant (remote) ready at {url}, {ms} ms",
+                    category="infrastructure",
+                    details={"url": url, "ms": ms, "remote": True})
+            reason = f"answered HTTP {response.status_code}"
+        except Exception as e:
+            reason = f"unreachable ({type(e).__name__})"
+        return PreflightCheck(
+            name="qdrant_running", status="fail",
+            message=f"Qdrant (remote) at {url} {reason}",
+            category="infrastructure", fixable=False,
+            suggestion="Check the network path to the Qdrant host (VPN/tailnet up? host "
+                       "awake?) and that qdrant_url is right",
+            details={"url": url, "remote": True})
 
     def _check_ollama_installed(self) -> PreflightCheck:
         """Check Ollama is installed."""

@@ -41,8 +41,15 @@ from pathlib import Path
 
 import requests
 
-from carta.config import find_config, load_config, NOTE_DOC_TYPES, ollama_keep_alive
-from carta.embed.pipeline import run_search
+# stdout carries only the JSON context block, and Claude Code adds whatever a
+# UserPromptSubmit hook prints there to the prompt. PyMuPDF (imported below via the
+# embed pipeline) writes its own notices to stdout by default, e.g. the `fitz`
+# deprecation line; send them to stderr. Set before the import, which reads it once.
+os.environ.setdefault("PYMUPDF_MESSAGE", "fd:2")
+
+from carta.config import (find_config, load_config, NOTE_DOC_TYPES,  # noqa: E402
+                          ollama_keep_alive, query_ollama_url)
+from carta.embed.pipeline import run_search  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +94,22 @@ def _run() -> None:
         _debug(lambda: "carta-hook: proactive_recall disabled in config — nothing to do")
         sys.exit(0)
 
-    decision = decide(prompt, cfg)
+    decision = _decide_bounded(prompt, cfg)
+    if decision is None:
+        # The hard ceiling fired: something below ignored its own timeout. Leave
+        # now — the worker is a daemon thread, and os._exit skips waiting on any
+        # non-daemon helper (a judge executor) it may have started.
+        print(f"carta-hook: recall gave no answer within {_hard_timeout_s(prompt, cfg):g}s "
+              "— skipping (fail-open)", file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(0)
+    if decision.backends_down:
+        print("carta-hook: " + "; ".join(decision.backends_down)
+              + " — skipping recall (fail-open)", file=sys.stderr)
+        sys.exit(0)
     if decision.search_error is not None:
-        print(f"carta-hook: search error (fail-open): {decision.search_error}", file=sys.stderr)
+        print(f"carta-hook: search error (fail-open): {_one_line(decision.search_error)}",
+              file=sys.stderr)
         sys.exit(0)
 
     if decision.judge_status in ("timeout", "error"):
@@ -106,6 +126,60 @@ def _run() -> None:
     if decision.inject:
         _inject(decision.hits)
     sys.exit(0)
+
+
+def _one_line(msg: str, limit: int = 240) -> str:
+    """First line of `msg`, truncated: hook stderr is shown to the user, so a
+    multi-line requests/urllib3 error chain is noise, not diagnosis."""
+    line = (msg or "").strip().splitlines()[0] if (msg or "").strip() else ""
+    return line if len(line) <= limit else line[: limit - 3] + "..."
+
+
+def _hard_timeout_s(prompt: str, cfg: dict) -> float:
+    """Ceiling for the whole decision, in seconds (#106).
+
+    `proactive_recall.hook_timeout_s` when set; otherwise the sum of the budgets
+    the steps already have — connect probe, long-prompt extraction (4 s, only for
+    prompts over 500 chars), search, judge — plus one second of slack. Each step
+    is supposed to honour its own budget; this exists for the one that does not.
+    """
+    pr = cfg.get("proactive_recall", {}) or {}
+    explicit = pr.get("hook_timeout_s")
+    if isinstance(explicit, (int, float)) and explicit > 0:
+        return float(explicit)
+    from carta.hook.reach import DEFAULT_CONNECT_TIMEOUT_S
+    total = float(pr.get("connect_timeout_s", DEFAULT_CONNECT_TIMEOUT_S) or 0)
+    total += 4.0 if len(prompt) > 500 else 0.0
+    total += float(pr.get("search_timeout_s", 3) or 0)
+    total += float(pr.get("judge_timeout_s", 3) or 0)
+    return total + 1.0
+
+
+def _decide_bounded(prompt: str, cfg: dict) -> "Decision | None":
+    """`decide()` under a hard wall-clock ceiling; None when the ceiling fires.
+
+    Runs in a daemon thread so an abandoned call cannot keep the process alive.
+    An exception inside decide() is re-raised here, so main()'s fail-open handler
+    still reports it.
+    """
+    import threading
+
+    box: dict = {}
+
+    def work():
+        try:
+            box["d"] = decide(prompt, cfg)
+        except BaseException as e:  # noqa: BLE001 - re-raised in the caller
+            box["e"] = e
+
+    t = threading.Thread(target=work, name="carta-hook-decide", daemon=True)
+    t.start()
+    t.join(_hard_timeout_s(prompt, cfg))
+    if t.is_alive():
+        return None
+    if "e" in box:
+        raise box["e"]
+    return box["d"]
 
 
 def _debug(make_line) -> None:
@@ -138,6 +212,7 @@ class Decision:
     query_error: str | None = None
     hits: list = field(default_factory=list)
     search_error: str | None = None
+    backends_down: list = field(default_factory=list)  # one line per unreachable remote (#106)
     zone: str = "silent"                  # "silent" | "judge" | "inject"
     zone_reason: str = ""
     thresholds: dict = field(default_factory=dict)
@@ -198,6 +273,7 @@ class Decision:
             "query_source": self.query_source,
             "query_error": self.query_error,
             "search_error": self.search_error,
+            "backends_down": list(self.backends_down),
             "thresholds": self.thresholds,
             "judge": {
                 "backend": self.judge_backend,
@@ -238,19 +314,39 @@ def decide(prompt: str, cfg: dict) -> Decision:
         "max_results": max_results,
     })
 
+    # Remote backends first (#106): one parallel TCP connect per non-loopback
+    # endpoint under connect_timeout_s. A tailnet that is down makes every later
+    # step wait out its full timeout, so find out in one short, bounded step and
+    # skip the rest. Loopback endpoints are not probed (they fail instantly anyway).
+    from carta.hook.reach import DEFAULT_CONNECT_TIMEOUT_S, probe
+    connect_timeout_s = pr.get("connect_timeout_s", DEFAULT_CONNECT_TIMEOUT_S)
+    d.thresholds["connect_timeout_s"] = connect_timeout_s
+    t_probe = time.monotonic()
+    d.started_at = t_probe
+    if connect_timeout_s and connect_timeout_s > 0:
+        down = probe({"Qdrant": cfg.get("qdrant_url", ""),
+                      "Ollama (query)": query_ollama_url(cfg)}, connect_timeout_s)
+        d.timings_ms["connect"] = int((time.monotonic() - t_probe) * 1000)
+        if down:
+            d.backends_down = [str(u) for u in down]
+            d.search_error = "backend unreachable: " + "; ".join(d.backends_down)
+            d.zone_reason = "backend unreachable"
+            d.timings_ms["total"] = d.timings_ms["connect"]
+            return d
+
     # Extract query.
-    # started_at captures from here, not just before run_search: for prompts
-    # >500 chars, _extract_query makes its own Ollama call (up to 4s) that can
-    # dominate the latency the hook adds to prompt submission. Starting the
-    # clock after it would make that cost invisible in the trace record used
-    # for calibration (issue #118).
-    d.started_at = time.monotonic()
+    # started_at was set before the connect probe, not just before run_search:
+    # for prompts >500 chars, _extract_query makes its own Ollama call (up to 4s)
+    # that can dominate the latency the hook adds to prompt submission. Starting
+    # the clock after it would make that cost invisible in the trace record used
+    # for calibration (issue #118). The probe is hook latency too.
+    t_extract = time.monotonic()
     qinfo: dict = {}
     d.query = _extract_query(prompt, cfg, info=qinfo)
     d.query_source = qinfo.get("source", "prompt")
     d.query_error = qinfo.get("error")
     t_search = time.monotonic()
-    d.timings_ms["extract"] = int((t_search - d.started_at) * 1000)
+    d.timings_ms["extract"] = int((t_search - t_extract) * 1000)
 
     # Search — text-only, never reranked. Proactive recall fires on every
     # prompt and blocks submission, so it must never trigger the heavy ColPali
@@ -500,7 +596,7 @@ def _extract_query(prompt: str, cfg: dict, info: dict | None = None) -> str:
         return prompt
 
     try:
-        ollama_url = cfg["embed"]["ollama_url"]
+        ollama_url = query_ollama_url(cfg)
         model = cfg["proactive_recall"]["ollama_model"]
         resp = requests.post(
             f"{ollama_url}/api/chat",
@@ -546,7 +642,7 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: floa
     ThreadPoolExecutor.__exit__ waits for the abandoned thread to finish."""
     from carta.hook.judge import ollama_yesno
 
-    ollama_url = cfg["embed"]["ollama_url"]
+    ollama_url = query_ollama_url(cfg)
     model = cfg["proactive_recall"]["ollama_model"]
     excerpts = "\n---\n".join(h["excerpt"][:200] for h in hits)
     user_msg = (

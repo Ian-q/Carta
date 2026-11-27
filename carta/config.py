@@ -86,7 +86,12 @@ DEFAULTS = {
     "embed": {
         "reference_docs_path": "docs/reference/",
         "audio_path": "docs/audio/",
+        # Query-time Ollama: query embeds, HyDE, LLM rerank, the recall hook's judge
+        # and query extractor, the stale-scan judge. Keep it close (usually local).
         "ollama_url": "http://localhost:11434",
+        # Optional `ingest_ollama_url` (deliberately not a default, so it never lands
+        # in a generated config): Ollama for INGEST — document embeds, OCR, vision.
+        # Unset means ollama_url, i.e. single-host. See docs/split-host.md (#116).
         "ollama_model": "nomic-embed-text:latest",
         "ollama_vision_model": "qwen3-vl:8b",  # requires Ollama >=0.12.7
         "ocr_model": "glm-ocr:latest",  # NEW: for text/table extraction
@@ -156,6 +161,12 @@ DEFAULTS = {
         "max_results": 5,
         "judge_timeout_s": 3,
         "search_timeout_s": 3,      # wall-clock budget for the recall search (#106)
+        # TCP connect probe to each NON-loopback backend (Qdrant, query Ollama) before
+        # the hook does any work; if one does not answer in this time the prompt
+        # proceeds with no recall. 0 disables the probe. (#106)
+        "connect_timeout_s": 1.0,
+        # Optional `hook_timeout_s`: a hard ceiling on the whole hook. Unset, it is
+        # connect + search + judge budgets (+4 s for prompts over 500 chars) + 1 s.
         "ollama_model": "qwen3.5:0.8b",   # used when judge_backend == "ollama"
         # Gray-zone judge. "crossenc" (default) scores query-vs-passage with a local
         # fastembed cross-encoder: no Ollama, no reasoning model, ~10ms warm and ~0.5s
@@ -336,8 +347,75 @@ def load_config(path: Path) -> dict:
     for key in ("embed", "modules", "search", "graph", "sessions"):
         if key in raw and not isinstance(raw[key], dict):
             raise ConfigError(f"Field '{key}' must be a mapping, got {type(raw[key]).__name__}")
+    ingest = (raw.get("embed") or {}).get("ingest_ollama_url")
+    if ingest is not None and not isinstance(ingest, str):
+        raise ConfigError(
+            f"Field 'embed.ingest_ollama_url' must be a URL string, got {type(ingest).__name__}"
+        )
     merged = _deep_merge(DEFAULTS, raw)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Ollama endpoints: query vs ingest (#116)
+# ---------------------------------------------------------------------------
+
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
+
+def query_ollama_url(cfg: dict) -> str:
+    """Ollama for the QUERY path: `embed.ollama_url`.
+
+    Used by everything that runs while someone waits: the query embed (and HyDE) in
+    `carta search`, the MCP tools and the recall hook; the LLM reranker; the recall
+    hook's judge and long-prompt query extractor; the stale-scan judge; doctor's
+    recall checks. Single-host configs only ever set this key.
+    """
+    embed = cfg.get("embed") or {}
+    url = embed.get("ollama_url") or DEFAULT_OLLAMA_URL
+    return str(url).strip().rstrip("/")
+
+
+def ingest_ollama_url(cfg: dict) -> str:
+    """Ollama for the INGEST path: `embed.ingest_ollama_url`, else `embed.ollama_url`.
+
+    Used by `carta embed` and everything under it: document chunk embeds, OCR and
+    vision descriptions. These are the slow, batch calls that want a GPU host; the
+    query path must not follow them there (#116). Unset or blank means "same as
+    ollama_url", which is exactly the pre-#116 behaviour.
+    """
+    embed = cfg.get("embed") or {}
+    url = embed.get("ingest_ollama_url")
+    if isinstance(url, str) and url.strip():
+        return url.strip().rstrip("/")
+    return query_ollama_url(cfg)
+
+
+def is_split_ollama(cfg: dict) -> bool:
+    """True when ingest and query use different Ollama endpoints."""
+    return ingest_ollama_url(cfg) != query_ollama_url(cfg)
+
+
+def is_loopback_url(url: str) -> bool:
+    """True when `url`'s host is this machine (localhost, 127.0.0.0/8, ::1).
+
+    A loopback service that is down refuses a connection instantly, so only a
+    non-loopback endpoint can stall a caller for its full timeout.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(url if "//" in url else f"//{url}").hostname or ""
+    except ValueError:
+        return False
+    host = host.lower()
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def collection_name(cfg: dict, type_: str) -> str:
