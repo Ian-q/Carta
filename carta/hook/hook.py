@@ -41,9 +41,15 @@ from pathlib import Path
 
 import requests
 
-from carta.config import (find_config, load_config, NOTE_DOC_TYPES, ollama_keep_alive,
-                          query_ollama_url)
-from carta.embed.pipeline import run_search
+# stdout carries only the JSON context block, and Claude Code adds whatever a
+# UserPromptSubmit hook prints there to the prompt. PyMuPDF (imported below via the
+# embed pipeline) writes its own notices to stdout by default, e.g. the `fitz`
+# deprecation line; send them to stderr. Set before the import, which reads it once.
+os.environ.setdefault("PYMUPDF_MESSAGE", "fd:2")
+
+from carta.config import (find_config, load_config, NOTE_DOC_TYPES,  # noqa: E402
+                          ollama_keep_alive, query_ollama_url)
+from carta.embed.pipeline import run_search  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
