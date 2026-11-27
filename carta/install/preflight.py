@@ -61,7 +61,7 @@ class PreflightCheck:
     name: str
     status: Literal["pass", "fail", "warn", "skip"]
     message: str
-    category: Literal["environment", "infrastructure", "models", "resources"]
+    category: Literal["environment", "infrastructure", "models", "resources", "hooks"]
     fixable: bool = False
     auto_fix_func: Optional[Callable[[], bool]] = None
     suggestion: Optional[str] = None
@@ -160,6 +160,7 @@ class PreflightResult:
             "infrastructure": "Phase 2: Infrastructure",
             "models": "Phase 3: Models",
             "resources": "Phase 4: Resources",
+            "hooks": "Phase 5: Hooks (this project)",
         }
         return titles.get(category, f"Phase: {category.title()}")
 
@@ -215,10 +216,16 @@ class PreflightResult:
 class PreflightChecker:
     """Orchestrates all preflight checks across 4 phases."""
 
-    def __init__(self, interactive: bool = True, verbose: bool = False, project_root: Optional[Path] = None):
+    def __init__(self, interactive: bool = True, verbose: bool = False,
+                 project_root: Optional[Path] = None, include_hooks: bool = False,
+                 probe_judges: bool = True):
         self.interactive = interactive
         self.verbose = verbose
         self.project_root = (project_root or _DEFAULT_PROJECT_ROOT).resolve()
+        # Phase 5 reads the PROJECT's config and is for `carta doctor` only: during
+        # `carta init` a hook problem must not block the very command that fixes it.
+        self.include_hooks = include_hooks
+        self.probe_judges = probe_judges
         self.checks: list[PreflightCheck] = []
         self.os_type = self._detect_os()
 
@@ -230,8 +237,42 @@ class PreflightChecker:
         self._phase2_infrastructure()
         self._phase3_models()
         self._phase4_resources()
+        if self.include_hooks:
+            self._phase5_hooks()
 
         return PreflightResult(self.checks)
+
+    def _project_config(self) -> Optional[tuple[dict, Path]]:
+        """(cfg, repo_root) for the project at project_root, or None outside one."""
+        try:
+            from carta.config import find_config, load_config
+            cfg_path = find_config(self.project_root)
+            return load_config(cfg_path), cfg_path.parent.parent
+        except Exception:
+            return None
+
+    def _phase5_hooks(self) -> None:
+        """The project's recall hook and stale-scan judge, against ITS config (#138).
+
+        Phase 3 checks a fixed list of default models as warnings; this phase checks
+        the models the project's enabled hooks are actually configured to use, and a
+        missing one is an error — a missing judge is a silently dead hook, not an
+        optional extra.
+        """
+        loaded = self._project_config()
+        if loaded is None:
+            return
+        cfg, repo_root = loaded
+        from carta.hook import health
+        items = health.check_recall_hook(cfg, repo_root, probe=self.probe_judges)
+        items += health.check_stale_scan_judge(cfg, repo_root, probe=self.probe_judges)
+        for it in items:
+            self.checks.append(PreflightCheck(
+                name=it.name, status=it.status, message=it.message, category="hooks",
+                fixable=it.fix is not None and it.status == "fail",
+                auto_fix_func=it.fix, suggestion=it.suggestion,
+                details=it.details or {},
+            ))
 
     def _detect_os(self) -> str:
         """Detect operating system type."""
@@ -355,9 +396,12 @@ class PreflightChecker:
 
         # Independent of Ollama: the default recall judge is a local cross-encoder,
         # so this check runs whether or not Ollama is up.
-        from carta.config import DEFAULTS
-        self.checks.append(self._check_judge_model(
-            DEFAULTS["proactive_recall"]["judge_model"]))
+        # Phase 5 checks the project's CONFIGURED judge (as an error); don't also
+        # warn about the default one here.
+        if not (self.include_hooks and self._project_config() is not None):
+            from carta.config import DEFAULTS
+            self.checks.append(self._check_judge_model(
+                DEFAULTS["proactive_recall"]["judge_model"]))
 
         # Check ColPali availability separately
         self.checks.append(self._check_colpali_available())

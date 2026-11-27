@@ -603,7 +603,9 @@ def cmd_doctor(args):
     from carta.install.preflight import PreflightChecker, PreflightResult
     from carta.install.auto_fix import AutoInstaller
     interactive = not (args.yes or args.fix)  # --yes or --fix disables prompts
-    checker = PreflightChecker(interactive=interactive, verbose=args.verbose, project_root=Path.cwd())
+    checker = PreflightChecker(interactive=interactive, verbose=args.verbose, project_root=Path.cwd(),
+                               include_hooks=True,
+                               probe_judges=not getattr(args, "no_probe", False))
     result = checker.run()
 
     # Print human-readable report (JSON deferred until after corpus-integrity merge)
@@ -1362,7 +1364,19 @@ def cmd_hook(args):
             sys.exit(1)
         sys.exit(0)
 
-    print("usage: carta hook {install,check} [--stage pre-push|pre-commit]", file=sys.stderr)
+    if action == "explain":
+        from carta.config import load_config
+        from carta.hook.explain import explain
+        try:
+            cfg_path = find_config()
+        except FileNotFoundError:
+            print("Not a Carta project (no .carta/config.yaml found).", file=sys.stderr)
+            sys.exit(1)
+        cfg = load_config(cfg_path)
+        sys.exit(explain(args.prompt, cfg, cfg_path.parent.parent, as_json=args.json,
+                         health_probe=args.probe))
+
+    print("usage: carta hook {install,check,explain} [--stage pre-push|pre-commit]", file=sys.stderr)
     sys.exit(1)
 
 
@@ -1424,6 +1438,8 @@ def main():
     doctor_p.add_argument("--yes", "-y", action="store_true", help="Auto-confirm fixes without prompting")
     doctor_p.add_argument("--verbose", "-v", action="store_true", help="Show detailed output")
     doctor_p.add_argument("--json", action="store_true", help="Output in JSON format")
+    doctor_p.add_argument("--no-probe", action="store_true",
+                          help="Skip the judge latency probes (one live judge call per enabled judge)")
     
     search_p = sub.add_parser("search", help="Semantic search over embedded documents")
     search_p.add_argument("query", nargs="+")
@@ -1559,8 +1575,14 @@ def main():
     cm_sub.add_parser("record", help="Re-hash sections and stamp last_synced after a sync")
     claude_md_p.set_defaults(func=cmd_claude_md)
 
-    hook_p = sub.add_parser("hook", help="Manage Carta git hooks (stale-reference scan)")
+    hook_p = sub.add_parser("hook", help="Manage Carta git hooks; explain the recall hook")
     hook_sub = hook_p.add_subparsers(dest="hook_action")
+    hook_explain = hook_sub.add_parser(
+        "explain", help="Show why the recall hook would or would not inject for a prompt")
+    hook_explain.add_argument("prompt", help="The prompt to evaluate")
+    hook_explain.add_argument("--json", action="store_true", help="Output in JSON format")
+    hook_explain.add_argument("--probe", action="store_true",
+                              help="Also time a judge call against judge_timeout_s")
     hook_install = hook_sub.add_parser("install", help="Install/remove the managed git hook")
     hook_install.add_argument("--stage", choices=["pre-push", "pre-commit"], default="pre-push")
     hook_install.add_argument("--uninstall", action="store_true", help="Remove the managed hook")

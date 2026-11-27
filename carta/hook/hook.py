@@ -16,6 +16,13 @@ cosine for relevance (see `_gate_zone`).
 A top hit with no dense_score (sparse-only, or a producer that omits the field)
 can never be silenced — it goes to the judge.
 
+When the judge cannot answer (timeout, missing model, Ollama down, fastembed
+missing), that is NOT treated as "no": a top hit whose absolute relevance
+(dense cosine, or the legacy cosine) is above high_threshold still injects; the
+grey zone below it stays silent (#138). Set CARTA_HOOK_DEBUG=1 for one stderr
+line per prompt with scores, thresholds, judge status and timings, or run
+`carta hook explain "<prompt>"`.
+
 Non-hybrid (cosine-score) searches fall back to the legacy high_threshold /
 low_threshold gate, which remains valid there.
 
@@ -26,8 +33,10 @@ All diagnostic output goes to stderr.
 
 import concurrent.futures
 import json
+import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
@@ -75,9 +84,146 @@ def _run() -> None:
 
     # 3. Gate on module enabled
     if not cfg.get("modules", {}).get("proactive_recall", False):
+        _debug(lambda: "carta-hook: proactive_recall disabled in config — nothing to do")
         sys.exit(0)
 
-    # 4. Read thresholds
+    decision = decide(prompt, cfg)
+    if decision.search_error is not None:
+        print(f"carta-hook: search error (fail-open): {decision.search_error}", file=sys.stderr)
+        sys.exit(0)
+
+    if decision.judge_status in ("timeout", "error"):
+        print(f"carta-hook: judge {decision.judge_status} "
+              f"({decision.judge_error or 'no detail'}) — {decision.fallback_note()}",
+              file=sys.stderr)
+    _debug(decision.summary_line)
+
+    _emit_trace(decision.query, decision.hits, decision.zone, decision.judge_verdict,
+                decision.started_at, decision.search_cfg,
+                judge_backend=decision.judge_backend, judge_score=decision.judge_score,
+                judge_status=decision.judge_status, injected=decision.inject)
+
+    if decision.inject:
+        _inject(decision.hits)
+    sys.exit(0)
+
+
+def _debug(make_line) -> None:
+    """One stderr line per prompt when CARTA_HOOK_DEBUG is set (#138).
+
+    Claude Code shows hook stderr in its transcript/verbose view, so this is the
+    in-situ answer to "why did nothing get injected?" without a separate command.
+    Built lazily so the default path pays nothing.
+    """
+    if os.environ.get("CARTA_HOOK_DEBUG", "").strip() not in ("", "0", "false", "no"):
+        try:
+            print(make_line(), file=sys.stderr)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# The decision, as data (shared by the hook and `carta hook explain`)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Decision:
+    """Everything the hook decided for one prompt, and why.
+
+    `carta hook explain` prints this; the hook acts on it. Keeping one code path
+    for both means the explanation cannot drift from what the hook really does.
+    """
+    query: str = ""
+    query_source: str = "prompt"          # "prompt" | "ollama" | "fallback"
+    query_error: str | None = None
+    hits: list = field(default_factory=list)
+    search_error: str | None = None
+    zone: str = "silent"                  # "silent" | "judge" | "inject"
+    zone_reason: str = ""
+    thresholds: dict = field(default_factory=dict)
+    judge_backend: str | None = None
+    judge_status: str = "not_called"      # "not_called" | "yes" | "no" | "timeout" | "error"
+    judge_error: str | None = None
+    judge_score: float | None = None
+    judge_fallback: str | None = None     # set when the judge was unavailable
+    inject: bool = False
+    timings_ms: dict = field(default_factory=dict)
+    started_at: float = 0.0
+    search_cfg: dict = field(default_factory=dict)
+
+    @property
+    def judge_verdict(self) -> bool | None:
+        """The trace's legacy `judge` field: None when the judge never ran."""
+        if self.judge_status == "not_called":
+            return None
+        return self.judge_status == "yes"
+
+    def fallback_note(self) -> str:
+        if self.judge_fallback == "inject_high_confidence":
+            return "top hit is above high_threshold, injecting without the judge"
+        return "grey-zone hits not injected"
+
+    def summary_line(self) -> str:
+        top = self.hits[0] if self.hits else {}
+        bits = [
+            f"carta-hook: {'INJECT' if self.inject else 'silent'}",
+            f"zone={self.zone}",
+            f"hits={len(self.hits)}",
+        ]
+        if top:
+            bits.append(f"top_score={_fmt(top.get('score'))}")
+            bits.append(f"top_dense={_fmt(top.get('dense_score'))}")
+            if top.get("lane_ranks"):
+                bits.append(f"lanes={top['lane_ranks']}")
+        t = self.thresholds
+        bits.append(f"low={t.get('low')} high={t.get('high')} agree_rank={t.get('agree_rank')}")
+        if self.judge_status != "not_called":
+            bits.append(f"judge={self.judge_backend}:{self.judge_status}")
+            if self.judge_score is not None:
+                bits.append(f"judge_score={_fmt(self.judge_score)}")
+            if self.judge_error:
+                bits.append(f"judge_error={self.judge_error!r}")
+            if self.judge_fallback:
+                bits.append(f"fallback={self.judge_fallback}")
+        bits.append("ms=" + ",".join(f"{k}:{v}" for k, v in self.timings_ms.items()))
+        bits.append(f"reason={self.zone_reason!r}")
+        return " ".join(bits)
+
+    def to_dict(self) -> dict:
+        return {
+            "inject": self.inject,
+            "zone": self.zone,
+            "zone_reason": self.zone_reason,
+            "query": self.query,
+            "query_source": self.query_source,
+            "query_error": self.query_error,
+            "search_error": self.search_error,
+            "thresholds": self.thresholds,
+            "judge": {
+                "backend": self.judge_backend,
+                "status": self.judge_status,
+                "error": self.judge_error,
+                "score": self.judge_score,
+                "fallback": self.judge_fallback,
+            },
+            "timings_ms": self.timings_ms,
+            "hits": [
+                {k: h.get(k) for k in ("source", "score", "dense_score", "lane_ranks", "doc_type")}
+                for h in self.hits
+            ],
+        }
+
+
+def _fmt(x) -> str:
+    return "none" if x is None else f"{x:.3f}" if isinstance(x, float) else str(x)
+
+
+def decide(prompt: str, cfg: dict) -> Decision:
+    """Run query extraction, search, gate and judge for one prompt — no side effects.
+
+    Does not consult `modules.proactive_recall` (the caller does), does not inject
+    and does not write a trace. Search errors are returned in `search_error`.
+    """
     pr = cfg.get("proactive_recall", {})
     high_threshold = pr.get("high_threshold", 0.85)
     low_threshold = pr.get("low_threshold", 0.60)
@@ -86,16 +232,27 @@ def _run() -> None:
     search_timeout_s = pr.get("search_timeout_s", 3)
     agree_rank = pr.get("agree_rank", 3)
 
-    # 5. Extract query
+    d = Decision(thresholds={
+        "low": low_threshold, "high": high_threshold, "agree_rank": agree_rank,
+        "judge_timeout_s": judge_timeout_s, "search_timeout_s": search_timeout_s,
+        "max_results": max_results,
+    })
+
+    # Extract query.
     # started_at captures from here, not just before run_search: for prompts
     # >500 chars, _extract_query makes its own Ollama call (up to 4s) that can
     # dominate the latency the hook adds to prompt submission. Starting the
     # clock after it would make that cost invisible in the trace record used
     # for calibration (issue #118).
-    started_at = time.monotonic()
-    query = _extract_query(prompt, cfg)
+    d.started_at = time.monotonic()
+    qinfo: dict = {}
+    d.query = _extract_query(prompt, cfg, info=qinfo)
+    d.query_source = qinfo.get("source", "prompt")
+    d.query_error = qinfo.get("error")
+    t_search = time.monotonic()
+    d.timings_ms["extract"] = int((t_search - d.started_at) * 1000)
 
-    # 6. Search — text-only, never reranked. Proactive recall fires on every
+    # Search — text-only, never reranked. Proactive recall fires on every
     # prompt and blocks submission, so it must never trigger the heavy ColPali
     # visual path (model load ~9s/prompt) nor pay reranker latency (an LLM
     # rerank call can take 10s+). The three-zone judge below already filters
@@ -107,7 +264,7 @@ def _run() -> None:
     # dead local service refuses instantly, so the underlying 60s embed timeout
     # never binds, but a dead tailnet peer drops packets with no RST and the full
     # timeout elapses on every prompt (#106).
-    search_cfg = {
+    d.search_cfg = {
         **cfg,
         "embed": {**cfg.get("embed", {}), "colpali_enabled": False},
         "search": {
@@ -116,31 +273,84 @@ def _run() -> None:
         },
     }
     try:
-        hits = run_search(query, search_cfg, timeout_s=search_timeout_s)
+        hits = run_search(d.query, d.search_cfg, timeout_s=search_timeout_s)
     except Exception as e:
-        print(f"carta-hook: search error (fail-open): {e}", file=sys.stderr)
-        sys.exit(0)
+        d.search_error = f"{type(e).__name__}: {e}"
+        d.zone_reason = "search failed"
+        d.timings_ms["search"] = int((time.monotonic() - t_search) * 1000)
+        return d
+    d.timings_ms["search"] = int((time.monotonic() - t_search) * 1000)
 
-    # 7. Cap results
-    hits = hits[:max_results]
+    d.hits = hits[:max_results]
+    d.zone = _gate_zone(d.hits, agree_rank=agree_rank, low=low_threshold, high=high_threshold)
+    d.zone_reason = _zone_reason(d.hits, d.zone, agree_rank=agree_rank,
+                                 low=low_threshold, high=high_threshold)
 
-    # 8. Gate on retrieval structure
-    zone = _gate_zone(
-        hits,
-        agree_rank=agree_rank,
-        low=low_threshold, high=high_threshold,
-    )
-    judge_verdict = None
-    judge_out: dict = {}
-    if zone == "judge":
-        judge_verdict = _judge_with_timeout(prompt, hits, cfg, judge_timeout_s, out=judge_out)
+    if d.zone == "judge":
+        judge_out: dict = {}
+        verdict = _judge_with_timeout(prompt, d.hits, cfg, judge_timeout_s, out=judge_out)
+        d.judge_backend = judge_out.get("backend")
+        d.judge_score = judge_out.get("score")
+        d.judge_status = judge_out.get("status") or ("yes" if verdict else "no")
+        d.judge_error = judge_out.get("error")
+        d.timings_ms["judge"] = judge_out.get("elapsed_ms", 0)
+        if d.judge_status in ("timeout", "error"):
+            # The judge is unavailable for this prompt (#138). A top hit whose
+            # absolute relevance clears high_threshold is strong enough to inject
+            # unvetted; the grey zone below it is exactly what the judge exists
+            # to vet, so it stays silent (HOOK-05).
+            if _clears_high(d.hits, high_threshold):
+                d.judge_fallback = "inject_high_confidence"
+                d.inject = True
+            else:
+                d.judge_fallback = "silent_grey_zone"
+        else:
+            d.inject = d.judge_status == "yes"
+    else:
+        d.inject = d.zone == "inject"
 
-    _emit_trace(query, hits, zone, judge_verdict, started_at, search_cfg,
-                judge_backend=judge_out.get("backend"), judge_score=judge_out.get("score"))
+    d.timings_ms["total"] = int((time.monotonic() - d.started_at) * 1000)
+    return d
 
-    if zone == "inject" or judge_verdict:
-        _inject(hits)
-    sys.exit(0)
+
+def _clears_high(hits: list[dict], high: float) -> bool:
+    """True when the top hit's ABSOLUTE relevance is above `high`.
+
+    Hybrid hits are measured by the dense lane's raw cosine (the fused RRF score
+    has no absolute scale); legacy cosine hits by `score`. A hit with no absolute
+    measure (sparse-only) never clears it.
+    """
+    if not hits:
+        return False
+    top = hits[0]
+    measure = top.get("dense_score") if top.get("lane_ranks") else top.get("score")
+    return measure is not None and measure > high
+
+
+def _zone_reason(hits: list[dict], zone: str, *, agree_rank: int, low: float,
+                 high: float) -> str:
+    """Plain-language reason for `_gate_zone`'s answer (explain/debug only)."""
+    if not hits:
+        return "no search results"
+    top = hits[0]
+    ranks = top.get("lane_ranks")
+    if not ranks:
+        score = top.get("score")
+        if zone == "silent":
+            return f"top cosine {_fmt(score)} < low_threshold {low}"
+        if zone == "inject":
+            return f"top cosine {_fmt(score)} > high_threshold {high}"
+        return f"top cosine {_fmt(score)} in grey zone [{low}, {high}] -> judge"
+    dense = top.get("dense_score")
+    if zone == "silent":
+        return f"top dense cosine {_fmt(dense)} < low_threshold {low}"
+    if zone == "inject":
+        return (f"top hit ranks {ranks} are both < agree_rank {agree_rank} "
+                "(lanes agree) -> inject without judge")
+    if dense is None:
+        return f"top hit has no dense cosine (lanes {ranks}) -> judge"
+    return (f"top dense cosine {_fmt(dense)} >= low_threshold {low} but lanes {ranks} "
+            f"do not both rank < {agree_rank} -> judge")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +421,8 @@ def _emit_trace(
     search_cfg: dict,
     judge_backend: str | None = None,
     judge_score: float | None = None,
+    judge_status: str | None = None,
+    injected: bool | None = None,
 ) -> None:
     """Append one trace record. Swallows everything — the hook must fail open.
 
@@ -259,6 +471,12 @@ def _emit_trace(
             judge_backend=judge_backend,
             judge_score=judge_score,
         )
+        # `judge` alone cannot tell a "no" from a timeout or a missing model —
+        # both were False — which is how a dead judge hid in the traces (#138).
+        if judge_status is not None:
+            rec["judge_status"] = judge_status
+        if injected is not None:
+            rec["injected"] = injected
         append_trace(search_cfg.get("project_name", ""), rec)
     except Exception:
         pass
@@ -268,12 +486,16 @@ def _emit_trace(
 # Query extraction (D-06)
 # ---------------------------------------------------------------------------
 
-def _extract_query(prompt: str, cfg: dict) -> str:
+def _extract_query(prompt: str, cfg: dict, info: dict | None = None) -> str:
     """Return a search query from the prompt.
 
     Short prompts (<=500 chars) are returned as-is.
     Long prompts are compressed via Ollama; on failure returns last 500 chars.
+    `info` (optional) receives {"source": "prompt"|"ollama"|"fallback", "error"}.
     """
+    if info is None:
+        info = {}
+    info["source"] = "prompt"
     if len(prompt) <= 500:
         return prompt
 
@@ -297,9 +519,16 @@ def _extract_query(prompt: str, cfg: dict) -> str:
             },
             timeout=4,
         )
-        return resp.json()["message"]["content"].strip()
+        body = resp.json()
+        if isinstance(body, dict) and body.get("error"):
+            raise RuntimeError(f"ollama: {body['error']}")
+        query = body["message"]["content"].strip()
+        info["source"] = "ollama"
+        return query
     except Exception as e:
         print(f"carta-hook: _extract_query fallback ({e})", file=sys.stderr)
+        info["source"] = "fallback"
+        info["error"] = f"{type(e).__name__}: {e}"
         return prompt[-500:]
 
 
@@ -329,7 +558,14 @@ def _call_ollama_judge(prompt: str, hits: list[dict], cfg: dict, timeout_s: floa
         "You decide if documentation is relevant to a coding prompt. "
         "Answer only 'yes' or 'no'."
     )
-    return bool(ollama_yesno(ollama_url, model, system, user_msg, timeout_s=timeout_s))
+    err: dict = {}
+    verdict = ollama_yesno(ollama_url, model, system, user_msg, timeout_s=timeout_s, err=err)
+    if verdict is None:
+        # Not a "no": the judge could not answer (model missing, Ollama down, bad
+        # reply). Say so, so the caller can treat it as unavailable (#138).
+        _judge_score_out["status"] = "error"
+        _judge_score_out["error"] = err.get("error", "ollama judge returned no answer")
+    return bool(verdict)
 
 
 # Excerpt budget for the cross-encoder judge. 400 chars beat 200 on the labelled set
@@ -416,26 +652,44 @@ def _judge_with_timeout(
     the context noise Carta tries to avoid. The hook still exits 0 — the prompt
     proceeds unblocked — it just stays silent.
 
-    `out` (optional) receives {"backend", "score"} for the trace record; the score is
-    None for the ollama backend, which answers yes/no rather than scoring.
+    `out` (optional) receives {"backend", "score", "status", "error", "elapsed_ms"}.
+    The score is None for the ollama backend, which answers yes/no rather than
+    scoring. `status` is "yes" / "no" for a real verdict and "timeout" / "error"
+    when the judge could not answer — the boolean return cannot tell those apart,
+    and conflating them is what let a dead judge look like a string of "no"s (#138).
     """
     _judge_score_out.clear()
+    status: dict = {}
+    t0 = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_judge, prompt, hits, cfg, timeout_s)
         try:
-            return future.result(timeout=timeout_s)
+            verdict = future.result(timeout=timeout_s)
+            status = {"status": "yes" if verdict else "no"}
+            return verdict
         except concurrent.futures.TimeoutError:
             print(
                 f"carta-hook: judge timeout after {timeout_s}s (skipping injection)",
                 file=sys.stderr,
             )
+            status = {"status": "timeout",
+                      "error": f"no answer within judge_timeout_s={timeout_s}s"}
             return False
         except Exception as e:
             print(f"carta-hook: judge exception (fail-open): {e}", file=sys.stderr)
+            status = {"status": "error", "error": f"{type(e).__name__}: {e}"}
             return False
         finally:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             if out is not None:
-                out.update(_judge_score_out)
+                snap = dict(_judge_score_out)
+                # An inner "error" (the ollama judge answered None) outranks the
+                # outer "no" it was coerced to; a timeout outranks everything.
+                if status.get("status") == "no" and snap.get("status") == "error":
+                    status = {"status": "error", "error": snap.get("error")}
+                snap.update(status)
+                snap["elapsed_ms"] = elapsed_ms
+                out.update(snap)
 
 
 # ---------------------------------------------------------------------------
