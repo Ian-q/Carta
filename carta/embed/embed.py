@@ -255,7 +255,8 @@ def _note_unembeddable(chunk: dict, chunk_id: str, exc: Exception) -> None:
     )
 
 
-def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) -> int:
+def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None,
+                  collection: str | None = None) -> int:
     """Embed and upsert chunks to Qdrant using settings from cfg.
 
     Args:
@@ -266,6 +267,8 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
         cfg: carta config dict (must contain qdrant_url, embed.ollama_url,
              embed.ollama_model, and project_name).
         client: optional QdrantClient instance. If None, a new client is created.
+        collection: target collection; None (the default) routes by the batch's
+            doc_type. Session memory passes its own ``{project}_sessions`` here.
 
     Returns:
         Number of points upserted.
@@ -290,7 +293,7 @@ def upsert_chunks(chunks: list[dict], cfg: dict, client: QdrantClient = None) ->
     # doc_type-homogeneous). Note types (quirk/bug-note/helpful-note) land in
     # {project}_notes; everything else (incl. image/visual chunk types) stays in _doc.
     batch_doc_type = chunks[0].get("doc_type", "unknown") if chunks else "unknown"
-    coll_name = collection_for_doc_type(cfg, batch_doc_type)
+    coll_name = collection or collection_for_doc_type(cfg, batch_doc_type)
     embed_cfg = cfg["embed"]
     ollama_url = embed_cfg["ollama_url"]
     model = embed_cfg["ollama_model"]

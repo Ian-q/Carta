@@ -881,6 +881,7 @@ def cmd_export(args):
             cfg_path.parent,
             output_path=args.output,
             include_visual=not args.no_visual,
+            include_sessions=getattr(args, "include_sessions", False),
             verbose=True,
         )
     except RuntimeError as e:
@@ -1295,6 +1296,12 @@ def cmd_impact(args):
         print(format_impact(result))
 
 
+def cmd_sessions(args):
+    """Session memory: `carta sessions index` (see carta/sessions/cli.py)."""
+    from carta.sessions.cli import run
+    run(args)
+
+
 def cmd_hook(args):
     import subprocess as _subprocess
 
@@ -1536,6 +1543,11 @@ def main():
         "--no-visual", action="store_true",
         help="Exclude the _visual (ColPali) collection from the bundle",
     )
+    export_p.add_argument(
+        "--include-sessions", action="store_true",
+        help="Also bundle session-memory collections (left out by default: they hold "
+             "transcript text)",
+    )
 
     import_p = sub.add_parser(
         "import",
@@ -1646,6 +1658,9 @@ def main():
     impact_p.add_argument("--json", action="store_true", help="Print the result as JSON")
     impact_p.set_defaults(impact_usage=impact_p.format_usage())
 
+    from carta.sessions.cli import add_parser as _add_sessions_parser
+    _add_sessions_parser(sub)
+
     # `graph replay` owns its options (it also runs as a module), so they are
     # passed through untouched; every other command rejects unknown arguments.
     args, extra = parser.parse_known_args()
@@ -1674,6 +1689,7 @@ def main():
         "claude-md": cmd_claude_md,
         "graph": cmd_graph,
         "impact": cmd_impact,
+        "sessions": cmd_sessions,
     }
 
     if args.command not in dispatch:

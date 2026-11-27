@@ -29,6 +29,11 @@ from qdrant_client import QdrantClient
 from carta import __version__
 
 VISUAL_SUFFIX = "_visual"
+# Session-memory collections hold text from Claude Code transcripts — whatever was
+# typed or pasted into a session — so export leaves them out unless asked (#137).
+# `_session` is the older, unused name `carta init` still creates; `_sessions` is
+# what `carta sessions index` writes.
+SESSION_SUFFIXES = ("_session", "_sessions")
 
 
 def _now_iso() -> str:
@@ -36,12 +41,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _discover_collections(client, project_name: str, include_visual: bool) -> list[str]:
+def _discover_collections(client, project_name: str, include_visual: bool,
+                          include_sessions: bool = False) -> list[str]:
     """Return this project's Qdrant collection names, sorted.
 
     Collections are named `{project_name}_{type}`; discovery is prefix-based so it
     picks up whatever types exist (doc, notes, session, visual). The trailing
     underscore in the prefix prevents `myproj` from matching `myproj2_doc`.
+    Session-memory collections are skipped unless ``include_sessions``.
     """
     prefix = f"{project_name}_"
     names = [
@@ -51,6 +58,9 @@ def _discover_collections(client, project_name: str, include_visual: bool) -> li
     ]
     if not include_visual:
         names = [n for n in names if not n.endswith(VISUAL_SUFFIX)]
+    if not include_sessions:
+        session_names = {f"{project_name}{s}" for s in SESSION_SUFFIXES}
+        names = [n for n in names if n not in session_names]
     return sorted(names)
 
 
@@ -143,7 +153,8 @@ def _upload_snapshot(qdrant_url: str, collection: str, snapshot_file: Path) -> N
 
 
 def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
-               include_visual: bool = True, verbose: bool = True) -> Path:
+               include_visual: bool = True, include_sessions: bool = False,
+               verbose: bool = True) -> Path:
     """Bundle this project's embeddings into a portable `.tar.gz`.
 
     Args:
@@ -151,6 +162,8 @@ def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
         carta_dir: the project's `.carta/` directory (holds config.yaml, sidecars/).
         output_path: destination file; defaults to ./carta-<project>-<date>.tar.gz.
         include_visual: include the `_visual` ColPali collection (default True).
+        include_sessions: include session-memory collections (default False: they
+            hold transcript text, which may contain anything that was pasted).
         verbose: print progress.
 
     Returns:
@@ -165,7 +178,8 @@ def run_export(cfg: dict, carta_dir: Path, *, output_path=None,
 
     try:
         client = QdrantClient(url=qdrant_url, timeout=30)
-        collections = _discover_collections(client, project_name, include_visual)
+        collections = _discover_collections(client, project_name, include_visual,
+                                            include_sessions)
     except Exception as e:
         raise RuntimeError(f"Could not reach Qdrant at {qdrant_url}: {e}")
 

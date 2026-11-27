@@ -282,6 +282,28 @@ DEFAULTS = {
             "follow_renames": True,  # a pure move (same content) keeps its history
         },
     },
+    # Session memory (#137): Claude Code transcripts indexed into
+    # {project}_sessions. Gated by modules.session_memory.
+    "sessions": {
+        "transcripts_dir": "~/.claude/projects",
+        # Where the incremental index state lives; "" = <carta home>/sessions/<project>/.
+        # Machine-level, never in the repo: transcripts are per machine.
+        "state_dir": "",
+        # Without --backfill, `carta sessions index` looks only at transcripts
+        # modified within this many days.
+        "window_days": 3,
+        # Count prompts a program sent through the Agent SDK as a session's prompts.
+        # Off: a scripted session is not a person's session.
+        "include_sdk_sessions": False,
+        "limits": {
+            "max_prompts": 60,
+            "max_prompt_chars": 2000,
+            "max_final_chars": 3000,
+            "max_files": 100,
+            "max_refs": 50,
+            "max_commits": 50,
+        },
+    },
     "modules": {
         "doc_audit": True,
         "doc_embed": True,
@@ -311,7 +333,7 @@ def load_config(path: Path) -> dict:
     for field in REQUIRED_FIELDS:
         if not isinstance(raw[field], str) or not raw[field].strip():
             raise ConfigError(f"Field '{field}' must be a non-empty string")
-    for key in ("embed", "modules", "search", "graph"):
+    for key in ("embed", "modules", "search", "graph", "sessions"):
         if key in raw and not isinstance(raw[key], dict):
             raise ConfigError(f"Field '{key}' must be a mapping, got {type(raw[key]).__name__}")
     merged = _deep_merge(DEFAULTS, raw)

@@ -48,8 +48,26 @@ class TestDiscoverCollections:
         client.get_collections.return_value = _collections_response(
             "myproj_session", "myproj_doc", "other_doc", "myproj_notes"
         )
-        result = share._discover_collections(client, "myproj", include_visual=True)
+        result = share._discover_collections(client, "myproj", include_visual=True,
+                                             include_sessions=True)
         assert result == ["myproj_doc", "myproj_notes", "myproj_session"]
+
+    def test_excludes_session_collections_by_default(self):
+        client = Mock()
+        client.get_collections.return_value = _collections_response(
+            "myproj_doc", "myproj_session", "myproj_sessions", "myproj_notes"
+        )
+        result = share._discover_collections(client, "myproj", include_visual=True)
+        assert result == ["myproj_doc", "myproj_notes"]
+
+    def test_includes_session_collections_when_requested(self):
+        client = Mock()
+        client.get_collections.return_value = _collections_response(
+            "myproj_doc", "myproj_sessions"
+        )
+        result = share._discover_collections(client, "myproj", include_visual=True,
+                                             include_sessions=True)
+        assert result == ["myproj_doc", "myproj_sessions"]
 
     def test_excludes_visual_when_not_included(self):
         client = Mock()
@@ -241,6 +259,23 @@ class TestRunExport:
         names = _extract_names(out)
         assert "snapshots/myproj_doc.snapshot" in names
         assert "snapshots/myproj_visual.snapshot" not in names
+
+    def test_sessions_left_out_of_bundle_by_default(self, tmp_path):
+        carta_dir = _make_carta_dir(tmp_path, project_name="myproj")
+        cfg = {"project_name": "myproj", "qdrant_url": "http://localhost:6333"}
+        client = _export_mock_client(["myproj_doc", "myproj_sessions"])
+
+        with patch("carta.share.QdrantClient", return_value=client), \
+             patch("carta.share.requests.get", side_effect=_fake_requests_get), \
+             patch("carta.share._now_iso", return_value="2026-06-08T00:00:00Z"):
+            out = share.run_export(cfg, carta_dir, output_path=tmp_path / "b.tar.gz",
+                                   include_visual=True, verbose=False)
+            names = _extract_names(out)
+            assert "snapshots/myproj_sessions.snapshot" not in names
+            out2 = share.run_export(cfg, carta_dir, output_path=tmp_path / "c.tar.gz",
+                                    include_visual=True, include_sessions=True,
+                                    verbose=False)
+        assert "snapshots/myproj_sessions.snapshot" in _extract_names(out2)
 
     def test_zero_collections_raises(self, tmp_path):
         carta_dir = _make_carta_dir(tmp_path, project_name="myproj")
@@ -664,6 +699,18 @@ class TestCliWiring:
             cli.cmd_export(args)
 
         assert rx.call_args.kwargs["include_visual"] is False
+        assert rx.call_args.kwargs["include_sessions"] is False
+
+    def test_cmd_export_include_sessions_flag(self, tmp_path, monkeypatch):
+        from carta import cli
+        _make_carta_dir(tmp_path, project_name="myproj")
+        monkeypatch.chdir(tmp_path)
+        args = SimpleNamespace(no_visual=False, output=None, include_sessions=True)
+
+        with patch("carta.share.run_export", return_value=Path("x")) as rx:
+            cli.cmd_export(args)
+
+        assert rx.call_args.kwargs["include_sessions"] is True
 
     def test_cmd_import_dispatches_with_local_config(self, tmp_path, monkeypatch):
         from carta import cli
