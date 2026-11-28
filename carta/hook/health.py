@@ -74,6 +74,11 @@ def check_wrapper(repo_root: Path, *, python3_has_yaml: Optional[Callable[[], bo
 
     cp_cmd = f"cp {src} .carta/hooks/{WRAPPER_NAME}"
     fix_cmd = f"carta doctor --fix (or: {cp_cmd})"
+    if not src.is_file():
+        # This install shipped without the hook scripts, so there is nothing to
+        # copy and --fix cannot help. Say that instead of pointing at a dead end.
+        cp_cmd = fix_cmd = ("reinstall carta: this install has no packaged "
+                            f"{WRAPPER_NAME} to copy (expected at {src})")
     if not installed.is_file():
         return HealthItem(
             "recall_hook_wrapper", "warn",
