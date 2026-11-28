@@ -70,7 +70,7 @@ where = ["."]
 include = ["carta*"]
 
 [tool.setuptools.package-data]
-"carta" = ["skills/*/SKILL.md"]
+"carta" = ["skills/*/SKILL.md", "hooks/*.sh"]
 
 [tool.setuptools.dynamic]
 version = {attr = "carta.__version__"}
